@@ -12,16 +12,30 @@ import {
   type ContextRule,
   type ParsedContextExpression,
 } from '@cht-ui/shared';
+import {
+  FieldPicker,
+  isNumericOp,
+  isValidNumberLiteral,
+  type ContactFormFields,
+} from './FieldPicker.js';
 
 interface Props {
   value: string;
   onChange: (next: string) => void;
   /** Known summary flag names (from contact-summary.templated.js) for the picker. */
   summaryFlags?: string[];
+  /** Optional contact forms whose fields populate the `contact_field` picker. */
+  contactForms?: ContactFormFields[];
   disabled?: boolean;
 }
 
-export function ContextExpressionBuilder({ value, onChange, summaryFlags = [], disabled }: Props) {
+export function ContextExpressionBuilder({
+  value,
+  onChange,
+  summaryFlags = [],
+  contactForms = [],
+  disabled,
+}: Props) {
   const [parsed, setParsed] = useState<ParsedContextExpression>(() => parseContextExpression(value));
   const [showRaw, setShowRaw] = useState<boolean>(false);
   const [rawText, setRawText] = useState<string>(value);
@@ -106,6 +120,7 @@ export function ContextExpressionBuilder({ value, onChange, summaryFlags = [], d
                 key={idx}
                 rule={rule}
                 summaryFlags={summaryFlags}
+                contactForms={contactForms}
                 onChange={(r) => updateRule(idx, r)}
                 onRemove={() => removeRule(idx)}
               />
@@ -145,6 +160,7 @@ export function ContextExpressionBuilder({ value, onChange, summaryFlags = [], d
 function ContextRuleRow(props: {
   rule: ContextRule;
   summaryFlags: string[];
+  contactForms: ContactFormFields[];
   onChange: (r: ContextRule) => void;
   onRemove: () => void;
 }) {
@@ -250,39 +266,57 @@ function ContextRuleRow(props: {
       );
     }
 
-    case 'contact_field':
+    case 'contact_field': {
+      const valueInvalid = isNumericOp(r.op) && r.value !== '' && !isValidNumberLiteral(r.value);
+      const valueEmpty = isNumericOp(r.op) && r.value.trim() === '';
       return (
-        <div className="row gap rule-row">
-          <code>contact.</code>
-          <input
-            value={r.field}
-            onChange={(e) => props.onChange({ ...r, field: e.target.value })}
-            placeholder="field"
-          />
-          <select
-            value={r.op}
-            onChange={(e) =>
-              props.onChange({
-                ...r,
-                op: e.target.value as '===' | '!==' | '>' | '<' | '>=' | '<=',
-              })
-            }
-          >
-            <option value="===">=</option>
-            <option value="!==">≠</option>
-            <option value=">">&gt;</option>
-            <option value="<">&lt;</option>
-            <option value=">=">≥</option>
-            <option value="<=">≤</option>
-          </select>
-          <input
-            value={r.value}
-            onChange={(e) => props.onChange({ ...r, value: e.target.value })}
-            placeholder="value"
-          />
-          {remove}
+        <div className="rule-row-block">
+          <div className="row gap rule-row">
+            <code>contact.</code>
+            <FieldPicker
+              value={r.field}
+              contactForms={props.contactForms}
+              onChange={(field) => props.onChange({ ...r, field })}
+            />
+            <select
+              value={r.op}
+              onChange={(e) =>
+                props.onChange({
+                  ...r,
+                  op: e.target.value as '===' | '!==' | '>' | '<' | '>=' | '<=',
+                })
+              }
+            >
+              <option value="===">=</option>
+              <option value="!==">≠</option>
+              <option value=">">&gt;</option>
+              <option value="<">&lt;</option>
+              <option value=">=">≥</option>
+              <option value="<=">≤</option>
+            </select>
+            <input
+              value={r.value}
+              onChange={(e) => props.onChange({ ...r, value: e.target.value })}
+              placeholder={isNumericOp(r.op) ? 'number' : 'value'}
+              className={valueInvalid ? 'invalid' : ''}
+            />
+            {remove}
+          </div>
+          {valueInvalid && (
+            <div className="rule-row-warning">
+              <strong>Not a number.</strong> Comparison <code>{r.op}</code> needs a numeric value
+              (e.g. <code>20</code>, <code>5.5</code>, <code>-1</code>) — otherwise the rule
+              won&apos;t round-trip and the row will be lost on save.
+            </div>
+          )}
+          {valueEmpty && !valueInvalid && (
+            <div className="rule-row-warning muted">
+              Enter a number for the <code>{r.op}</code> comparison.
+            </div>
+          )}
         </div>
       );
+    }
 
     case 'not_muted':
       return <div className="row gap rule-row"><code>Contact is not muted</code> {remove}</div>;

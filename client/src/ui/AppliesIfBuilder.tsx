@@ -13,14 +13,14 @@ import {
   type AppliesIfRule,
   type ParsedAppliesIf,
 } from '@cht-ui/shared';
+import {
+  FieldPicker,
+  isNumericOp,
+  isValidNumberLiteral,
+  type ContactFormFields,
+} from './FieldPicker.js';
 
-/** A contact form whose fields can be offered as a picker for `contact_field` rules. */
-export interface ContactFormFields {
-  /** Display label, e.g. "person" or "family". */
-  label: string;
-  /** Flat list of field names from that form's XLSForm survey rows. */
-  fields: string[];
-}
+export type { ContactFormFields };
 
 interface Props {
   value: string;
@@ -379,16 +379,6 @@ function AppliesIfRuleRow(props: {
   }
 }
 
-/** True if op is a numeric comparison (RHS must be a number). */
-function isNumericOp(op: string): boolean {
-  return op === '>' || op === '<' || op === '>=' || op === '<=';
-}
-
-/** True if value is a valid number for a numeric op. Empty string is invalid. */
-function isValidNumberLiteral(v: string): boolean {
-  return v.trim() !== '' && /^-?\d+(?:\.\d+)?$/.test(v.trim());
-}
-
 function ContactFieldRow(props: {
   rule: Extract<AppliesIfRule, { kind: 'contact_field' }>;
   contactForms: ContactFormFields[];
@@ -396,12 +386,6 @@ function ContactFieldRow(props: {
   remove: React.ReactNode;
 }) {
   const { rule: r, contactForms: forms, onChange, remove } = props;
-  const knownFields = new Set(forms.flatMap((f) => f.fields));
-  // Explicit picker/custom mode — derived state caused focus theft as users
-  // typed values that happened to match a known field name.
-  const [useCustom, setUseCustom] = useState<boolean>(
-    () => forms.length === 0 || !knownFields.has(r.field),
-  );
   const valueInvalid = isNumericOp(r.op) && r.value !== '' && !isValidNumberLiteral(r.value);
   const valueEmpty = isNumericOp(r.op) && r.value.trim() === '';
 
@@ -409,41 +393,11 @@ function ContactFieldRow(props: {
     <div className="rule-row-block">
       <div className="row gap rule-row">
         <code>contact.contact.</code>
-        {forms.length > 0 && !useCustom ? (
-          <select
-            value={knownFields.has(r.field) ? r.field : ''}
-            onChange={(e) => onChange({ ...r, field: e.target.value })}
-            title="Pick a field from a contact form"
-          >
-            {!knownFields.has(r.field) && <option value="">— pick a field —</option>}
-            {forms.map((f) => (
-              <optgroup key={f.label} label={f.label}>
-                {f.fields.map((name) => (
-                  <option key={`${f.label}:${name}`} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-        ) : (
-          <input
-            value={r.field}
-            onChange={(e) => onChange({ ...r, field: e.target.value })}
-            placeholder="field name"
-            autoFocus={useCustom && r.field === ''}
-          />
-        )}
-        {forms.length > 0 && (
-          <button
-            type="button"
-            className="link small"
-            onClick={() => setUseCustom((v) => !v)}
-            title={useCustom ? 'Pick from contact forms' : 'Type a custom field name'}
-          >
-            {useCustom ? 'pick from form' : 'custom'}
-          </button>
-        )}
+        <FieldPicker
+          value={r.field}
+          contactForms={forms}
+          onChange={(field) => onChange({ ...r, field })}
+        />
         <select
           value={r.op}
           onChange={(e) =>

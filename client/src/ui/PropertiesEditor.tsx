@@ -17,6 +17,7 @@
  */
 import { useEffect, useState } from 'react';
 import { ContextExpressionBuilder } from './ContextExpressionBuilder.js';
+import type { ContactFormFields } from './FieldPicker.js';
 
 interface TitleEntry {
   locale: string;
@@ -39,6 +40,8 @@ export interface FormProperties {
 interface Props {
   value: FormProperties;
   locales: string[];
+  /** Optional contact forms whose fields populate the context-expression picker. */
+  contactForms?: ContactFormFields[];
   onChange: (next: FormProperties) => void;
   onClose: () => void;
 }
@@ -148,6 +151,7 @@ export function PropertiesEditor(props: Props) {
           <ContextExpressionBuilder
             value={draft.context?.expression ?? ''}
             onChange={(v) => setContext('expression', v)}
+            contactForms={props.contactForms}
             disabled={draft.context?.expression === 'false'}
           />
         </label>

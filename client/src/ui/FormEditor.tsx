@@ -49,6 +49,7 @@ import { useApp } from '../state/store.js';
 import { RelevantRuleBuilder } from './RelevantRuleBuilder.js';
 import { CalculationBuilder } from './CalculationBuilder.js';
 import { PropertiesEditor, type FormProperties } from './PropertiesEditor.js';
+import { useContactFormFields } from './useContactFormFields.js';
 import { FormPreview } from './FormPreview.js';
 import { SaveDiffModal } from './SaveDiffModal.js';
 
@@ -67,6 +68,7 @@ export function FormEditor({ formId }: { formId: string }) {
   const [loading, setLoading] = useState(true);
   const [showPreview, setShowPreview] = useState(false);
   const [pendingSaveDiff, setPendingSaveDiff] = useState<XLSFormDiff | null>(null);
+  const contactForms = useContactFormFields();
 
   // Load form on mount or when id changes.
   useEffect(() => {
@@ -187,6 +189,7 @@ export function FormEditor({ formId }: { formId: string }) {
         <PropertiesEditor
           value={properties}
           locales={form.locales.length > 0 ? form.locales : ['en']}
+          contactForms={contactForms}
           onChange={(p) => {
             setProperties(p);
             setDirty(formId, true);
