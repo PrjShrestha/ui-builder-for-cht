@@ -6,6 +6,7 @@
  * a raw code editor for expressions the parser couldn't lift.
  */
 import { useEffect, useState } from 'react';
+import type React from 'react';
 import {
   parseAppliesIf,
   serializeAppliesIf,
@@ -13,11 +14,21 @@ import {
   type ParsedAppliesIf,
 } from '@cht-ui/shared';
 
+/** A contact form whose fields can be offered as a picker for `contact_field` rules. */
+export interface ContactFormFields {
+  /** Display label, e.g. "person" or "family". */
+  label: string;
+  /** Flat list of field names from that form's XLSForm survey rows. */
+  fields: string[];
+}
+
 interface Props {
   value: string;
   onSave: (next: string) => void;
   onCancel: () => void;
   title?: string;
+  /** Optional: contact forms whose fields populate the `contact_field` picker. */
+  contactForms?: ContactFormFields[];
 }
 
 export function AppliesIfBuilder(props: Props) {
@@ -34,7 +45,11 @@ export function AppliesIfBuilder(props: Props) {
     setParsed({ ...parsed, rules: parsed.rules.map((r, i) => (i === idx ? next : r)) });
   }
   function removeRule(idx: number) {
-    setParsed({ ...parsed, rules: parsed.rules.filter((_, i) => i !== idx) });
+    setParsed({
+      ...parsed,
+      rules: parsed.rules.filter((_, i) => i !== idx),
+      guardGroups: parsed.guardGroups.filter((_, i) => i !== idx),
+    });
   }
   function addRule(kind: AppliesIfRule['kind']) {
     let next: AppliesIfRule;
@@ -64,14 +79,34 @@ export function AppliesIfBuilder(props: Props) {
         next = { kind: 'raw', text: '' };
         break;
     }
-    setParsed({ ...parsed, rules: [...parsed.rules, next] });
+    setParsed({
+      ...parsed,
+      rules: [...parsed.rules, next],
+      guardGroups: [...parsed.guardGroups, undefined],
+    });
   }
+
+  // Find rule-level validity issues that would silently corrupt round-trip.
+  const validationErrors = parsed.rules.flatMap((rule, idx) => {
+    if (rule.kind === 'contact_field' || rule.kind === 'report_field') {
+      if (isNumericOp(rule.op) && !isValidNumberLiteral(rule.value)) {
+        const where = rule.kind === 'contact_field' ? 'contact field' : 'report field';
+        return [`Row ${idx + 1}: ${where} needs a numeric value for "${rule.op}".`];
+      }
+    }
+    if (rule.kind === 'raw' && rule.text.trim() === '') {
+      return [`Row ${idx + 1}: empty "raw JS" row — delete it or fill it in.`];
+    }
+    return [];
+  });
+  const canSave = showRaw || validationErrors.length === 0;
 
   function save() {
     if (showRaw) {
       props.onSave(rawText);
       return;
     }
+    if (validationErrors.length > 0) return;
     props.onSave(serializeAppliesIf(parsed));
   }
 
@@ -84,10 +119,34 @@ export function AppliesIfBuilder(props: Props) {
         </header>
 
         <div className="row gap">
-          <button className={!showRaw ? 'active' : 'link'} onClick={() => setShowRaw(false)}>
+          <button
+            className={!showRaw ? 'active' : 'link'}
+            onClick={() => {
+              if (!showRaw) return;
+              // Switching Raw → Visual: re-parse rawText so changes carry over.
+              const fromRaw = parseAppliesIf(rawText);
+              if (rawText.trim() !== serializeAppliesIf(parsed).trim()) {
+                const ok = window.confirm(
+                  'Switch to Visual mode? Your raw edits will be re-parsed. ' +
+                    'Anything the parser doesn\'t recognize will appear as a "raw" row — nothing is dropped.',
+                );
+                if (!ok) return;
+              }
+              setParsed(fromRaw);
+              setShowRaw(false);
+            }}
+          >
             Visual
           </button>
-          <button className={showRaw ? 'active' : 'link'} onClick={() => setShowRaw(true)}>
+          <button
+            className={showRaw ? 'active' : 'link'}
+            onClick={() => {
+              if (showRaw) return;
+              // Switching Visual → Raw: hand the current serialized form to the raw editor.
+              setRawText(serializeAppliesIf(parsed));
+              setShowRaw(true);
+            }}
+          >
             Raw JS
           </button>
           {parsed.hasRawFallback && !showRaw && (
@@ -108,6 +167,7 @@ export function AppliesIfBuilder(props: Props) {
                 <AppliesIfRuleRow
                   key={idx}
                   rule={rule}
+                  contactForms={props.contactForms}
                   onChange={(r) => updateRule(idx, r)}
                   onRemove={() => removeRule(idx)}
                 />
@@ -138,8 +198,21 @@ export function AppliesIfBuilder(props: Props) {
           />
         )}
 
+        {!showRaw && validationErrors.length > 0 && (
+          <div className="rule-builder-errors">
+            <strong>Fix these before saving:</strong>
+            <ul>
+              {validationErrors.map((msg, i) => (
+                <li key={i}>{msg}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         <footer className="row gap end">
-          <button onClick={save}>Save</button>
+          <button onClick={save} disabled={!canSave}>
+            Save
+          </button>
           <button className="link" onClick={props.onCancel}>cancel</button>
         </footer>
       </div>
@@ -149,6 +222,7 @@ export function AppliesIfBuilder(props: Props) {
 
 function AppliesIfRuleRow(props: {
   rule: AppliesIfRule;
+  contactForms?: ContactFormFields[];
   onChange: (r: AppliesIfRule) => void;
   onRemove: () => void;
 }) {
@@ -247,27 +321,12 @@ function AppliesIfRuleRow(props: {
 
     case 'contact_field':
       return (
-        <div className="row gap rule-row">
-          <code>contact.contact.</code>
-          <input
-            value={r.field}
-            onChange={(e) => props.onChange({ ...r, field: e.target.value })}
-            placeholder="field"
-          />
-          <select
-            value={r.op}
-            onChange={(e) => props.onChange({ ...r, op: e.target.value as '===' | '!==' })}
-          >
-            <option value="===">=</option>
-            <option value="!==">!=</option>
-          </select>
-          <input
-            value={r.value}
-            onChange={(e) => props.onChange({ ...r, value: e.target.value })}
-            placeholder="value"
-          />
-          {remove}
-        </div>
+        <ContactFieldRow
+          rule={r}
+          contactForms={props.contactForms ?? []}
+          onChange={props.onChange}
+          remove={remove}
+        />
       );
 
     case 'report_field':
@@ -282,15 +341,24 @@ function AppliesIfRuleRow(props: {
           <code>)</code>
           <select
             value={r.op}
-            onChange={(e) => props.onChange({ ...r, op: e.target.value as '===' | '!==' })}
+            onChange={(e) =>
+              props.onChange({
+                ...r,
+                op: e.target.value as '===' | '!==' | '>' | '<' | '>=' | '<=',
+              })
+            }
           >
             <option value="===">=</option>
             <option value="!==">!=</option>
+            <option value=">">&gt;</option>
+            <option value="<">&lt;</option>
+            <option value=">=">&gt;=</option>
+            <option value="<=">&lt;=</option>
           </select>
           <input
             value={r.value}
             onChange={(e) => props.onChange({ ...r, value: e.target.value })}
-            placeholder="value"
+            placeholder={r.op === '===' || r.op === '!==' ? 'value' : 'number'}
           />
           {remove}
         </div>
@@ -309,4 +377,109 @@ function AppliesIfRuleRow(props: {
         </div>
       );
   }
+}
+
+/** True if op is a numeric comparison (RHS must be a number). */
+function isNumericOp(op: string): boolean {
+  return op === '>' || op === '<' || op === '>=' || op === '<=';
+}
+
+/** True if value is a valid number for a numeric op. Empty string is invalid. */
+function isValidNumberLiteral(v: string): boolean {
+  return v.trim() !== '' && /^-?\d+(?:\.\d+)?$/.test(v.trim());
+}
+
+function ContactFieldRow(props: {
+  rule: Extract<AppliesIfRule, { kind: 'contact_field' }>;
+  contactForms: ContactFormFields[];
+  onChange: (r: AppliesIfRule) => void;
+  remove: React.ReactNode;
+}) {
+  const { rule: r, contactForms: forms, onChange, remove } = props;
+  const knownFields = new Set(forms.flatMap((f) => f.fields));
+  // Explicit picker/custom mode — derived state caused focus theft as users
+  // typed values that happened to match a known field name.
+  const [useCustom, setUseCustom] = useState<boolean>(
+    () => forms.length === 0 || !knownFields.has(r.field),
+  );
+  const valueInvalid = isNumericOp(r.op) && r.value !== '' && !isValidNumberLiteral(r.value);
+  const valueEmpty = isNumericOp(r.op) && r.value.trim() === '';
+
+  return (
+    <div className="rule-row-block">
+      <div className="row gap rule-row">
+        <code>contact.contact.</code>
+        {forms.length > 0 && !useCustom ? (
+          <select
+            value={knownFields.has(r.field) ? r.field : ''}
+            onChange={(e) => onChange({ ...r, field: e.target.value })}
+            title="Pick a field from a contact form"
+          >
+            {!knownFields.has(r.field) && <option value="">— pick a field —</option>}
+            {forms.map((f) => (
+              <optgroup key={f.label} label={f.label}>
+                {f.fields.map((name) => (
+                  <option key={`${f.label}:${name}`} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        ) : (
+          <input
+            value={r.field}
+            onChange={(e) => onChange({ ...r, field: e.target.value })}
+            placeholder="field name"
+            autoFocus={useCustom && r.field === ''}
+          />
+        )}
+        {forms.length > 0 && (
+          <button
+            type="button"
+            className="link small"
+            onClick={() => setUseCustom((v) => !v)}
+            title={useCustom ? 'Pick from contact forms' : 'Type a custom field name'}
+          >
+            {useCustom ? 'pick from form' : 'custom'}
+          </button>
+        )}
+        <select
+          value={r.op}
+          onChange={(e) =>
+            onChange({
+              ...r,
+              op: e.target.value as '===' | '!==' | '>' | '<' | '>=' | '<=',
+            })
+          }
+        >
+          <option value="===">=</option>
+          <option value="!==">!=</option>
+          <option value=">">&gt;</option>
+          <option value="<">&lt;</option>
+          <option value=">=">&gt;=</option>
+          <option value="<=">&lt;=</option>
+        </select>
+        <input
+          value={r.value}
+          onChange={(e) => onChange({ ...r, value: e.target.value })}
+          placeholder={isNumericOp(r.op) ? 'number' : 'value'}
+          className={valueInvalid ? 'invalid' : ''}
+        />
+        {remove}
+      </div>
+      {valueInvalid && (
+        <div className="rule-row-warning">
+          <strong>Not a number.</strong> Comparison <code>{r.op}</code> needs a numeric value
+          (e.g. <code>20</code>, <code>5.5</code>, <code>-1</code>) — otherwise the rule won&apos;t
+          round-trip and the row will be lost on save.
+        </div>
+      )}
+      {valueEmpty && !valueInvalid && (
+        <div className="rule-row-warning muted">
+          Enter a number for the <code>{r.op}</code> comparison.
+        </div>
+      )}
+    </div>
+  );
 }

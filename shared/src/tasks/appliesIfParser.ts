@@ -26,8 +26,8 @@ export type AppliesIfRule =
   | { kind: 'is_muted'; negated: boolean }
   | { kind: 'has_error'; negated: boolean }
   | { kind: 'helper'; name: string; args: string; negated: boolean }
-  | { kind: 'contact_field'; field: string; op: '===' | '!=='; value: string }
-  | { kind: 'report_field'; field: string; op: '===' | '!=='; value: string }
+  | { kind: 'contact_field'; field: string; op: '===' | '!==' | '>' | '<' | '>=' | '<='; value: string }
+  | { kind: 'report_field'; field: string; op: '===' | '!==' | '>' | '<' | '>=' | '<='; value: string }
   | { kind: 'raw'; text: string };
 
 export interface ParsedAppliesIf {
@@ -35,6 +35,14 @@ export interface ParsedAppliesIf {
   params: string[];
   /** Ordered rules; AND-combined. */
   rules: AppliesIfRule[];
+  /**
+   * Parallel to `rules`. Rules sharing the same non-undefined group id were
+   * lifted from a single `if (A || B || ...) return false` guard and will be
+   * re-grouped back into that shape on serialize — so opening + saving a
+   * helper without edits produces a no-op diff. Rules added by the UI get
+   * `undefined` and serialize as their own `if(...) return false` line.
+   */
+  guardGroups: Array<number | undefined>;
   /** True if any rule fell back to raw — UI should offer a "Raw" tab. */
   hasRawFallback: boolean;
   /** Original source body (between the function's braces). */
@@ -66,12 +74,18 @@ export function parseAppliesIf(source: string): ParsedAppliesIf {
     params = splitParams(arrowConcise[1]);
     body = `return ${arrowConcise[2]};`;
   } else {
-    return { params: [], rules: [{ kind: 'raw', text: trimmed }], hasRawFallback: true, body: trimmed };
+    return {
+      params: [],
+      rules: [{ kind: 'raw', text: trimmed }],
+      guardGroups: [undefined],
+      hasRawFallback: true,
+      body: trimmed,
+    };
   }
 
-  const rules = extractRules(body);
+  const { rules, guardGroups } = extractRules(body);
   const hasRawFallback = rules.some((r) => r.kind === 'raw');
-  return { params, rules, hasRawFallback, body };
+  return { params, rules, guardGroups, hasRawFallback, body };
 }
 
 function splitParams(s: string): string[] {
@@ -86,8 +100,10 @@ function splitParams(s: string): string[] {
  * Anything we don't recognize lands as a single 'raw' rule with the rest
  * of the body so we never silently drop logic.
  */
-function extractRules(body: string): AppliesIfRule[] {
+function extractRules(body: string): { rules: AppliesIfRule[]; guardGroups: Array<number | undefined> } {
   const rules: AppliesIfRule[] = [];
+  const guardGroups: Array<number | undefined> = [];
+  let nextGroup = 0;
   // Walk the body finding `if (cond) return false;` (with balanced parens),
   // accumulating leftover content into `unprocessed`.
   let i = 0;
@@ -158,9 +174,13 @@ function extractRules(body: string): AppliesIfRule[] {
 
     // Successfully matched a guard. Split the condition on top-level ||.
     const subs = splitOrOperands(cond);
+    // Use a group id only when there are 2+ alternatives — solo guards keep
+    // `undefined` so re-adding a sibling rule serializes as its own `if(...)`.
+    const groupId = subs.length > 1 ? nextGroup++ : undefined;
     for (const op of subs) {
       const rule = classifySimple(op);
       rules.push(invertGuardRule(rule));
+      guardGroups.push(groupId);
     }
     i = k;
   }
@@ -178,14 +198,16 @@ function extractRules(body: string): AppliesIfRule[] {
     const subs = splitAnd(returnExpr);
     for (const s of subs) {
       rules.push(classifySimple(s));
+      guardGroups.push(undefined);
     }
   }
 
   // 3) If we got nothing useful and the body has real content, fallback raw.
   if (rules.length === 0 && body.trim().length > 0) {
     rules.push({ kind: 'raw', text: body.trim() });
+    guardGroups.push(undefined);
   }
-  return rules;
+  return { rules, guardGroups };
 }
 
 /** Splits `a || b || c` at top level; honors parens. */
@@ -254,6 +276,20 @@ function classifySimple(expr: string): AppliesIfRule {
     };
   }
 
+  // contact.contact.X OP NUMBER (numeric)
+  const contactCmpNum =
+    /^contact\.contact\.([a-zA-Z_$][\w$.]*)\s*(>=|<=|===|!==|==|!=|>|<)\s*(-?\d+(?:\.\d+)?)$/.exec(
+      stripped,
+    );
+  if (contactCmpNum && contactCmpNum[1] && contactCmpNum[2] && contactCmpNum[3]) {
+    return {
+      kind: 'contact_field',
+      field: contactCmpNum[1],
+      op: normalizeOp(contactCmpNum[2]),
+      value: contactCmpNum[3],
+    };
+  }
+
   // getField(report, 'X') === 'Y'
   const reportCmp =
     /^getField\(\s*report\s*,\s*'([^']+)'\s*\)\s*(===|!==|==|!=)\s*'([^']*)'$/.exec(stripped);
@@ -266,12 +302,48 @@ function classifySimple(expr: string): AppliesIfRule {
     };
   }
 
+  // getField(report, 'X') OP NUMBER (numeric)
+  const reportCmpNum =
+    /^getField\(\s*report\s*,\s*'([^']+)'\s*\)\s*(>=|<=|===|!==|==|!=|>|<)\s*(-?\d+(?:\.\d+)?)$/.exec(
+      stripped,
+    );
+  if (reportCmpNum && reportCmpNum[1] && reportCmpNum[2] && reportCmpNum[3]) {
+    return {
+      kind: 'report_field',
+      field: reportCmpNum[1],
+      op: normalizeOp(reportCmpNum[2]),
+      value: reportCmpNum[3],
+    };
+  }
+
   return { kind: 'raw', text: e };
 }
 
-function normalizeOp(op: string): '===' | '!==' {
-  if (op === '===' || op === '==') return '===';
-  return '!==';
+function normalizeOp(op: string): '===' | '!==' | '>' | '<' | '>=' | '<=' {
+  if (op === '==' || op === '===') return '===';
+  if (op === '!=' || op === '!==') return '!==';
+  if (op === '>=') return '>=';
+  if (op === '<=') return '<=';
+  if (op === '>') return '>';
+  return '<';
+}
+
+/** Op that inverts the given op for guard-clause rewriting. */
+function invertOp(op: '===' | '!==' | '>' | '<' | '>=' | '<='): typeof op {
+  switch (op) {
+    case '===': return '!==';
+    case '!==': return '===';
+    case '>': return '<=';
+    case '<': return '>=';
+    case '>=': return '<';
+    case '<=': return '>';
+  }
+}
+
+/** Render the right-hand side of a field comparison: quote strings, bare numbers. */
+function fmtCmpValue(op: '===' | '!==' | '>' | '<' | '>=' | '<=', value: string): string {
+  if (op === '===' || op === '!==') return `'${value}'`;
+  return value;
 }
 
 /**
@@ -288,7 +360,7 @@ function invertGuardRule(r: AppliesIfRule): AppliesIfRule {
       return { ...r, negated: !r.negated };
     case 'contact_field':
     case 'report_field':
-      return { ...r, op: r.op === '===' ? '!==' : '===' };
+      return { ...r, op: invertOp(r.op) };
     case 'is_task_user':
       // Guards usually check `!isTaskUser(user)` → the rule is "is task user". Negation
       // doesn't apply here; treat presence as the positive requirement.
@@ -304,10 +376,33 @@ export function serializeAppliesIf(parsed: ParsedAppliesIf): string {
   const lines: string[] = [];
   const params = parsed.params.join(', ');
   lines.push(`function (${params}) {`);
-  for (const rule of parsed.rules) {
-    const guard = ruleToGuardSource(rule);
-    if (guard) lines.push(`  if (${guard}) { return false; }`);
+
+  // Group adjacent rules that share a non-undefined guardGroup id back into
+  // a single `if (A || B || ...) return false` so original sources don't
+  // diff just from open+save.
+  const groups: Array<{ groupId: number | undefined; rules: AppliesIfRule[] }> = [];
+  parsed.rules.forEach((rule, idx) => {
+    const gid = parsed.guardGroups?.[idx];
+    const last = groups[groups.length - 1];
+    if (gid !== undefined && last && last.groupId === gid) {
+      last.rules.push(rule);
+    } else {
+      groups.push({ groupId: gid, rules: [rule] });
+    }
+  });
+
+  for (const group of groups) {
+    const guards = group.rules.map(ruleToGuardSource).filter((g): g is string => Boolean(g));
+    if (guards.length === 0) continue;
+    if (group.groupId !== undefined && guards.length > 1) {
+      lines.push(`  if (${guards.join(' || ')}) { return false; }`);
+    } else {
+      for (const guard of guards) {
+        lines.push(`  if (${guard}) { return false; }`);
+      }
+    }
   }
+
   const anyRecognized = parsed.rules.some((r) => r.kind !== 'raw');
   if (!anyRecognized) {
     for (const r of parsed.rules) {
@@ -327,18 +422,21 @@ function ruleToGuardSource(rule: AppliesIfRule): string | null {
     case 'is_alive':
       return rule.negated ? `isAlive(contact.contact)` : `!isAlive(contact.contact)`;
     case 'is_muted':
-      return rule.negated ? `!isMuted(contact.contact)` : `isMuted(contact.contact)`;
+      // Rule shape: `negated=true` means the positive requirement is "NOT muted".
+      // The guard inverts that: exit if muted, i.e. `isMuted(...)`.
+      return rule.negated ? `isMuted(contact.contact)` : `!isMuted(contact.contact)`;
     case 'has_error':
-      return rule.negated ? `!hasError(report)` : `hasError(report)`;
+      // Same shape as is_muted — guard exits when the error IS present.
+      return rule.negated ? `hasError(report)` : `!hasError(report)`;
     case 'helper':
       return rule.negated ? `!${rule.name}(${rule.args})` : `${rule.name}(${rule.args})`;
     case 'contact_field': {
-      const cmp = rule.op === '===' ? '!==' : '===';
-      return `contact.contact.${rule.field} ${cmp} '${rule.value}'`;
+      const cmp = invertOp(rule.op);
+      return `contact.contact.${rule.field} ${cmp} ${fmtCmpValue(cmp, rule.value)}`;
     }
     case 'report_field': {
-      const cmp = rule.op === '===' ? '!==' : '===';
-      return `getField(report, '${rule.field}') ${cmp} '${rule.value}'`;
+      const cmp = invertOp(rule.op);
+      return `getField(report, '${rule.field}') ${cmp} ${fmtCmpValue(cmp, rule.value)}`;
     }
     case 'raw':
       return rule.text || null;

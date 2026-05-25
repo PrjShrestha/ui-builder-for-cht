@@ -293,15 +293,15 @@ code {
 .survey-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 18px;
 }
 .survey-row {
   display: flex;
   gap: 8px;
   background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px;
+  border: 3px solid #9ca3af;
+  border-radius: 8px;
+  padding: 14px;
   align-items: flex-start;
 }
 .survey-row.structural {
@@ -492,6 +492,26 @@ code {
 .raw-extras summary { cursor: pointer; font-size: 12px; color: var(--text-muted); padding: 4px 0; }
 .raw-extras > .expr-field { margin-top: 4px; }
 
+.ref-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  margin-top: 4px;
+}
+.ref-chips-hint { font-size: 11px; }
+.ref-chip {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 10px;
+  background: var(--chip-bg, #f3f4f6);
+  color: var(--text, #111);
+  cursor: pointer;
+}
+.ref-chip:hover { background: var(--chip-hover, #e5e7eb); }
+
 /* ---- Rule builder modal ---- */
 .rule-builder-modal {
   position: fixed;
@@ -530,6 +550,30 @@ code {
   border-radius: 4px;
 }
 .rule-row select, .rule-row input { font-size: 13px; }
+.rule-row input.invalid { border-color: #dc2626; background: #fef2f2; }
+.rule-row-block { display: flex; flex-direction: column; gap: 4px; }
+.rule-row-warning {
+  font-size: 12px;
+  padding: 6px 8px;
+  margin-left: 12px;
+  border-left: 3px solid #dc2626;
+  background: #fef2f2;
+  color: #7f1d1d;
+}
+.rule-row-warning.muted {
+  border-left-color: #9ca3af;
+  background: rgba(0, 0, 0, 0.03);
+  color: var(--text-muted, #6b7280);
+}
+.rule-builder-errors {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 2px solid #dc2626;
+  border-radius: 6px;
+  background: #fef2f2;
+  color: #7f1d1d;
+}
+.rule-builder-errors ul { margin: 6px 0 0 18px; padding: 0; }
 .raw-rule-input { flex: 1; font-family: ui-monospace, monospace; }
 .preview {
   background: rgba(0, 0, 0, 0.04);
@@ -547,14 +591,14 @@ code {
 .task-cards, .cs-flags {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 18px;
   margin-top: 12px;
 }
 .task-card {
   background: var(--bg-card);
-  border: 1px solid var(--border);
+  border: 3px solid #9ca3af;
   border-radius: 8px;
-  padding: 12px;
+  padding: 14px;
   box-shadow: var(--shadow);
 }
 .task-card header { margin-bottom: 8px; }
@@ -638,10 +682,10 @@ code {
 .decisions-view h2 { margin-bottom: 8px; font-size: 16px; }
 .decision-card {
   background: var(--bg-card);
-  border: 1px solid var(--border);
+  border: 3px solid #9ca3af;
   border-radius: 8px;
-  padding: 12px 16px;
-  margin: 8px 0;
+  padding: 14px 16px;
+  margin: 18px 0;
   box-shadow: var(--shadow);
 }
 .decision-card header { margin-bottom: 8px; }
@@ -694,9 +738,10 @@ code {
 }
 .event-card {
   background: rgba(0,0,0,0.02);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px;
+  border: 3px solid #9ca3af;
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;

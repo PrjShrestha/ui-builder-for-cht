@@ -12,7 +12,7 @@
  *  - relevant / calculation / constraint expressions (read-only, displayed but not edited)
  *  - properties.json (saved verbatim if loaded; UI editor lands in P1B)
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DndContext,
   KeyboardSensor,
@@ -556,11 +556,36 @@ function ExpressionField(props: {
 }) {
   const [showBuilder, setShowBuilder] = useState(false);
   const [showCalcBuilder, setShowCalcBuilder] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   const supportsRelevant =
     props.fieldOptions !== undefined &&
     ['relevant', 'constraint', 'choice_filter'].includes(props.label);
   const supportsCalculation = props.fieldOptions !== undefined && props.label === 'calculation';
   const supportsBuilder = supportsRelevant || supportsCalculation;
+  const supportsChips =
+    props.fieldOptions !== undefined &&
+    props.fieldOptions.length > 0 &&
+    ['relevant', 'calculation', 'constraint', 'choice_filter', 'default', 'repeat_count'].includes(
+      props.label,
+    );
+
+  function insertRef(name: string) {
+    const el = inputRef.current;
+    const token = `\${${name}}`;
+    if (!el) {
+      props.onChange(props.value + token);
+      return;
+    }
+    const start = el.selectionStart ?? props.value.length;
+    const end = el.selectionEnd ?? start;
+    const next = props.value.slice(0, start) + token + props.value.slice(end);
+    props.onChange(next);
+    requestAnimationFrame(() => {
+      el.focus();
+      const pos = start + token.length;
+      el.setSelectionRange(pos, pos);
+    });
+  }
   return (
     <label className="expr-field">
       <span className="expr-label">
@@ -579,7 +604,33 @@ function ExpressionField(props: {
           </button>
         )}
       </span>
-      <input value={props.value} onChange={(e) => props.onChange(e.target.value)} />
+      {supportsChips && props.fieldOptions && (
+        <div className="ref-chips">
+          <span className="muted ref-chips-hint">insert:</span>
+          {props.fieldOptions.map((name) => (
+            <button
+              key={name}
+              type="button"
+              className="ref-chip"
+              onClick={(e) => {
+                e.preventDefault();
+                insertRef(name);
+              }}
+              title={`Insert \${${name}} at cursor`}
+            >
+              ${'{'}
+              {name}
+              {'}'}
+            </button>
+          ))}
+        </div>
+      )}
+      <input
+        ref={inputRef}
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+      />
+
       {showBuilder && props.fieldOptions && (
         <RelevantRuleBuilder
           column={props.label}
@@ -613,6 +664,21 @@ function ExpressionField(props: {
 function ChoicesTab(props: { form: XLSForm; patch: (n: XLSForm) => void }) {
   const { form, patch } = props;
   const grouped = useMemo(() => groupChoices(form.choices), [form.choices]);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  function onChoiceDragEnd(e: DragEndEvent) {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const oldIndex = form.choices.findIndex((c) => c.rowId === active.id);
+    const newIndex = form.choices.findIndex((c) => c.rowId === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    // Only allow reordering within the same list_name to keep grouping stable.
+    if (form.choices[oldIndex]?.list_name !== form.choices[newIndex]?.list_name) return;
+    patch({ ...form, choices: arrayMove(form.choices, oldIndex, newIndex) });
+  }
 
   function addChoice(list_name: string) {
     const newRow: ChoiceRow = {
@@ -656,58 +722,99 @@ function ChoicesTab(props: { form: XLSForm; patch: (n: XLSForm) => void }) {
         <button onClick={addList}>+ Choice list</button>
         <span className="muted">Choices are grouped by list_name.</span>
       </div>
-      {grouped.map((g) => (
-        <section key={g.list_name} className="choice-list">
-          <header className="row gap">
-            <h3>{g.list_name}</h3>
-            <button className="link" onClick={() => addChoice(g.list_name)}>
-              + choice
-            </button>
-          </header>
-          <table className="choice-table">
-            <thead>
-              <tr>
-                <th>name</th>
-                {form.choicesHeaders.labelLocales.map((loc) => (
-                  <th key={loc}>label::{loc}</th>
-                ))}
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {g.rows.map((c) => (
-                <tr key={c.rowId}>
-                  <td>
-                    <input
-                      value={c.name}
-                      onChange={(e) => updateChoice(c.rowId, (r) => ({ ...r, name: e.target.value }))}
-                    />
-                  </td>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onChoiceDragEnd}>
+        {grouped.map((g) => (
+          <section key={g.list_name} className="choice-list">
+            <header className="row gap">
+              <h3>{g.list_name}</h3>
+              <button className="link" onClick={() => addChoice(g.list_name)}>
+                + choice
+              </button>
+              <span className="muted">Drag rows to reorder within this list.</span>
+            </header>
+            <table className="choice-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>name</th>
                   {form.choicesHeaders.labelLocales.map((loc) => (
-                    <td key={loc}>
-                      <input
-                        value={c.labels[loc] ?? ''}
-                        onChange={(e) =>
-                          updateChoice(c.rowId, (r) => ({
-                            ...r,
-                            labels: { ...r.labels, [loc]: e.target.value },
-                          }))
-                        }
-                      />
-                    </td>
+                    <th key={loc}>label::{loc}</th>
                   ))}
-                  <td className="row gap">
-                    <button className="link" onClick={() => moveChoice(c.rowId, -1)}>↑</button>
-                    <button className="link" onClick={() => moveChoice(c.rowId, 1)}>↓</button>
-                    <button className="link danger" onClick={() => removeChoice(c.rowId)}>×</button>
-                  </td>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ))}
+              </thead>
+              <SortableContext
+                items={g.rows.map((c) => c.rowId)}
+                strategy={verticalListSortingStrategy}
+              >
+                <tbody>
+                  {g.rows.map((c) => (
+                    <SortableChoiceRow
+                      key={c.rowId}
+                      row={c}
+                      locales={form.choicesHeaders.labelLocales}
+                      update={(u) => updateChoice(c.rowId, u)}
+                      remove={() => removeChoice(c.rowId)}
+                      moveUp={() => moveChoice(c.rowId, -1)}
+                      moveDown={() => moveChoice(c.rowId, 1)}
+                    />
+                  ))}
+                </tbody>
+              </SortableContext>
+            </table>
+          </section>
+        ))}
+      </DndContext>
     </div>
+  );
+}
+
+function SortableChoiceRow(props: {
+  row: ChoiceRow;
+  locales: string[];
+  update: (u: (r: ChoiceRow) => ChoiceRow) => void;
+  remove: () => void;
+  moveUp: () => void;
+  moveDown: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: props.row.rowId,
+  });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+  };
+  const { row } = props;
+  return (
+    <tr ref={setNodeRef} style={style}>
+      <td>
+        <button className="drag-handle" {...attributes} {...listeners} aria-label="drag">
+          ⋮⋮
+        </button>
+      </td>
+      <td>
+        <input
+          value={row.name}
+          onChange={(e) => props.update((r) => ({ ...r, name: e.target.value }))}
+        />
+      </td>
+      {props.locales.map((loc) => (
+        <td key={loc}>
+          <input
+            value={row.labels[loc] ?? ''}
+            onChange={(e) =>
+              props.update((r) => ({ ...r, labels: { ...r.labels, [loc]: e.target.value } }))
+            }
+          />
+        </td>
+      ))}
+      <td className="row gap">
+        <button className="link" onClick={props.moveUp}>↑</button>
+        <button className="link" onClick={props.moveDown}>↓</button>
+        <button className="link danger" onClick={props.remove}>×</button>
+      </td>
+    </tr>
   );
 }
 

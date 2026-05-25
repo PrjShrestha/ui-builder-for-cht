@@ -387,7 +387,7 @@ function contextRuleHumanReadable(r: ContextRule): string {
     case 'contact_sex':
       return `Sex is "${r.value}"`;
     case 'contact_field':
-      return `contact.${r.field} ${r.op === '===' ? '=' : '≠'} "${r.value}"`;
+      return `contact.${r.field} ${opSym(r.op)} ${isEqOp(r.op) ? `"${r.value}"` : r.value}`;
     case 'age_years':
       return `Age in years ${r.op} ${r.value}`;
     case 'summary_flag':
@@ -398,6 +398,19 @@ function contextRuleHumanReadable(r: ContextRule): string {
       return 'Not deceased';
     case 'raw':
       return r.text;
+  }
+}
+
+function isEqOp(op: string): boolean {
+  return op === '===' || op === '!==';
+}
+function opSym(op: string): string {
+  switch (op) {
+    case '===': return '=';
+    case '!==': return '≠';
+    case '>=': return '≥';
+    case '<=': return '≤';
+    default: return op;
   }
 }
 
@@ -414,9 +427,9 @@ function appliesIfRuleHumanReadable(r: AppliesIfRule): string {
     case 'helper':
       return `${r.negated ? 'NOT ' : ''}${r.name}(…)`;
     case 'contact_field':
-      return `contact.contact.${r.field} ${r.op === '===' ? '=' : '≠'} "${r.value}"`;
+      return `contact.contact.${r.field} ${opSym(r.op)} ${isEqOp(r.op) ? `"${r.value}"` : r.value}`;
     case 'report_field':
-      return `Report field "${r.field}" ${r.op === '===' ? '=' : '≠'} "${r.value}"`;
+      return `Report field "${r.field}" ${opSym(r.op)} ${isEqOp(r.op) ? `"${r.value}"` : r.value}`;
     case 'raw':
       return r.text;
   }

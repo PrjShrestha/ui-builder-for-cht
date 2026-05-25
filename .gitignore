@@ -8,3 +8,5 @@ build/
 .env.local
 coverage/
 .vite/
+test-results/
+playwright-report/

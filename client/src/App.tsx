@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useApp } from './state/store.js';
+import { isAnyDirty, useApp } from './state/store.js';
 import { api } from './api.js';
 import { Sidebar } from './ui/Sidebar.js';
 import { ProjectPicker } from './ui/ProjectPicker.js';
@@ -18,6 +18,20 @@ export function App() {
   const view = useApp((s) => s.view);
   const setProject = useApp((s) => s.setProject);
   const setError = useApp((s) => s.setError);
+  const dirty = useApp((s) => s.dirty);
+
+  // Browser-level prompt when navigating away with unsaved edits. No content
+  // is autosaved — losing the tab would otherwise silently throw away work.
+  useEffect(() => {
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      if (!isAnyDirty(dirty)) return;
+      e.preventDefault();
+      // Most modern browsers ignore custom strings but still show a prompt.
+      e.returnValue = '';
+    }
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [dirty]);
 
   // On mount, see if the server already has a project open.
   useEffect(() => {

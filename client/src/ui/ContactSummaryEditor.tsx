@@ -21,7 +21,7 @@ import {
 } from '@cht-ui/shared';
 import { api } from '../api.js';
 import { useApp } from '../state/store.js';
-import { AppliesIfBuilder } from './AppliesIfBuilder.js';
+import { AppliesIfBuilder, type ContactFormFields } from './AppliesIfBuilder.js';
 
 type CSFile = 'contact-summary.templated.js' | 'contact-summary.extras.js';
 
@@ -44,6 +44,72 @@ export function ContactSummaryEditor() {
   const [view, setView] = useState<'structured' | 'helpers' | 'raw'>('structured');
   const [activeRaw, setActiveRaw] = useState<CSFile>('contact-summary.templated.js');
   const [editingHelper, setEditingHelper] = useState<string | null>(null);
+  const [contactForms, setContactForms] = useState<ContactFormFields[]>([]);
+  const formsList = useApp((s) => s.forms);
+
+  // Load every contact-category form once, harvest field names that a
+  // health-team user could meaningfully compare against, and expose them
+  // to the rule builder so they can pick instead of typing. Plumbing rows
+  // (calculate/hidden/note/meta/media) are filtered out — they're never
+  // useful as a contact_field condition and confuse non-developers.
+  useEffect(() => {
+    const entries = formsList.filter((f) => f.category === 'contact');
+    if (entries.length === 0) return;
+    let alive = true;
+    const INPUT_TYPES = new Set([
+      'text',
+      'string',
+      'integer',
+      'decimal',
+      'date',
+      'time',
+      'datetime',
+      'select_one',
+      'select_multiple',
+    ]);
+    const META_FIELDS = new Set([
+      'source',
+      'source_id',
+      'parent',
+      'meta',
+      'start',
+      'end',
+      'today',
+      'deviceid',
+      'instanceid',
+      'phone',
+      'simserial',
+      'subscriberid',
+    ]);
+    Promise.all(
+      entries.map((f) =>
+        api.getForm(f.id).then((res) => ({
+          label: f.id.replace(/^contact:/, ''),
+          fields: res.form.survey
+            .filter((r) => {
+              if (!r.name) return false;
+              const lc = r.name.toLowerCase();
+              if (lc.startsWith('_')) return false;
+              if (META_FIELDS.has(lc)) return false;
+              // Accept space- or underscore-form ("select one" vs "select_one").
+              const t = r.type.trim().toLowerCase().replace(/\s+/g, '_');
+              if (!INPUT_TYPES.has(t)) return false;
+              return true;
+            })
+            .map((r) => r.name),
+        })),
+      ),
+    )
+      .then((out) => {
+        if (alive) setContactForms(out.filter((f) => f.fields.length > 0));
+      })
+      .catch(() => {
+        /* non-fatal — picker just won't appear */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [formsList]);
 
   useEffect(() => {
     let alive = true;
@@ -186,6 +252,7 @@ export function ContactSummaryEditor() {
         <HelpersTab
           source={state.raw['contact-summary.extras.js'] ?? ''}
           editingName={editingHelper}
+          contactForms={contactForms}
           onEditStart={(name) => setEditingHelper(name)}
           onEditEnd={() => setEditingHelper(null)}
           onSaveHelper={(name, newName, newParams, newBody) => {
@@ -257,6 +324,7 @@ export function ContactSummaryEditor() {
 }
 
 function HelpersTab(props: {
+  contactForms: ContactFormFields[];
   source: string;
   editingName: string | null;
   onEditStart: (name: string) => void;
@@ -318,6 +386,7 @@ function HelpersTab(props: {
         <AppliesIfBuilder
           title={`Edit ${editing.name}(${editing.params.join(', ')})`}
           value={`function (${editing.params.join(', ')}) {${editing.body}}`}
+          contactForms={props.contactForms}
           onCancel={props.onEditEnd}
           onSave={(updated) => {
             // The builder serialises as `function (params) { body }` — extract body.

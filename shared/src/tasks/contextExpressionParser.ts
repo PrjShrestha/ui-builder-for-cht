@@ -17,7 +17,7 @@
 export type ContextRule =
   | { kind: 'contact_type'; value: string }
   | { kind: 'contact_sex'; value: string }
-  | { kind: 'contact_field'; field: string; op: '===' | '!=='; value: string }
+  | { kind: 'contact_field'; field: string; op: '===' | '!==' | '>' | '<' | '>=' | '<='; value: string }
   | { kind: 'age_years'; op: '>' | '<' | '>=' | '<=' | '===' | '!=='; value: number }
   | { kind: 'summary_flag'; flag: string; negated: boolean }
   | { kind: 'not_muted' }
@@ -91,7 +91,7 @@ function classify(expr: string): ContextRule {
     }
   }
 
-  // contact.X === 'Y' (generic)
+  // contact.X === 'Y' (generic, string value)
   const cfield = /^contact\.([a-zA-Z_$][\w$]*)\s*(===|!==|==|!=)\s*'([^']*)'$/.exec(e);
   if (cfield && cfield[1] && cfield[2] && cfield[3] !== undefined) {
     return {
@@ -99,6 +99,18 @@ function classify(expr: string): ContextRule {
       field: cfield[1],
       op: normalizeOp(cfield[2]) as '===' | '!==',
       value: cfield[3],
+    };
+  }
+
+  // contact.X OP NUMBER (numeric comparison)
+  const cfieldNum =
+    /^contact\.([a-zA-Z_$][\w$]*)\s*(>=|<=|===|!==|==|!=|>|<)\s*(-?\d+(?:\.\d+)?)$/.exec(e);
+  if (cfieldNum && cfieldNum[1] && cfieldNum[2] && cfieldNum[3]) {
+    return {
+      kind: 'contact_field',
+      field: cfieldNum[1],
+      op: normalizeOp(cfieldNum[2]),
+      value: cfieldNum[3],
     };
   }
 
@@ -125,7 +137,10 @@ function ruleToSource(rule: ContextRule): string {
     case 'contact_sex':
       return `contact.sex === '${rule.value}'`;
     case 'contact_field':
-      return `contact.${rule.field} ${rule.op} '${rule.value}'`;
+      if (rule.op === '===' || rule.op === '!==') {
+        return `contact.${rule.field} ${rule.op} '${rule.value}'`;
+      }
+      return `contact.${rule.field} ${rule.op} ${rule.value}`;
     case 'age_years':
       return `ageInYears(contact) ${rule.op} ${rule.value}`;
     case 'summary_flag':

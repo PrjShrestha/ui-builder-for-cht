@@ -261,10 +261,19 @@ function ContextRuleRow(props: {
           />
           <select
             value={r.op}
-            onChange={(e) => props.onChange({ ...r, op: e.target.value as '===' | '!==' })}
+            onChange={(e) =>
+              props.onChange({
+                ...r,
+                op: e.target.value as '===' | '!==' | '>' | '<' | '>=' | '<=',
+              })
+            }
           >
             <option value="===">=</option>
             <option value="!==">≠</option>
+            <option value=">">&gt;</option>
+            <option value="<">&lt;</option>
+            <option value=">=">≥</option>
+            <option value="<=">≤</option>
           </select>
           <input
             value={r.value}
