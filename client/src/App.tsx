@@ -1,0 +1,65 @@
+import { useEffect } from 'react';
+import { useApp } from './state/store.js';
+import { api } from './api.js';
+import { Sidebar } from './ui/Sidebar.js';
+import { ProjectPicker } from './ui/ProjectPicker.js';
+import { ProjectOverview } from './ui/ProjectOverview.js';
+import { FormsIndex } from './ui/FormsIndex.js';
+import { FormEditor } from './ui/FormEditor.js';
+import { HierarchyEditor } from './ui/HierarchyEditor.js';
+import { TasksEditor } from './ui/TasksEditor.js';
+import { ContactSummaryEditor } from './ui/ContactSummaryEditor.js';
+import { FlowchartView } from './ui/FlowchartView.js';
+import { DecisionsView } from './ui/DecisionsView.js';
+import { ErrorBanner } from './ui/ErrorBanner.js';
+
+export function App() {
+  const project = useApp((s) => s.project);
+  const view = useApp((s) => s.view);
+  const setProject = useApp((s) => s.setProject);
+  const setError = useApp((s) => s.setError);
+
+  // On mount, see if the server already has a project open.
+  useEffect(() => {
+    let alive = true;
+    api
+      .getProject()
+      .then((res) => {
+        if (!alive) return;
+        if (res.open && res.project) setProject(res.project);
+      })
+      .catch((e: Error) => {
+        if (!alive) return;
+        setError(e.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [setProject, setError]);
+
+  if (!project) {
+    return (
+      <div className="app">
+        <ErrorBanner />
+        <ProjectPicker />
+      </div>
+    );
+  }
+
+  return (
+    <div className="app">
+      <ErrorBanner />
+      <Sidebar />
+      <main className="main">
+        {view.kind === 'project-overview' && <ProjectOverview />}
+        {view.kind === 'forms-index' && <FormsIndex />}
+        {view.kind === 'form' && <FormEditor formId={view.id} />}
+        {view.kind === 'hierarchy' && <HierarchyEditor />}
+        {view.kind === 'tasks' && <TasksEditor />}
+        {view.kind === 'contact-summary' && <ContactSummaryEditor />}
+        {view.kind === 'flowchart' && <FlowchartView formId={view.id} />}
+        {view.kind === 'decisions' && <DecisionsView />}
+      </main>
+    </div>
+  );
+}

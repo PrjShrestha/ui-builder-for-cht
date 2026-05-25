@@ -1,0 +1,65 @@
+import { useState } from 'react';
+import { api } from '../api.js';
+import { useApp } from '../state/store.js';
+
+export function ProjectPicker() {
+  const setProject = useApp((s) => s.setProject);
+  const setError = useApp((s) => s.setError);
+  const [pathInput, setPathInput] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function open() {
+    if (!pathInput.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.openProject(pathInput.trim());
+      setProject(res.project);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="project-picker">
+      <div className="card">
+        <h1>CHT UI Builder</h1>
+        <p className="subtitle">No-code editor for cht-conf project folders.</p>
+        <p>Open a project folder to begin. Examples:</p>
+        <ul>
+          <li>
+            <code>W:\ui-builder-for-cht\config-gandaki\cht-config</code>
+          </li>
+          <li>
+            <code>W:\ui-builder-for-cht\config-nssd\chis</code>
+          </li>
+          <li>
+            <code>W:\ui-builder-for-cht\config-nssd\waling</code>
+          </li>
+        </ul>
+        <label htmlFor="project-path">Project folder (absolute path)</label>
+        <div className="row">
+          <input
+            id="project-path"
+            type="text"
+            value={pathInput}
+            onChange={(e) => setPathInput(e.target.value)}
+            placeholder="W:\path\to\cht-config"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void open();
+            }}
+          />
+          <button onClick={open} disabled={busy || !pathInput.trim()}>
+            {busy ? 'Opening…' : 'Open'}
+          </button>
+        </div>
+        <p className="hint">
+          The path must already exist on disk. On Windows, use backslashes. Forward slashes work
+          too.
+        </p>
+      </div>
+    </div>
+  );
+}

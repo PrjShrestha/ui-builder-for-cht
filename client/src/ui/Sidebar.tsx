@@ -1,0 +1,90 @@
+import { api } from '../api.js';
+import { isAnyDirty, useApp } from '../state/store.js';
+
+export function Sidebar() {
+  const project = useApp((s) => s.project);
+  const view = useApp((s) => s.view);
+  const setView = useApp((s) => s.setView);
+  const setProject = useApp((s) => s.setProject);
+  const dirty = useApp((s) => s.dirty);
+  const hasUnsaved = isAnyDirty(dirty);
+
+  if (!project) return null;
+
+  function nav(target: typeof view): void {
+    if (hasUnsaved) {
+      const ok = window.confirm('You have unsaved changes. Discard them?');
+      if (!ok) return;
+    }
+    setView(target);
+  }
+
+  async function close() {
+    if (hasUnsaved) {
+      const ok = window.confirm('Close project and discard unsaved changes?');
+      if (!ok) return;
+    }
+    await api.closeProject();
+    setProject(null);
+  }
+
+  return (
+    <aside className="sidebar">
+      <div className="sidebar-header">
+        <div className="project-name" title={project.path}>
+          {project.name}
+        </div>
+        <button className="link" onClick={() => void close()}>
+          close
+        </button>
+      </div>
+      <nav>
+        <NavItem
+          label="Overview"
+          active={view.kind === 'project-overview'}
+          onClick={() => nav({ kind: 'project-overview' })}
+        />
+        <NavItem
+          label="Hierarchy"
+          active={view.kind === 'hierarchy'}
+          onClick={() => nav({ kind: 'hierarchy' })}
+          disabled={!project.hasAppSettings}
+        />
+        <NavItem
+          label="Forms"
+          active={view.kind === 'forms-index' || view.kind === 'form' || view.kind === 'flowchart'}
+          onClick={() => nav({ kind: 'forms-index' })}
+        />
+        <NavItem
+          label="Tasks"
+          active={view.kind === 'tasks'}
+          onClick={() => nav({ kind: 'tasks' })}
+          disabled={!project.hasTasks}
+        />
+        <NavItem
+          label="Contact summary"
+          active={view.kind === 'contact-summary'}
+          onClick={() => nav({ kind: 'contact-summary' })}
+          disabled={!project.hasContactSummary}
+        />
+        <NavItem
+          label="Decisions (sign-off)"
+          active={view.kind === 'decisions'}
+          onClick={() => nav({ kind: 'decisions' })}
+        />
+      </nav>
+      {hasUnsaved && <div className="dirty-flag">Unsaved changes</div>}
+    </aside>
+  );
+}
+
+function NavItem(props: { label: string; active: boolean; onClick: () => void; disabled?: boolean }) {
+  const cls = ['nav-item', props.active ? 'active' : '', props.disabled ? 'disabled' : '']
+    .filter(Boolean)
+    .join(' ');
+  return (
+    <button className={cls} onClick={props.onClick} disabled={props.disabled}>
+      {props.label}
+    </button>
+  );
+}

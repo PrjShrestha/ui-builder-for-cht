@@ -1,0 +1,502 @@
+/**
+ * Tasks editor (P1C).
+ *
+ * Strategy: parse the exported array literal in tasks.js with the shared
+ * parseTaskFile(). Show each task as an editable card. On save, we
+ * regenerate the array body and replace it inside the original source
+ * via byte-range edits — imports and helpers outside the array stay
+ * untouched.
+ *
+ * Function-valued fields (appliesIf, resolvedIf, dueDate, modifyContent)
+ * are edited in a code textarea per task. The visual JS rule builder is
+ * a stretch in MVP; for now a code editor is correct enough.
+ */
+import { useEffect, useMemo, useState } from 'react';
+import { parseTaskFile, type FieldValue, type ParsedTaskFile, type TaskEntry } from '@cht-ui/shared';
+import { api } from '../api.js';
+import { useApp } from '../state/store.js';
+import { AppliesIfBuilder } from './AppliesIfBuilder.js';
+import { EventsEditor } from './EventsEditor.js';
+import { ResolvedWhenPicker } from './ResolvedWhenPicker.js';
+import { ActionsEditor } from './ActionsEditor.js';
+
+type FileKey = 'tasks.js' | 'task-schedules.js' | 'tasks-extras.js';
+const SECONDARY_FILES: FileKey[] = ['task-schedules.js', 'tasks-extras.js'];
+
+interface TasksState {
+  raw: Record<FileKey, string | null>;
+  parsed: ParsedTaskFile | null;
+}
+
+export function TasksEditor() {
+  const setError = useApp((s) => s.setError);
+  const setDirty = useApp((s) => s.setDirty);
+  const setSaving = useApp((s) => s.setSaving);
+  const dirty = useApp((s) => s.dirty['tasks'] ?? false);
+  const saving = useApp((s) => s.saving['tasks'] ?? false);
+
+  const [state, setState] = useState<TasksState | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState<'structured' | 'raw'>('structured');
+  const [activeRawFile, setActiveRawFile] = useState<FileKey>('tasks.js');
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    api
+      .getTaskFiles()
+      .then((res) => {
+        if (!alive) return;
+        const tasksSrc = res['tasks.js'] ?? '';
+        const parsed = tasksSrc ? parseTaskFile(tasksSrc) : null;
+        setState({ raw: res, parsed });
+        setLoading(false);
+      })
+      .catch((e: Error) => {
+        if (!alive) return;
+        setError(e.message);
+        setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [setError]);
+
+  function patchEntry(idx: number, next: TaskEntry) {
+    if (!state?.parsed) return;
+    const entries = state.parsed.entries.map((e, i) => (i === idx ? next : e));
+    setState({
+      ...state,
+      parsed: { ...state.parsed, entries },
+    });
+    setDirty('tasks', true);
+  }
+  function removeEntry(idx: number) {
+    if (!state?.parsed) return;
+    setState({
+      ...state,
+      parsed: { ...state.parsed, entries: state.parsed.entries.filter((_, i) => i !== idx) },
+    });
+    setDirty('tasks', true);
+  }
+  function addEntry() {
+    if (!state?.parsed) return;
+    const newEntry: TaskEntry = {
+      bounds: { start: 0, end: 0 },
+      source: '{}',
+      fields: {
+        name: { kind: 'string', value: 'new_task' },
+        title: { kind: 'string', value: 'task.new_task.title' },
+        icon: { kind: 'string', value: 'icon-task' },
+        appliesTo: { kind: 'string', value: 'reports' },
+        appliesToType: { kind: 'array', raw: '[]' },
+        appliesIf: { kind: 'function', raw: 'function (contact, report) {\n  return true;\n}' },
+        events: { kind: 'array', raw: '[{ id: "new_task", days: 0, start: 0, end: 0 }]' },
+        actions: { kind: 'array', raw: '[{ form: "new_form" }]' },
+      },
+    };
+    setState({
+      ...state,
+      parsed: { ...state.parsed, entries: [...state.parsed.entries, newEntry] },
+    });
+    setDirty('tasks', true);
+  }
+  function patchRaw(file: FileKey, content: string) {
+    if (!state) return;
+    const nextRaw = { ...state.raw, [file]: content };
+    let parsed = state.parsed;
+    if (file === 'tasks.js') parsed = parseTaskFile(content);
+    setState({ raw: nextRaw, parsed });
+    setDirty('tasks', true);
+  }
+
+  async function save() {
+    if (!state) return;
+    setSaving('tasks', true);
+    try {
+      // Rebuild tasks.js if we have a parsed view; else write the raw text.
+      let nextTasks = state.raw['tasks.js'] ?? '';
+      if (state.parsed && state.parsed.arrayBounds && view === 'structured') {
+        nextTasks = rebuildTasksFile(state.parsed);
+      }
+      await api.saveTaskFile('tasks.js', nextTasks);
+      for (const f of SECONDARY_FILES) {
+        const c = state.raw[f];
+        if (c !== null) await api.saveTaskFile(f, c);
+      }
+      setDirty('tasks', false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving('tasks', false);
+    }
+  }
+
+  if (loading) return <div className="loading">Loading tasks…</div>;
+  if (!state) return <div className="loading">No tasks data.</div>;
+
+  return (
+    <div className="tasks-editor">
+      <header className="page-header">
+        <h1>Tasks</h1>
+        <div className="row gap">
+          <button onClick={() => void save()} disabled={!dirty || saving}>
+            {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+          </button>
+        </div>
+      </header>
+
+      <div className="tabs">
+        <button className={view === 'structured' ? 'active' : ''} onClick={() => setView('structured')}>
+          Structured ({state.parsed?.entries.length ?? 0})
+        </button>
+        <button className={view === 'raw' ? 'active' : ''} onClick={() => setView('raw')}>
+          Raw files
+        </button>
+      </div>
+
+      {view === 'structured' && (
+        <>
+          {!state.parsed?.arrayBounds && (
+            <p className="muted">
+              Couldn&apos;t locate <code>module.exports = [ ... ]</code> in tasks.js. Edit raw text in
+              the &quot;Raw files&quot; tab.
+            </p>
+          )}
+          {state.parsed?.arrayBounds && (
+            <div className="task-cards">
+              {state.parsed.entries.map((entry, idx) => (
+                <TaskCard
+                  key={idx}
+                  entry={entry}
+                  onChange={(e) => patchEntry(idx, e)}
+                  onRemove={() => removeEntry(idx)}
+                />
+              ))}
+              <button onClick={addEntry}>+ Add task</button>
+            </div>
+          )}
+        </>
+      )}
+
+      {view === 'raw' && (
+        <>
+          <div className="tabs">
+            {(['tasks.js', ...SECONDARY_FILES] as FileKey[]).map((f) => (
+              <button
+                key={f}
+                className={activeRawFile === f ? 'active' : ''}
+                onClick={() => setActiveRawFile(f)}
+              >
+                {f}
+                {state.raw[f] === null && <em className="muted"> (missing)</em>}
+              </button>
+            ))}
+          </div>
+          <textarea
+            className="code-editor"
+            value={state.raw[activeRawFile] ?? ''}
+            onChange={(e) => patchRaw(activeRawFile, e.target.value)}
+            spellCheck={false}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+/* --------------------------- Task card UI --------------------------- */
+
+function TaskCard(props: {
+  entry: TaskEntry;
+  onChange: (e: TaskEntry) => void;
+  onRemove: () => void;
+}) {
+  const { entry } = props;
+  const [expanded, setExpanded] = useState(true);
+
+  function setField(name: string, value: FieldValue) {
+    props.onChange({ ...entry, fields: { ...entry.fields, [name]: value } });
+  }
+  function getString(name: string): string {
+    const v = entry.fields[name];
+    if (!v) return '';
+    if (v.kind === 'string') return v.value;
+    if (v.kind === 'identifier') return v.value;
+    if (v.kind === 'unknown') return v.raw;
+    return '';
+  }
+  function getRaw(name: string): string {
+    const v = entry.fields[name];
+    if (!v) return '';
+    if (v.kind === 'array' || v.kind === 'object' || v.kind === 'function' || v.kind === 'unknown')
+      return v.raw;
+    if (v.kind === 'string') return JSON.stringify(v.value);
+    if (v.kind === 'number') return String(v.value);
+    if (v.kind === 'boolean') return String(v.value);
+    if (v.kind === 'identifier') return v.value;
+    return '';
+  }
+
+  return (
+    <div className="task-card">
+      <header className="row gap">
+        <button className="link" onClick={() => setExpanded(!expanded)}>
+          {expanded ? '▾' : '▸'}
+        </button>
+        <strong>{getString('name') || '(unnamed task)'}</strong>
+        <span className="muted">— {getString('title')}</span>
+        <button className="link danger" onClick={props.onRemove}>
+          delete
+        </button>
+      </header>
+      {expanded && (
+        <div className="task-fields">
+          <ScalarField label="name" value={getString('name')} onChange={(v) => setField('name', { kind: 'string', value: v })} />
+          <ScalarField label="title" value={getString('title')} onChange={(v) => setField('title', { kind: 'string', value: v })} />
+          <ScalarField label="icon" value={getString('icon')} onChange={(v) => setField('icon', { kind: 'string', value: v })} />
+          <ScalarField
+            label="appliesTo"
+            value={getString('appliesTo')}
+            onChange={(v) => setField('appliesTo', { kind: 'string', value: v })}
+            placeholder="contacts or reports"
+          />
+          <RawField
+            label="appliesToType"
+            value={getRaw('appliesToType')}
+            onChange={(v) => setField('appliesToType', { kind: 'array', raw: v })}
+            hint="e.g. ['person'] or FORMS.PREGNANCY_REGISTRATION"
+          />
+          <AppliesIfWithBuilder
+            value={getRaw('appliesIf')}
+            onChange={(v) => setField('appliesIf', { kind: 'function', raw: v })}
+          />
+          <ResolvedIfWithPicker
+            value={getRaw('resolvedIf')}
+            onChange={(v) => {
+              // If the user picked an identifier, store as identifier; else as function.
+              const looksLikeIdentifier = /^[a-zA-Z_$][\w$]*$/.test(v.trim());
+              setField(
+                'resolvedIf',
+                looksLikeIdentifier
+                  ? { kind: 'identifier', value: v.trim() }
+                  : { kind: 'function', raw: v },
+              );
+            }}
+          />
+          <EventsWithEditor
+            value={getRaw('events')}
+            onChange={(v) => {
+              // If the raw text starts with [, it's an array literal; else a generator expression.
+              const isArrayShape = v.trim().startsWith('[');
+              setField(
+                'events',
+                isArrayShape ? { kind: 'array', raw: v } : { kind: 'unknown', raw: v },
+              );
+            }}
+          />
+          <ActionsWithEditor
+            value={getRaw('actions')}
+            onChange={(v) => {
+              const isArrayShape = v.trim().startsWith('[');
+              setField(
+                'actions',
+                isArrayShape ? { kind: 'array', raw: v } : { kind: 'unknown', raw: v },
+              );
+            }}
+          />
+          <details>
+            <summary>Other recognized fields</summary>
+            {Object.entries(entry.fields)
+              .filter(
+                ([k]) =>
+                  ![
+                    'name',
+                    'title',
+                    'icon',
+                    'appliesTo',
+                    'appliesToType',
+                    'appliesIf',
+                    'resolvedIf',
+                    'events',
+                    'actions',
+                  ].includes(k),
+              )
+              .map(([k, v]) => (
+                <RawField
+                  key={k}
+                  label={k}
+                  value={getRaw(k)}
+                  onChange={(val) =>
+                    setField(k, v.kind === 'string'
+                      ? { kind: 'string', value: val }
+                      : v.kind === 'function'
+                        ? { kind: 'function', raw: val }
+                        : { kind: 'unknown', raw: val })
+                  }
+                />
+              ))}
+          </details>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* --------------------- Inline wrapped builders --------------------- */
+
+function AppliesIfWithBuilder(props: { value: string; onChange: (v: string) => void }) {
+  const [showBuilder, setShowBuilder] = useState(false);
+  return (
+    <label className="expr-field">
+      <span className="expr-label">
+        <code>appliesIf</code>
+        <em className="muted"> — function returning true when this task should fire</em>
+        <button className="link" onClick={(e) => { e.preventDefault(); setShowBuilder(true); }}>
+          ✎ build
+        </button>
+      </span>
+      <textarea
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        className="code-editor short"
+        spellCheck={false}
+      />
+      {showBuilder && (
+        <AppliesIfBuilder
+          value={props.value}
+          onCancel={() => setShowBuilder(false)}
+          onSave={(v) => {
+            props.onChange(v);
+            setShowBuilder(false);
+          }}
+        />
+      )}
+    </label>
+  );
+}
+
+function ResolvedIfWithPicker(props: { value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="expr-field">
+      <span className="expr-label">
+        <code>resolvedIf</code>
+        <em className="muted"> — when this returns true the task disappears</em>
+      </span>
+      <ResolvedWhenPicker value={props.value} onChange={props.onChange} />
+    </label>
+  );
+}
+
+function EventsWithEditor(props: { value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="expr-field">
+      <span className="expr-label">
+        <code>events</code>
+        <em className="muted"> — when the task is due relative to the trigger</em>
+      </span>
+      <EventsEditor value={props.value} onChange={props.onChange} />
+    </label>
+  );
+}
+
+function ActionsWithEditor(props: { value: string; onChange: (v: string) => void }) {
+  const forms = useApp((s) => s.forms);
+  const formOptions = forms
+    .filter((f) => f.category === 'app')
+    .map((f) => f.filename.replace(/\.xlsx$/i, ''));
+  return (
+    <label className="expr-field">
+      <span className="expr-label">
+        <code>actions</code>
+        <em className="muted"> — which form opens when the task is tapped</em>
+      </span>
+      <ActionsEditor value={props.value} formOptions={formOptions} onChange={props.onChange} />
+    </label>
+  );
+}
+
+function ScalarField(props: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <label className="expr-field">
+      <span className="expr-label">
+        <code>{props.label}</code>
+      </span>
+      <input
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        placeholder={props.placeholder}
+      />
+    </label>
+  );
+}
+
+function RawField(props: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  hint?: string;
+  tall?: boolean;
+}) {
+  return (
+    <label className="expr-field">
+      <span className="expr-label">
+        <code>{props.label}</code>
+        {props.hint && <em className="muted"> — {props.hint}</em>}
+      </span>
+      <textarea
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        className={`code-editor ${props.tall ? 'medium' : 'short'}`}
+        spellCheck={false}
+      />
+    </label>
+  );
+}
+
+/* ---------------------------- Serialization ---------------------------- */
+
+/**
+ * Rebuild tasks.js by splicing a regenerated array body into the original
+ * source between arrayBounds. Imports and helpers outside the array stay
+ * untouched.
+ */
+function rebuildTasksFile(parsed: ParsedTaskFile): string {
+  if (!parsed.arrayBounds) return parsed.source;
+  const before = parsed.source.slice(0, parsed.arrayBounds.start + 1);
+  const after = parsed.source.slice(parsed.arrayBounds.end);
+  const bodies = parsed.entries.map(entryToSource).join(',\n  ');
+  return `${before}\n  ${bodies}\n${after}`;
+}
+
+function entryToSource(entry: TaskEntry): string {
+  const lines: string[] = [];
+  for (const [k, v] of Object.entries(entry.fields)) {
+    const keyOut = /^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k);
+    lines.push(`    ${keyOut}: ${fieldValueToSource(v)}`);
+  }
+  return `{\n${lines.join(',\n')}\n  }`;
+}
+
+function fieldValueToSource(v: FieldValue): string {
+  switch (v.kind) {
+    case 'string':
+      return JSON.stringify(v.value);
+    case 'number':
+      return String(v.value);
+    case 'boolean':
+      return String(v.value);
+    case 'identifier':
+      return v.value;
+    case 'array':
+    case 'object':
+    case 'function':
+    case 'unknown':
+      return v.raw;
+  }
+}
