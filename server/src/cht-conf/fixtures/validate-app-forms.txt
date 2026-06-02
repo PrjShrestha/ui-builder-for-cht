@@ -1,0 +1,5 @@
+# exit 0
+Linting app forms in forms/app...
+- malaria_screening.xlsx: ok
+- malaria_followup.xlsx: ok
+✓ 2 forms validated

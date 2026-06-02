@@ -1,0 +1,5 @@
+# exit 1
+Compiling app_settings.json from inputs...
+[stderr] webpack: SyntaxError: Unexpected token '.' near contact-summary-extras.js:14:8
+[stderr] Module build failed.
+✖ compile failed

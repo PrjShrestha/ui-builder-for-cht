@@ -132,3 +132,37 @@ export function isStructural(row: SurveyRow): boolean {
   const t = row.type.trim().toLowerCase();
   return (STRUCTURAL_TYPES as readonly string[]).includes(t);
 }
+
+/**
+ * Types that carry user-facing content a content editor / translator might
+ * want to edit even in "Simple mode": question fields plus notes. Calculates
+ * and hidden rows are intentionally excluded — they're plumbing.
+ */
+const SIMPLE_MODE_VISIBLE_TYPES = new Set<string>([
+  'text',
+  'string',
+  'integer',
+  'decimal',
+  'date',
+  'time',
+  'datetime',
+  'select_one',
+  'select_multiple',
+  'note',
+  'image',
+  'audio',
+  'video',
+  'geopoint',
+  'barcode',
+]);
+
+/**
+ * True if the row should be hidden from the editor when the user has
+ * selected "Simple" mode. This is a UI-only filter; the underlying
+ * form.survey array is never mutated.
+ */
+export function isHiddenInSimpleMode(row: SurveyRow): boolean {
+  const t = row.type.trim().toLowerCase();
+  if ((STRUCTURAL_TYPES as readonly string[]).includes(t)) return true;
+  return !SIMPLE_MODE_VISIBLE_TYPES.has(t);
+}

@@ -40,9 +40,50 @@ const META_FIELDS = new Set([
   'subscriberid',
 ]);
 
+// Module-level cache: loading contact-form field lists is expensive
+// (one XLSX parse per form, server-side). Project may have 30+ contact forms,
+// so we load once per session and share across every FormEditor mount.
+let cache: ContactFormFields[] | null = null;
+let inflight: Promise<ContactFormFields[]> | null = null;
+let cacheKey: string | null = null;
+const subscribers = new Set<(v: ContactFormFields[]) => void>();
+
+function keyFor(ids: string[]): string {
+  return ids.slice().sort().join('|');
+}
+
+async function loadAll(entries: Array<{ id: string }>): Promise<ContactFormFields[]> {
+  // Serial fetch to avoid pegging the single-threaded server with 30+
+  // concurrent XLSX parses. Each form is small; total latency is acceptable
+  // and other requests (like the one the user actually clicked) stay snappy.
+  const out: ContactFormFields[] = [];
+  for (const f of entries) {
+    try {
+      const res = await api.getForm(f.id);
+      const fields = res.form.survey
+        .filter((r) => {
+          if (!r.name) return false;
+          const lc = r.name.toLowerCase();
+          if (lc.startsWith('_')) return false;
+          if (META_FIELDS.has(lc)) return false;
+          const t = r.type.trim().toLowerCase().replace(/\s+/g, '_');
+          if (!INPUT_TYPES.has(t)) return false;
+          return true;
+        })
+        .map((r) => r.name);
+      if (fields.length > 0) {
+        out.push({ label: f.id.replace(/^contact:/, ''), fields });
+      }
+    } catch {
+      /* non-fatal — picker just won't include this form */
+    }
+  }
+  return out;
+}
+
 export function useContactFormFields(): ContactFormFields[] {
   const formsList = useApp((s) => s.forms);
-  const [contactForms, setContactForms] = useState<ContactFormFields[]>([]);
+  const [contactForms, setContactForms] = useState<ContactFormFields[]>(cache ?? []);
 
   useEffect(() => {
     const entries = formsList.filter((f) => f.category === 'contact');
@@ -50,33 +91,30 @@ export function useContactFormFields(): ContactFormFields[] {
       setContactForms([]);
       return;
     }
+    const key = keyFor(entries.map((e) => e.id));
+    if (cache && cacheKey === key) {
+      setContactForms(cache);
+      return;
+    }
     let alive = true;
-    Promise.all(
-      entries.map((f) =>
-        api.getForm(f.id).then((res) => ({
-          label: f.id.replace(/^contact:/, ''),
-          fields: res.form.survey
-            .filter((r) => {
-              if (!r.name) return false;
-              const lc = r.name.toLowerCase();
-              if (lc.startsWith('_')) return false;
-              if (META_FIELDS.has(lc)) return false;
-              const t = r.type.trim().toLowerCase().replace(/\s+/g, '_');
-              if (!INPUT_TYPES.has(t)) return false;
-              return true;
-            })
-            .map((r) => r.name),
-        })),
-      ),
-    )
-      .then((out) => {
-        if (alive) setContactForms(out.filter((f) => f.fields.length > 0));
-      })
-      .catch(() => {
-        /* non-fatal — picker just won't appear */
+    const notify = (v: ContactFormFields[]) => {
+      if (alive) setContactForms(v);
+    };
+    subscribers.add(notify);
+
+    if (!inflight || cacheKey !== key) {
+      cacheKey = key;
+      inflight = loadAll(entries).then((out) => {
+        cache = out;
+        for (const fn of subscribers) fn(out);
+        inflight = null;
+        return out;
       });
+    }
+
     return () => {
       alive = false;
+      subscribers.delete(notify);
     };
   }, [formsList]);
 

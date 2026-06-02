@@ -194,6 +194,12 @@ function serializeConditionSummary(cond: import('@cht-ui/shared').ParsedExpressi
     if (r.kind === 'answered') {
       return `\${${r.field}} ${r.negated ? 'is empty' : 'is answered'}`;
     }
+    if (r.kind === 'age') {
+      return `age of \${${r.field}} ${r.op} ${r.value} years`;
+    }
+    if (r.kind === 'date_offset') {
+      return `\${${r.field}} ${r.comparator === 'more_than' ? '>' : '<'} ${r.amount} ${r.unit} ${r.direction === 'ago' ? 'ago' : 'from now'}`;
+    }
     return r.text;
   });
   return parts.join(` ${cond.combinator} `);

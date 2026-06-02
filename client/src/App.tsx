@@ -11,7 +11,9 @@ import { TasksEditor } from './ui/TasksEditor.js';
 import { ContactSummaryEditor } from './ui/ContactSummaryEditor.js';
 import { FlowchartView } from './ui/FlowchartView.js';
 import { DecisionsView } from './ui/DecisionsView.js';
+import { DeployPanel } from './ui/DeployPanel.js';
 import { ErrorBanner } from './ui/ErrorBanner.js';
+import { UndoToastHost } from './ui/UndoToast.js';
 
 export function App() {
   const project = useApp((s) => s.project);
@@ -56,6 +58,7 @@ export function App() {
       <div className="app">
         <ErrorBanner />
         <ProjectPicker />
+        <UndoToastHost />
       </div>
     );
   }
@@ -63,6 +66,7 @@ export function App() {
   return (
     <div className="app">
       <ErrorBanner />
+      <UndoToastHost />
       <Sidebar />
       <main className="main">
         {view.kind === 'project-overview' && <ProjectOverview />}
@@ -73,6 +77,7 @@ export function App() {
         {view.kind === 'contact-summary' && <ContactSummaryEditor />}
         {view.kind === 'flowchart' && <FlowchartView formId={view.id} />}
         {view.kind === 'decisions' && <DecisionsView />}
+        {view.kind === 'deploy' && <DeployPanel />}
       </main>
     </div>
   );

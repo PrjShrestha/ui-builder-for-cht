@@ -1,0 +1,12 @@
+{
+  "title": [
+    { "locale": "en", "content": "Malaria Follow-up" },
+    { "locale": "ne", "content": "मलेरिया फलोअप" }
+  ],
+  "context": {
+    "expression": "false",
+    "person": true,
+    "place": false
+  },
+  "icon": "icon-followup"
+}

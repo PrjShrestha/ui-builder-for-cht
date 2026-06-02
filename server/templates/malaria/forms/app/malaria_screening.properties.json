@@ -1,0 +1,14 @@
+{
+  "title": [
+    { "locale": "en", "content": "Malaria Screening" },
+    { "locale": "ne", "content": "मलेरिया स्क्रीनिङ" }
+  ],
+  "context": {
+    "place": false,
+    "person": true,
+    "expression": "contact.contact_type === 'patient' && !contact.muted && !contact.date_of_death && summary.show_malaria_form",
+    "permission": "can_fill_non_baseline_forms"
+  },
+  "icon": "icon-fever",
+  "hidden_fields": ["r_summary_translation_key"]
+}

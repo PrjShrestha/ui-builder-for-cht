@@ -34,8 +34,8 @@ export function Sidebar() {
         <div className="project-name" title={project.path}>
           {project.name}
         </div>
-        <button className="link" onClick={() => void close()}>
-          close
+        <button className="secondary" onClick={() => void close()} title="Close this project and pick another">
+          Change project
         </button>
       </div>
       <nav>
@@ -71,6 +71,11 @@ export function Sidebar() {
           label="Decisions (sign-off)"
           active={view.kind === 'decisions'}
           onClick={() => nav({ kind: 'decisions' })}
+        />
+        <NavItem
+          label="Deploy"
+          active={view.kind === 'deploy'}
+          onClick={() => nav({ kind: 'deploy' })}
         />
       </nav>
       {hasUnsaved && <div className="dirty-flag">Unsaved changes</div>}

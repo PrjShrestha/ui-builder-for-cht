@@ -33,6 +33,7 @@ import type { DragEndEvent } from '@dnd-kit/core';
 import {
   QUESTION_TYPES,
   STRUCTURAL_TYPES,
+  isHiddenInSimpleMode,
   isStructural,
   validateOrdering,
   predictViolationsForMove,
@@ -47,11 +48,17 @@ import {
 import { api } from '../api.js';
 import { useApp } from '../state/store.js';
 import { RelevantRuleBuilder } from './RelevantRuleBuilder.js';
+import { AppearancePicker } from './AppearancePicker.js';
 import { CalculationBuilder } from './CalculationBuilder.js';
 import { PropertiesEditor, type FormProperties } from './PropertiesEditor.js';
 import { useContactFormFields } from './useContactFormFields.js';
 import { FormPreview } from './FormPreview.js';
 import { SaveDiffModal } from './SaveDiffModal.js';
+import { QuestionTypePicker } from './QuestionTypePicker.js';
+import { findTileForRowType } from './QuestionTypeCatalog.js';
+import { InlineChoicesEditor } from './InlineChoicesEditor.js';
+import { useHistory } from '../state/useHistory.js';
+import { showUndoToast } from './UndoToast.js';
 
 export function FormEditor({ formId }: { formId: string }) {
   const setError = useApp((s) => s.setError);
@@ -60,11 +67,14 @@ export function FormEditor({ formId }: { formId: string }) {
   const dirty = useApp((s) => s.dirty[formId] ?? false);
   const saving = useApp((s) => s.saving[formId] ?? false);
 
-  const [form, setForm] = useState<XLSForm | null>(null);
+  const formHistory = useHistory<XLSForm>({ onUndo: () => setDirty(formId, true), onRedo: () => setDirty(formId, true) });
+  const form = formHistory.current;
   /** Snapshot of the form as it was loaded from disk; used to diff before save. */
   const [originalForm, setOriginalForm] = useState<XLSForm | null>(null);
   const [properties, setProperties] = useState<FormProperties | null>(null);
-  const [tab, setTab] = useState<'survey' | 'choices' | 'settings' | 'properties'>('survey');
+  const [tab, setTab] = useState<'survey' | 'choices' | 'settings' | 'properties' | 'translate'>(
+    'survey',
+  );
   const [loading, setLoading] = useState(true);
   const [showPreview, setShowPreview] = useState(false);
   const [pendingSaveDiff, setPendingSaveDiff] = useState<XLSFormDiff | null>(null);
@@ -78,7 +88,7 @@ export function FormEditor({ formId }: { formId: string }) {
       .getForm(formId)
       .then((res) => {
         if (!alive) return;
-        setForm(res.form);
+        formHistory.reset(res.form);
         // Deep clone so subsequent edits don't mutate the snapshot.
         setOriginalForm(JSON.parse(JSON.stringify(res.form)) as XLSForm);
         setProperties((res.properties ?? null) as FormProperties | null);
@@ -92,12 +102,22 @@ export function FormEditor({ formId }: { formId: string }) {
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formId, setError]);
 
   function patch(next: XLSForm) {
-    setForm(next);
+    formHistory.patch(next);
     setDirty(formId, true);
   }
+  const undo = formHistory.undo;
+  const redo = formHistory.redo;
+  const canUndo = formHistory.canUndo;
+  const canRedo = formHistory.canRedo;
+  // Reset history when the user opens a different form.
+  useEffect(() => {
+    formHistory.reset(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formId]);
 
   function requestSave() {
     if (!form || !originalForm) return;
@@ -112,6 +132,9 @@ export function FormEditor({ formId }: { formId: string }) {
       await api.saveForm(formId, form, properties ?? undefined);
       setOriginalForm(JSON.parse(JSON.stringify(form)) as XLSForm);
       setDirty(formId, false);
+      // Reset history — what just got saved is the new baseline. Otherwise
+      // an undo after save would resurrect un-saved-but-undone state.
+      formHistory.reset(form);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -127,7 +150,7 @@ export function FormEditor({ formId }: { formId: string }) {
 
   return (
     <div className="form-editor">
-      <header className="page-header">
+      <header className="page-header sticky-header">
         <div>
           <h1>{form.settings.form_title ?? form.settings.form_id ?? formId}</h1>
           <code className="form-id">{formId}</code>
@@ -136,11 +159,37 @@ export function FormEditor({ formId }: { formId: string }) {
           {violations.length > 0 && (
             <span className="badge warn">{violations.length} ordering issue(s)</span>
           )}
+          <button
+            className="link"
+            onClick={undo}
+            disabled={!canUndo}
+            title="Undo (Ctrl+Z)"
+            aria-label="Undo last edit"
+          >
+            ↶ Undo
+          </button>
+          <button
+            className="link"
+            onClick={redo}
+            disabled={!canRedo}
+            title="Redo (Ctrl+Shift+Z)"
+            aria-label="Redo"
+          >
+            ↷ Redo
+          </button>
           <button className={showPreview ? 'link active' : 'link'} onClick={() => setShowPreview(!showPreview)}>
             {showPreview ? 'Hide preview' : 'Show preview'}
           </button>
           <button onClick={requestSave} disabled={!dirty || saving}>
             {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+          </button>
+          <button
+            className="link"
+            onClick={() => useApp.getState().setView({ kind: 'deploy' })}
+            disabled={dirty}
+            title={dirty ? 'Save first to enable deploy' : 'Open Deploy panel — deploy this form to the configured CHT instance'}
+          >
+            🚀 Deploy
           </button>
         </div>
       </header>
@@ -163,6 +212,9 @@ export function FormEditor({ formId }: { formId: string }) {
         <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>
           Settings
         </button>
+        <button className={tab === 'translate' ? 'active' : ''} onClick={() => setTab('translate')}>
+          Translate
+        </button>
         {properties !== null && (
           <button
             className={tab === 'properties' ? 'active' : ''}
@@ -175,7 +227,14 @@ export function FormEditor({ formId }: { formId: string }) {
 
       {tab === 'survey' && (
         <div className={`survey-with-preview${showPreview ? ' with-preview' : ''}`}>
-          <SurveyTab form={form} patch={patch} violationsByRow={violationsByRow} />
+          <SurveyTab
+            form={form}
+            patch={patch}
+            undo={undo}
+            getSnapshotId={() => formHistory.currentSnapshotId}
+            jumpTo={formHistory.jumpTo}
+            violationsByRow={violationsByRow}
+          />
           {showPreview && (
             <div className="preview-pane">
               <FormPreview form={form} />
@@ -183,8 +242,17 @@ export function FormEditor({ formId }: { formId: string }) {
           )}
         </div>
       )}
-      {tab === 'choices' && <ChoicesTab form={form} patch={patch} />}
+      {tab === 'choices' && (
+        <ChoicesTab
+          form={form}
+          patch={patch}
+          undo={undo}
+          getSnapshotId={() => formHistory.currentSnapshotId}
+          jumpTo={formHistory.jumpTo}
+        />
+      )}
       {tab === 'settings' && <SettingsTab form={form} patch={patch} />}
+      {tab === 'translate' && <TranslateTab form={form} patch={patch} />}
       {tab === 'properties' && properties !== null && (
         <PropertiesEditor
           value={properties}
@@ -206,13 +274,36 @@ export function FormEditor({ formId }: { formId: string }) {
 function SurveyTab(props: {
   form: XLSForm;
   patch: (next: XLSForm) => void;
+  undo: () => void;
+  /** Capture the current snapshot id so toast Undo can jump back exactly. */
+  getSnapshotId: () => number;
+  jumpTo: (id: number) => void;
   violationsByRow: Map<string, OrderingViolation[]>;
 }) {
   const { form, patch, violationsByRow } = props;
+  const undo = props.undo;
+  const [mode, setMode] = useState<'simple' | 'full'>('simple');
+  // Names of `begin group` rows that are currently collapsed into one accordion.
+  // The `inputs` group at the top of every CHT form starts collapsed because
+  // it's the deep contact/parent lineage tree — almost never edited.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set(['inputs']));
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+
+  // Map a field name → ordered list of choice `name`s if it's a select_one /
+  // select_multiple, so the expression builder can present a value dropdown.
+  const fieldChoices = useMemo(() => buildFieldChoices(form.survey, form.choices), [form.survey, form.choices]);
+
+  // Group consecutive rows that fall inside a "collapsed" begin/end group block.
+  // In Simple mode we don't collapse — we just hide non-user-facing rows.
+  const displayItems = buildDisplayItems(form.survey, mode, collapsedGroups);
+  const visibleRowIds = displayItems.flatMap((it) =>
+    it.kind === 'group' && it.collapsed ? [] : it.kind === 'group' ? it.rows.map((r) => r.rowId) : [it.row.rowId],
+  );
+  const hiddenSimpleCount =
+    mode === 'simple' ? form.survey.filter((r) => isHiddenInSimpleMode(r)).length : 0;
 
   function onDragEnd(e: DragEndEvent) {
     const { active, over } = e;
@@ -236,17 +327,76 @@ function SurveyTab(props: {
     patch(next);
   }
 
+  // Phase-2 picker draft. Held in local state so the row doesn't enter
+  // form.survey (and the dnd-kit SortableContext / dependency validator)
+  // until the user picks a type. When `pickerMode` is 'edit' the picker
+  // re-types the row whose rowId is `pickerEditRowId` instead of inserting.
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerEditRowId, setPickerEditRowId] = useState<string | null>(null);
+  const existingListNames = useMemo(() => {
+    const s = new Set<string>();
+    for (const c of form.choices) if (c.list_name) s.add(c.list_name);
+    return [...s].sort();
+  }, [form.choices]);
+
   function addQuestion() {
+    setPickerEditRowId(null);
+    setPickerOpen(true);
+  }
+
+  function handlePickerCommit(commit: import('./QuestionTypePicker.js').PickerCommit) {
+    setPickerOpen(false);
+    if (pickerEditRowId) {
+      // Edit mode: re-type an existing row. Preserve everything except
+      // type and the appearance extras the new tile dictates. Any unrelated
+      // extras (relevant/calculation/constraint/etc) are kept intact.
+      patch({
+        ...form,
+        survey: form.survey.map((r) => {
+          if (r.rowId !== pickerEditRowId) return r;
+          const nextExtras: Record<string, string> = { ...r.extras };
+          for (const [k, v] of Object.entries(commit.extras)) {
+            if (v) nextExtras[k] = v;
+            else delete nextExtras[k];
+          }
+          return { ...r, type: commit.type, extras: nextExtras };
+        }),
+      });
+      setPickerEditRowId(null);
+      return;
+    }
+    // Add mode: append a new row + (for selects) any inline choice rows.
     const counter = form.survey.length + 1;
+    const stamp = `${form.survey.length + 1}`;
     const newRow: SurveyRow = {
-      rowId: `r_new_${Date.now()}_${counter}`,
-      type: 'text',
-      name: `q${counter}`,
+      rowId: `r_new_${stamp}_${counter}`,
+      type: commit.type,
+      name: commit.name || `q${counter}`,
       labels: { en: '' },
       required: '',
-      extras: {},
+      extras: { ...commit.extras },
     };
-    patch({ ...form, survey: [...form.survey, newRow] });
+    let nextChoices = form.choices;
+    if (commit.list && commit.list.choices.length > 0) {
+      const additions: ChoiceRow[] = commit.list.choices.map((c, i) => {
+        const labels: Record<string, string> = {};
+        if (c.label) labels['en'] = c.label;
+        return {
+          rowId: `c_new_${stamp}_${i}`,
+          list_name: commit.list!.list_name,
+          name: c.name || `opt_${i + 1}`,
+          labels,
+          extras: {},
+        };
+      });
+      nextChoices = [...form.choices, ...additions];
+    }
+    patch({ ...form, survey: [...form.survey, newRow], choices: nextChoices });
+  }
+
+  function openTypePickerFor(rowId: string) {
+    setPickerEditRowId(rowId);
+    setPickerOpen(true);
   }
 
   function updateRow(rowId: string, updater: (r: SurveyRow) => SurveyRow) {
@@ -257,7 +407,18 @@ function SurveyTab(props: {
   }
 
   function removeRow(rowId: string) {
+    if (!form) return;
+    const row = form.survey.find((r) => r.rowId === rowId);
+    const label = row?.name || row?.type || rowId;
+    // Capture the pre-delete snapshot id BEFORE patching, so the toast Undo
+    // jumps back to exactly that state even if the user makes other edits
+    // before clicking Undo.
+    const snapshotId = props.getSnapshotId();
     patch({ ...form, survey: form.survey.filter((r) => r.rowId !== rowId) });
+    showUndoToast({
+      message: `Deleted "${label}"`,
+      onUndo: () => props.jumpTo(snapshotId),
+    });
   }
 
   function moveRow(rowId: string, direction: -1 | 1) {
@@ -275,22 +436,94 @@ function SurveyTab(props: {
     patch({ ...form, survey: arrayMove(form.survey, idx, newIndex) });
   }
 
+  function toggleGroup(name: string) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+
   return (
     <div className="survey-tab">
       <div className="row gap toolbar">
         <button onClick={addQuestion}>+ Question</button>
-        <span className="muted">Drag rows to reorder. Reorder is blocked if it would break dependencies.</span>
+        <div className="row gap mode-toggle">
+          <button
+            className={mode === 'simple' ? 'active' : 'link'}
+            onClick={() => setMode('simple')}
+            title="Show only user-facing questions and notes"
+          >
+            Simple
+          </button>
+          <button
+            className={mode === 'full' ? 'active' : 'link'}
+            onClick={() => setMode('full')}
+            title="Show every row including groups, hidden, calculate, and inputs"
+          >
+            Full
+          </button>
+        </div>
+        {mode === 'simple' && hiddenSimpleCount > 0 && (
+          <span className="muted small">
+            {hiddenSimpleCount} structural / hidden / calculate row{hiddenSimpleCount === 1 ? '' : 's'} hidden — switch to Full to edit.
+          </span>
+        )}
+        {mode === 'full' && (
+          <span className="muted small">Drag rows to reorder. Reorder is blocked if it would break dependencies.</span>
+        )}
       </div>
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-        <SortableContext
-          items={form.survey.map((r) => r.rowId)}
-          strategy={verticalListSortingStrategy}
-        >
+        <SortableContext items={visibleRowIds} strategy={verticalListSortingStrategy}>
           <div className="survey-list">
-            {form.survey.map((row, idx) => {
-              // Field options for the rule builder = names of all non-structural
-              // rows defined before this one (so dependencies stay valid).
+            {displayItems.map((item) => {
+              if (item.kind === 'group') {
+                const isCollapsed = item.collapsed;
+                return (
+                  <div key={item.startRowId} className="survey-group-accordion">
+                    <button
+                      className="survey-group-header"
+                      onClick={() => toggleGroup(item.name)}
+                      title={isCollapsed ? 'Expand group' : 'Collapse group'}
+                    >
+                      <span className="caret">{isCollapsed ? '▸' : '▾'}</span>
+                      <code>{item.name}</code>
+                      <span className="muted small">
+                        {item.rows.length - 2} row{item.rows.length - 2 === 1 ? '' : 's'} inside (begin group → end group)
+                      </span>
+                    </button>
+                    {!isCollapsed &&
+                      item.rows.map((row) => {
+                        const idx = form.survey.findIndex((r) => r.rowId === row.rowId);
+                        const earlierFields = form.survey
+                          .slice(0, idx)
+                          .filter((r) => !isStructural(r) && r.name)
+                          .map((r) => r.name);
+                        return (
+                          <SurveyRowCard
+                            key={row.rowId}
+                            row={row}
+                            locales={form.surveyHeaders.labelLocales}
+                            violations={violationsByRow.get(row.rowId) ?? []}
+                            fieldOptions={earlierFields}
+                            fieldChoices={fieldChoices}
+                            form={form}
+                            patch={patch}
+                            update={(u) => updateRow(row.rowId, u)}
+                            remove={() => removeRow(row.rowId)}
+                            moveUp={() => moveRow(row.rowId, -1)}
+                            moveDown={() => moveRow(row.rowId, 1)}
+                            onChangeType={() => openTypePickerFor(row.rowId)}
+                          />
+                        );
+                      })}
+                  </div>
+                );
+              }
+              const row = item.row;
+              const idx = form.survey.findIndex((r) => r.rowId === row.rowId);
               const earlierFields = form.survey
                 .slice(0, idx)
                 .filter((r) => !isStructural(r) && r.name)
@@ -302,18 +535,120 @@ function SurveyTab(props: {
                   locales={form.surveyHeaders.labelLocales}
                   violations={violationsByRow.get(row.rowId) ?? []}
                   fieldOptions={earlierFields}
+                  fieldChoices={fieldChoices}
+                  form={form}
+                  patch={patch}
                   update={(u) => updateRow(row.rowId, u)}
                   remove={() => removeRow(row.rowId)}
                   moveUp={() => moveRow(row.rowId, -1)}
                   moveDown={() => moveRow(row.rowId, 1)}
+                  onChangeType={() => openTypePickerFor(row.rowId)}
                 />
               );
             })}
           </div>
         </SortableContext>
       </DndContext>
+
+      {pickerOpen && (
+        <QuestionTypePicker
+          title={pickerEditRowId ? 'Change question type' : 'Add question'}
+          commitLabel={pickerEditRowId ? 'Change type' : 'Add question'}
+          mode={mode}
+          existingLists={existingListNames}
+          hideNameField={Boolean(pickerEditRowId)}
+          initialName={
+            pickerEditRowId
+              ? form.survey.find((r) => r.rowId === pickerEditRowId)?.name ?? ''
+              : ''
+          }
+          initialTileId={
+            pickerEditRowId
+              ? findTileForRowType(
+                  form.survey.find((r) => r.rowId === pickerEditRowId)?.type ?? '',
+                  form.survey.find((r) => r.rowId === pickerEditRowId)?.extras['appearance'] ?? '',
+                )?.id
+              : undefined
+          }
+          defaultListNameSeed={pickerEditRowId ? undefined : undefined}
+          onCancel={() => {
+            setPickerOpen(false);
+            setPickerEditRowId(null);
+          }}
+          onCommit={handlePickerCommit}
+        />
+      )}
     </div>
   );
+}
+
+/** Group names we offer to collapse into an accordion. For v1: `inputs`. */
+const COLLAPSIBLE_GROUP_NAMES = new Set(['inputs']);
+
+/** True for select_one / select_multiple / rank rows (list-bearing types). */
+function isSelectRow(row: SurveyRow): boolean {
+  const head = row.type.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+  return head === 'select_one' || head === 'select_multiple' || head === 'rank';
+}
+
+/**
+ * Map a raw `row.type` cell (+ optional appearance) back to a human-friendly
+ * tile label so the chip in SurveyRowCard reads as "Select one" instead of
+ * "select_one yes_no". Falls back to the raw type when no catalog entry
+ * matches (preserving the round-trip raw fallback for unrecognized types).
+ */
+function prettyTypeLabel(rawType: string, appearance: string): string {
+  if (!rawType) return '(no type)';
+  const tile = findTileForRowType(rawType, appearance);
+  return tile?.label ?? rawType;
+}
+
+type DisplayItem =
+  | { kind: 'row'; row: SurveyRow }
+  | { kind: 'group'; name: string; rows: SurveyRow[]; startRowId: string; collapsed: boolean };
+
+function buildDisplayItems(
+  survey: SurveyRow[],
+  mode: 'simple' | 'full',
+  collapsedGroups: Set<string>,
+): DisplayItem[] {
+  if (mode === 'simple') {
+    return survey
+      .filter((r) => !isHiddenInSimpleMode(r))
+      .map((row): DisplayItem => ({ kind: 'row', row }));
+  }
+  // Full mode: any begin/end group with a known collapsible name renders as a
+  // group item with an expand/collapse toggle.
+  const items: DisplayItem[] = [];
+  let i = 0;
+  while (i < survey.length) {
+    const r = survey[i]!;
+    const t = r.type.trim().toLowerCase();
+    if (t === 'begin group' && r.name && COLLAPSIBLE_GROUP_NAMES.has(r.name)) {
+      let depth = 1;
+      let j = i + 1;
+      while (j < survey.length && depth > 0) {
+        const nt = survey[j]!.type.trim().toLowerCase();
+        if (nt === 'begin group' || nt === 'begin repeat') depth++;
+        else if (nt === 'end group' || nt === 'end repeat') depth--;
+        if (depth === 0) break;
+        j++;
+      }
+      const rows = survey.slice(i, j + 1);
+      items.push({
+        kind: 'group',
+        name: r.name,
+        rows,
+        startRowId: r.rowId,
+        collapsed: collapsedGroups.has(r.name),
+      });
+      i = j + 1;
+    } else {
+      items.push({ kind: 'row', row: r });
+      i++;
+    }
+  }
+  return items;
 }
 
 function SurveyRowCard(props: {
@@ -321,10 +656,16 @@ function SurveyRowCard(props: {
   locales: string[];
   violations: OrderingViolation[];
   fieldOptions: string[];
+  fieldChoices: Record<string, string[]>;
+  /** Whole form + patch, so the inline choices editor can mutate form.choices. */
+  form: XLSForm;
+  patch: (next: XLSForm) => void;
   update: (u: (r: SurveyRow) => SurveyRow) => void;
   remove: () => void;
   moveUp: () => void;
   moveDown: () => void;
+  /** Opens the tile picker scoped to this row's type. */
+  onChangeType: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -362,29 +703,15 @@ function SurveyRowCard(props: {
       </button>
       <div className="row-fields">
         <div className="row gap">
-          <select
-            value={row.type}
-            onChange={(e) => props.update((r) => ({ ...r, type: e.target.value }))}
-            className="type-select"
+          <button
+            type="button"
+            className="type-chip"
+            onClick={props.onChangeType}
+            title="Click to change question type"
           >
-            <optgroup label="question">
-              {QUESTION_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </optgroup>
-            <optgroup label="structural">
-              {STRUCTURAL_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </optgroup>
-            <optgroup label="other">
-              <option value={row.type}>{row.type} (current)</option>
-            </optgroup>
-          </select>
+            <span className="type-chip-label">{prettyTypeLabel(row.type, row.extras['appearance'] ?? '')}</span>
+            <code className="type-chip-raw">{row.type || '(no type)'}</code>
+          </button>
           <input
             value={row.name}
             onChange={(e) => props.update((r) => ({ ...r, name: e.target.value }))}
@@ -430,72 +757,109 @@ function SurveyRowCard(props: {
         </button>
         {expanded && (
           <div className="advanced-fields">
+            {isSelectRow(row) && (
+              <InlineChoicesEditor
+                form={props.form}
+                rowId={row.rowId}
+                defaultLocale={props.locales[0] ?? 'en'}
+                patch={props.patch}
+              />
+            )}
+            <UnifiedConditionBuilder
+              fieldOptions={props.fieldOptions}
+              fieldChoices={props.fieldChoices}
+              getColumn={(col) => row.extras[col] ?? ''}
+              appendToColumn={(col, frag) => setExtra(col, (row.extras[col] ?? '') + frag)}
+            />
             <ExpressionField
               label="relevant"
-              hint="Show this question only when expression is true. References other fields via ${name}."
+              friendlyLabel="Show this question when…"
+              hint="leave blank to always show"
+              helpText="XPath expression. The question is hidden until this is true. References other fields via ${name}."
               value={row.extras['relevant'] ?? ''}
               onChange={(v) => setExtra('relevant', v)}
               fieldOptions={props.fieldOptions}
             />
             <ExpressionField
               label="calculation"
-              hint="Compute this field's value from other fields."
+              friendlyLabel="Compute the value as…"
+              hint="for calculate or hidden fields"
+              helpText="XPath that computes this field's value from other fields. Common for `calculate` rows; can also pre-fill a regular question."
               value={row.extras['calculation'] ?? ''}
               onChange={(v) => setExtra('calculation', v)}
               fieldOptions={props.fieldOptions}
             />
             <ExpressionField
               label="constraint"
-              hint="Reject the answer unless this expression is true."
+              friendlyLabel="Accept the answer only if…"
+              hint="validation rule"
+              helpText="XPath. If the answer doesn't satisfy this, the form blocks submission and shows the constraint_message below."
               value={row.extras['constraint'] ?? ''}
               onChange={(v) => setExtra('constraint', v)}
               fieldOptions={props.fieldOptions}
             />
-            <ExpressionField
-              label="choice_filter"
-              hint="Filter the choices list based on this expression."
-              value={row.extras['choice_filter'] ?? ''}
-              onChange={(v) => setExtra('choice_filter', v)}
-              fieldOptions={props.fieldOptions}
-            />
-            <ExpressionField
-              label="appearance"
-              hint="CHT/XLSForm appearance hints, e.g. multiline, minimal, hidden."
+            {isSelectRow(row) && (
+              <ExpressionField
+                label="choice_filter"
+                friendlyLabel="Filter the choice list when…"
+                hint="only for select questions"
+                helpText="XPath evaluated per choice row. Use the choices sheet's filter-category column with this to show only matching options."
+                value={row.extras['choice_filter'] ?? ''}
+                onChange={(v) => setExtra('choice_filter', v)}
+                fieldOptions={props.fieldOptions}
+              />
+            )}
+            <AppearanceField
               value={row.extras['appearance'] ?? ''}
+              rowType={row.type}
               onChange={(v) => setExtra('appearance', v)}
             />
             <ExpressionField
               label="default"
-              hint="Default value (literal or ${name} reference)."
+              friendlyLabel="Default value"
+              hint="pre-fill"
+              helpText="Literal value or ${other_field} reference. Pre-fills the answer; the user can still change it."
               value={row.extras['default'] ?? ''}
               onChange={(v) => setExtra('default', v)}
             />
-            <ExpressionField
-              label="repeat_count"
-              hint="Dynamic number of repeats (only for begin repeat rows)."
-              value={row.extras['repeat_count'] ?? ''}
-              onChange={(v) => setExtra('repeat_count', v)}
-            />
-            <div className="hints-grid">
-              {props.locales.map((loc) => (
-                <ExpressionField
-                  key={`hint-${loc}`}
-                  label={`hint::${loc}`}
-                  hint=""
-                  value={row.extras[`hint::${loc}`] ?? ''}
-                  onChange={(v) => setExtra(`hint::${loc}`, v)}
-                />
-              ))}
-              {props.locales.map((loc) => (
-                <ExpressionField
-                  key={`cmsg-${loc}`}
-                  label={`constraint_message::${loc}`}
-                  hint=""
-                  value={row.extras[`constraint_message::${loc}`] ?? ''}
-                  onChange={(v) => setExtra(`constraint_message::${loc}`, v)}
-                />
-              ))}
-            </div>
+            {row.type.trim().toLowerCase() === 'begin repeat' && (
+              <ExpressionField
+                label="repeat_count"
+                friendlyLabel="Number of repeats"
+                hint="for begin repeat only"
+                helpText="XPath that returns a number — how many times this group repeats. Common pattern: ${family_size}."
+                value={row.extras['repeat_count'] ?? ''}
+                onChange={(v) => setExtra('repeat_count', v)}
+              />
+            )}
+            <details className="raw-extras">
+              <summary>Hints &amp; error messages</summary>
+              <div className="hints-grid">
+                {props.locales.map((loc) => (
+                  <ExpressionField
+                    key={`hint-${loc}`}
+                    label={`hint::${loc}`}
+                    friendlyLabel={`Help text (${loc})`}
+                    hint="shown under the question"
+                    helpText="Plain text shown beneath the question label to guide the user. Optional."
+                    value={row.extras[`hint::${loc}`] ?? ''}
+                    onChange={(v) => setExtra(`hint::${loc}`, v)}
+                  />
+                ))}
+                {row.extras['constraint'] &&
+                  props.locales.map((loc) => (
+                    <ExpressionField
+                      key={`cmsg-${loc}`}
+                      label={`constraint_message::${loc}`}
+                      friendlyLabel={`Error message (${loc})`}
+                      hint="when the constraint above fails"
+                      helpText="Shown to the user when the constraint rejects their answer. Only meaningful when a constraint is set."
+                      value={row.extras[`constraint_message::${loc}`] ?? ''}
+                      onChange={(v) => setExtra(`constraint_message::${loc}`, v)}
+                    />
+                  ))}
+              </div>
+            </details>
             <details className="raw-extras">
               <summary>Raw column overrides (preserved from xlsx)</summary>
               {Object.entries(row.extras)
@@ -548,10 +912,57 @@ function SurveyRowCard(props: {
   );
 }
 
+/**
+ * Wrapper for the `appearance` column: text input + "Pick widgets" button
+ * that opens AppearancePicker. The picker is a catalog of CHT and Enketo
+ * appearance tokens; multiple tokens can be combined (space-separated).
+ */
+function AppearanceField(props: {
+  value: string;
+  rowType: string;
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <label className="expr-field">
+      <span className="expr-label">
+        <code>appearance</code>
+        <em className="muted">
+          {' '}— widget hints (multiline, hidden, mrdt-verify, h1 blue, …).
+        </em>
+        <button
+          className="link"
+          onClick={(e) => {
+            e.preventDefault();
+            setOpen(true);
+          }}
+        >
+          ✎ pick widgets
+        </button>
+      </span>
+      <input value={props.value} onChange={(e) => props.onChange(e.target.value)} />
+      {open && (
+        <AppearancePicker
+          value={props.value}
+          rowType={props.rowType}
+          onChange={props.onChange}
+          onCancel={() => setOpen(false)}
+        />
+      )}
+    </label>
+  );
+}
+
 /** Small text input for an arbitrary XLSForm expression column. */
 function ExpressionField(props: {
+  /** The raw XLSForm column name (e.g. "relevant"). Used as the data key. */
   label: string;
+  /** Plain-English title shown to the user. Falls back to `label` if absent. */
+  friendlyLabel?: string;
+  /** Short hint shown next to the label. */
   hint: string;
+  /** Long-form help text shown in a hover tooltip with a `❔` icon. */
+  helpText?: string;
   value: string;
   onChange: (v: string) => void;
   /** When set, shows a "Build" button that opens the visual rule builder. */
@@ -565,34 +976,20 @@ function ExpressionField(props: {
     ['relevant', 'constraint', 'choice_filter'].includes(props.label);
   const supportsCalculation = props.fieldOptions !== undefined && props.label === 'calculation';
   const supportsBuilder = supportsRelevant || supportsCalculation;
-  const supportsChips =
-    props.fieldOptions !== undefined &&
-    props.fieldOptions.length > 0 &&
-    ['relevant', 'calculation', 'constraint', 'choice_filter', 'default', 'repeat_count'].includes(
-      props.label,
-    );
-
-  function insertRef(name: string) {
-    const el = inputRef.current;
-    const token = `\${${name}}`;
-    if (!el) {
-      props.onChange(props.value + token);
-      return;
-    }
-    const start = el.selectionStart ?? props.value.length;
-    const end = el.selectionEnd ?? start;
-    const next = props.value.slice(0, start) + token + props.value.slice(end);
-    props.onChange(next);
-    requestAnimationFrame(() => {
-      el.focus();
-      const pos = start + token.length;
-      el.setSelectionRange(pos, pos);
-    });
-  }
   return (
     <label className="expr-field">
       <span className="expr-label">
-        <code>{props.label}</code>
+        <strong>{props.friendlyLabel ?? props.label}</strong>
+        {props.friendlyLabel && (
+          <code className="raw-col-tag" title={`Raw XLSForm column: ${props.label}`}>
+            {props.label}
+          </code>
+        )}
+        {props.helpText && (
+          <span className="help-icon" title={props.helpText} aria-label={props.helpText}>
+            ❔
+          </span>
+        )}
         {props.hint && <em className="muted"> — {props.hint}</em>}
         {supportsBuilder && (
           <button
@@ -607,27 +1004,6 @@ function ExpressionField(props: {
           </button>
         )}
       </span>
-      {supportsChips && props.fieldOptions && (
-        <div className="ref-chips">
-          <span className="muted ref-chips-hint">insert:</span>
-          {props.fieldOptions.map((name) => (
-            <button
-              key={name}
-              type="button"
-              className="ref-chip"
-              onClick={(e) => {
-                e.preventDefault();
-                insertRef(name);
-              }}
-              title={`Insert \${${name}} at cursor`}
-            >
-              ${'{'}
-              {name}
-              {'}'}
-            </button>
-          ))}
-        </div>
-      )}
       <input
         ref={inputRef}
         value={props.value}
@@ -662,9 +1038,233 @@ function ExpressionField(props: {
   );
 }
 
+/**
+ * Walks the survey + choices sheets to build a `name → choice-values` map.
+ * Only select_one / select_multiple rows are included; everything else is
+ * absent, so the builder can fall back to a text input.
+ */
+function buildFieldChoices(survey: SurveyRow[], choices: ChoiceRow[]): Record<string, string[]> {
+  const listToValues = new Map<string, string[]>();
+  for (const c of choices) {
+    if (!c.list_name || !c.name) continue;
+    if (!listToValues.has(c.list_name)) listToValues.set(c.list_name, []);
+    listToValues.get(c.list_name)!.push(c.name);
+  }
+  const out: Record<string, string[]> = {};
+  for (const r of survey) {
+    if (!r.name) continue;
+    const m = r.type.trim().match(/^(select_one|select_multiple)\s+(\S+)/i);
+    if (!m) continue;
+    const vals = listToValues.get(m[2]!);
+    if (vals && vals.length > 0) out[r.name] = vals;
+  }
+  return out;
+}
+
+type CondOp =
+  | '='
+  | '!='
+  | '>'
+  | '<'
+  | '>='
+  | '<='
+  | 'selected'
+  | 'and'
+  | 'or'
+  | 'not'
+  | 'ref'
+  | 'today';
+
+const COND_OPS_NEED_FIELD: CondOp[] = ['=', '!=', '>', '<', '>=', '<=', 'selected', 'not', 'ref'];
+const COND_OPS_NEED_VALUE: CondOp[] = ['=', '!=', '>', '<', '>=', '<=', 'selected'];
+
+const COLUMN_OPTIONS = [
+  { value: 'relevant', label: 'Show when… (relevant)' },
+  { value: 'calculation', label: 'Compute as… (calculation)' },
+  { value: 'constraint', label: 'Accept only if… (constraint)' },
+  { value: 'choice_filter', label: 'Filter choices when… (choice_filter)' },
+] as const;
+
+/**
+ * Unified condition builder shown above the raw column inputs.
+ *
+ *   [ column ▼ ]  [ field ▼ ]  [ logic ▼ ]  [ value ▼ / text ]   + insert   ${preview}
+ *
+ * Inserts the assembled fragment into whichever column the user picked
+ * (relevant / calculation / constraint / choice_filter). When the chosen
+ * field is a select, the value cell becomes a dropdown of its choices.
+ */
+function UnifiedConditionBuilder(props: {
+  fieldOptions: string[];
+  fieldChoices: Record<string, string[]>;
+  getColumn: (col: string) => string;
+  appendToColumn: (col: string, fragment: string) => void;
+}) {
+  const [column, setColumn] = useState<string>('');
+  const [field, setField] = useState('');
+  const [op, setOp] = useState<CondOp | ''>('');
+  const [value, setValue] = useState('');
+  const choices = field ? props.fieldChoices[field] : undefined;
+  const needsField = op !== '' && (COND_OPS_NEED_FIELD as string[]).includes(op);
+  const needsValue = op !== '' && (COND_OPS_NEED_VALUE as string[]).includes(op);
+
+  function quote(v: string): string {
+    if (v === '') return "''";
+    if (/^\$\{[^}]+\}$/.test(v)) return v;
+    if (/^-?\d+(\.\d+)?$/.test(v)) return v;
+    return `'${v.replace(/'/g, "\\'")}'`;
+  }
+
+  function build(): string {
+    if (!op) return '';
+    if ((['=', '!=', '>', '<', '>=', '<='] as CondOp[]).includes(op)) {
+      if (!field) return '';
+      return `\${${field}} ${op} ${quote(value)}`;
+    }
+    if (op === 'selected') {
+      if (!field) return '';
+      return `selected(\${${field}}, ${quote(value || '')})`;
+    }
+    if (op === 'and' || op === 'or') return ` ${op} `;
+    if (op === 'not') return field ? `not(\${${field}})` : 'not()';
+    if (op === 'ref') return field ? `\${${field}}` : '';
+    if (op === 'today') return 'today()';
+    return '';
+  }
+
+  function doInsert() {
+    if (!column) return;
+    const s = build();
+    if (!s) return;
+    props.appendToColumn(column, s);
+    setOp('');
+    setField('');
+    setValue('');
+  }
+
+  const preview = build();
+  const canInsert = Boolean(column && preview);
+
+  return (
+    <div className="cond-strip cond-strip-unified">
+      <span className="muted ref-chips-hint">build:</span>
+      <select
+        className="ref-chip-select"
+        value={column}
+        onChange={(e) => setColumn(e.target.value)}
+        title="Which column to add the fragment to"
+      >
+        <option value="">— column —</option>
+        {COLUMN_OPTIONS.map((c) => (
+          <option key={c.value} value={c.value}>
+            {c.label}
+          </option>
+        ))}
+      </select>
+      <select
+        className="ref-chip-select"
+        value={field}
+        onChange={(e) => {
+          setField(e.target.value);
+          setValue('');
+        }}
+        title="Pick a field"
+        disabled={op !== '' && !needsField}
+      >
+        <option value="">— field —</option>
+        {props.fieldOptions.map((n) => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+      </select>
+      <select
+        className="ref-chip-select"
+        value={op}
+        onChange={(e) => {
+          setOp(e.target.value as CondOp | '');
+          setValue('');
+        }}
+        title="Pick what to add"
+      >
+        <option value="">— logic —</option>
+        <optgroup label="comparison">
+          <option value="=">= value</option>
+          <option value="!=">≠ value</option>
+          <option value=">">&gt; value</option>
+          <option value="<">&lt; value</option>
+          <option value=">=">≥ value</option>
+          <option value="<=">≤ value</option>
+        </optgroup>
+        <optgroup label="select_multiple">
+          <option value="selected">selected(value)</option>
+        </optgroup>
+        <optgroup label="logic">
+          <option value="and">and</option>
+          <option value="or">or</option>
+          <option value="not">not(field)</option>
+        </optgroup>
+        <optgroup label="reference">
+          <option value="ref">just ${'${field}'}</option>
+          <option value="today">today()</option>
+        </optgroup>
+      </select>
+      {choices && choices.length > 0 ? (
+        <select
+          className="ref-chip-select"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          title="Pick a value from this field's choices"
+          disabled={!needsValue}
+        >
+          <option value="">— value —</option>
+          {choices.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          className="cond-value-input"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="value or ${other_field}"
+          disabled={!needsValue}
+        />
+      )}
+      <button
+        type="button"
+        className="link"
+        onClick={(e) => {
+          e.preventDefault();
+          doInsert();
+        }}
+        disabled={!canInsert}
+        title={
+          !column
+            ? 'Pick a column first'
+            : preview
+              ? `Append to ${column}: ${preview}`
+              : 'Pick the rest above'
+        }
+      >
+        + insert
+      </button>
+      {preview && <code className="cond-preview">{preview}</code>}
+    </div>
+  );
+}
+
 /* ------------------------------ Choices tab ----------------------------- */
 
-function ChoicesTab(props: { form: XLSForm; patch: (n: XLSForm) => void }) {
+function ChoicesTab(props: {
+  form: XLSForm;
+  patch: (n: XLSForm) => void;
+  undo: () => void;
+  getSnapshotId: () => number;
+  jumpTo: (id: number) => void;
+}) {
   const { form, patch } = props;
   const grouped = useMemo(() => groupChoices(form.choices), [form.choices]);
   const sensors = useSensors(
@@ -708,7 +1308,14 @@ function ChoicesTab(props: { form: XLSForm; patch: (n: XLSForm) => void }) {
   }
 
   function removeChoice(rowId: string) {
+    if (!form) return;
+    const choice = form.choices.find((c) => c.rowId === rowId);
+    const snapshotId = props.getSnapshotId();
     patch({ ...form, choices: form.choices.filter((c) => c.rowId !== rowId) });
+    showUndoToast({
+      message: `Deleted choice "${choice?.name || rowId}"`,
+      onUndo: () => props.jumpTo(snapshotId),
+    });
   }
 
   function moveChoice(rowId: string, direction: -1 | 1) {
@@ -833,6 +1440,189 @@ function groupChoices(rows: ChoiceRow[]): Array<{ list_name: string; rows: Choic
     if (i !== undefined) out[i]?.rows.push(r);
   }
   return out;
+}
+
+/* ----------------------------- Translate tab ----------------------------- */
+
+/**
+ * Side-by-side translation grid. One row per labeled survey/choice row,
+ * one column per locale, free-text cells. Editing a cell mutates
+ * `row.labels[locale]` and propagates via `patch()`. Saves through the
+ * normal form-save path.
+ *
+ * Only rows with a non-empty `name` and at least one existing label are
+ * shown — structural begin/end markers and unlabeled calculate rows are
+ * hidden so translators see only what they need to translate.
+ */
+function TranslateTab(props: { form: XLSForm; patch: (n: XLSForm) => void }) {
+  const { form, patch } = props;
+  const locales = form.surveyHeaders.labelLocales.length > 0
+    ? form.surveyHeaders.labelLocales
+    : ['en'];
+  const choiceLocales = form.choicesHeaders.labelLocales.length > 0
+    ? form.choicesHeaders.labelLocales
+    : ['en'];
+  const [filter, setFilter] = useState('');
+  const [scope, setScope] = useState<'survey' | 'choices' | 'all'>('survey');
+
+  const f = filter.trim().toLowerCase();
+  const surveyRows = form.survey.filter((r) => {
+    if (!r.name) return false;
+    const hasAnyLabel = Object.values(r.labels).some((v) => v && v.trim());
+    if (!hasAnyLabel) return false;
+    if (!f) return true;
+    if (r.name.toLowerCase().includes(f)) return true;
+    return Object.values(r.labels).some((v) => v && v.toLowerCase().includes(f));
+  });
+  const choiceRows = form.choices.filter((c) => {
+    if (!f) return true;
+    if (c.list_name.toLowerCase().includes(f) || c.name.toLowerCase().includes(f)) return true;
+    return Object.values(c.labels).some((v) => v && v.toLowerCase().includes(f));
+  });
+
+  function updateSurveyLabel(rowId: string, locale: string, value: string) {
+    patch({
+      ...form,
+      survey: form.survey.map((r) =>
+        r.rowId === rowId ? { ...r, labels: { ...r.labels, [locale]: value } } : r,
+      ),
+    });
+  }
+  function updateChoiceLabel(idx: number, locale: string, value: string) {
+    patch({
+      ...form,
+      choices: form.choices.map((c, i) =>
+        i === idx ? { ...c, labels: { ...c.labels, [locale]: value } } : c,
+      ),
+    });
+  }
+
+  const missingCounts = locales.map((loc) => ({
+    locale: loc,
+    missing: surveyRows.filter((r) => !r.labels[loc] || !r.labels[loc]!.trim()).length,
+  }));
+
+  return (
+    <div className="translate-tab">
+      <div className="row gap toolbar">
+        <input
+          type="search"
+          placeholder="Filter by name or label text…"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          style={{ flex: 1, maxWidth: 320 }}
+        />
+        <div className="row gap mode-toggle">
+          <button
+            className={scope === 'survey' ? 'active' : 'link'}
+            onClick={() => setScope('survey')}
+          >
+            Survey ({surveyRows.length})
+          </button>
+          <button
+            className={scope === 'choices' ? 'active' : 'link'}
+            onClick={() => setScope('choices')}
+          >
+            Choices ({choiceRows.length})
+          </button>
+          <button className={scope === 'all' ? 'active' : 'link'} onClick={() => setScope('all')}>
+            All
+          </button>
+        </div>
+        <div className="row gap">
+          {missingCounts.map((m) => (
+            <span key={m.locale} className={`badge${m.missing > 0 ? ' warn' : ''}`}>
+              {m.locale}: {m.missing} missing
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {(scope === 'survey' || scope === 'all') && (
+        <section>
+          <h3>Survey labels</h3>
+          <table className="translate-grid">
+            <thead>
+              <tr>
+                <th style={{ width: 180 }}>Field</th>
+                {locales.map((loc) => (
+                  <th key={loc}>label::{loc}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {surveyRows.map((r) => (
+                <tr key={r.rowId}>
+                  <td>
+                    <code>{r.name}</code>
+                    <div className="muted small">{r.type}</div>
+                  </td>
+                  {locales.map((loc) => (
+                    <td key={loc}>
+                      <textarea
+                        value={r.labels[loc] ?? ''}
+                        onChange={(e) => updateSurveyLabel(r.rowId, loc, e.target.value)}
+                        rows={Math.max(1, Math.ceil((r.labels[loc]?.length ?? 0) / 50))}
+                        placeholder={`(empty — translate from ${locales.find((l) => l !== loc && r.labels[l]) ?? 'en'})`}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {surveyRows.length === 0 && (
+                <tr>
+                  <td colSpan={locales.length + 1} className="muted">
+                    No survey rows match.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </section>
+      )}
+
+      {(scope === 'choices' || scope === 'all') && (
+        <section>
+          <h3>Choice labels</h3>
+          <table className="translate-grid">
+            <thead>
+              <tr>
+                <th style={{ width: 180 }}>List / choice</th>
+                {choiceLocales.map((loc) => (
+                  <th key={loc}>label::{loc}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {choiceRows.map((c, i) => (
+                <tr key={`${c.list_name}:${c.name}:${i}`}>
+                  <td>
+                    <code>{c.list_name}</code> / <code>{c.name}</code>
+                  </td>
+                  {choiceLocales.map((loc) => (
+                    <td key={loc}>
+                      <textarea
+                        value={c.labels[loc] ?? ''}
+                        onChange={(e) => updateChoiceLabel(i, loc, e.target.value)}
+                        rows={1}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {choiceRows.length === 0 && (
+                <tr>
+                  <td colSpan={choiceLocales.length + 1} className="muted">
+                    No choices match.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </section>
+      )}
+    </div>
+  );
 }
 
 /* ----------------------------- Settings tab ----------------------------- */

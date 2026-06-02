@@ -15,10 +15,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { parseTaskFile, type FieldValue, type ParsedTaskFile, type TaskEntry } from '@cht-ui/shared';
 import { api } from '../api.js';
 import { useApp } from '../state/store.js';
+import { useHistory } from '../state/useHistory.js';
+import { showUndoToast } from './UndoToast.js';
 import { AppliesIfBuilder } from './AppliesIfBuilder.js';
 import { EventsEditor } from './EventsEditor.js';
 import { ResolvedWhenPicker } from './ResolvedWhenPicker.js';
 import { ActionsEditor } from './ActionsEditor.js';
+import { parseAppliesToType } from './useReportFormFields.js';
 
 type FileKey = 'tasks.js' | 'task-schedules.js' | 'tasks-extras.js';
 const SECONDARY_FILES: FileKey[] = ['task-schedules.js', 'tasks-extras.js'];
@@ -35,7 +38,11 @@ export function TasksEditor() {
   const dirty = useApp((s) => s.dirty['tasks'] ?? false);
   const saving = useApp((s) => s.saving['tasks'] ?? false);
 
-  const [state, setState] = useState<TasksState | null>(null);
+  const history = useHistory<TasksState>({
+    onUndo: () => setDirty('tasks', true),
+    onRedo: () => setDirty('tasks', true),
+  });
+  const state = history.current;
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'structured' | 'raw'>('structured');
   const [activeRawFile, setActiveRawFile] = useState<FileKey>('tasks.js');
@@ -49,7 +56,7 @@ export function TasksEditor() {
         if (!alive) return;
         const tasksSrc = res['tasks.js'] ?? '';
         const parsed = tasksSrc ? parseTaskFile(tasksSrc) : null;
-        setState({ raw: res, parsed });
+        history.reset({ raw: res, parsed });
         setLoading(false);
       })
       .catch((e: Error) => {
@@ -60,24 +67,29 @@ export function TasksEditor() {
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setError]);
 
+  function patchState(next: TasksState) {
+    history.patch(next);
+    setDirty('tasks', true);
+  }
   function patchEntry(idx: number, next: TaskEntry) {
     if (!state?.parsed) return;
     const entries = state.parsed.entries.map((e, i) => (i === idx ? next : e));
-    setState({
-      ...state,
-      parsed: { ...state.parsed, entries },
-    });
-    setDirty('tasks', true);
+    patchState({ ...state, parsed: { ...state.parsed, entries } });
   }
   function removeEntry(idx: number) {
     if (!state?.parsed) return;
-    setState({
+    const target = state.parsed.entries[idx];
+    const label =
+      (target?.fields['name']?.kind === 'string' && target.fields['name'].value) || `task ${idx + 1}`;
+    const snapshotId = history.currentSnapshotId;
+    patchState({
       ...state,
       parsed: { ...state.parsed, entries: state.parsed.entries.filter((_, i) => i !== idx) },
     });
-    setDirty('tasks', true);
+    showUndoToast({ message: `Deleted task "${label}"`, onUndo: () => history.jumpTo(snapshotId) });
   }
   function addEntry() {
     if (!state?.parsed) return;
@@ -95,19 +107,17 @@ export function TasksEditor() {
         actions: { kind: 'array', raw: '[{ form: "new_form" }]' },
       },
     };
-    setState({
+    patchState({
       ...state,
       parsed: { ...state.parsed, entries: [...state.parsed.entries, newEntry] },
     });
-    setDirty('tasks', true);
   }
   function patchRaw(file: FileKey, content: string) {
     if (!state) return;
     const nextRaw = { ...state.raw, [file]: content };
     let parsed = state.parsed;
     if (file === 'tasks.js') parsed = parseTaskFile(content);
-    setState({ raw: nextRaw, parsed });
-    setDirty('tasks', true);
+    patchState({ raw: nextRaw, parsed });
   }
 
   async function save() {
@@ -125,6 +135,11 @@ export function TasksEditor() {
         if (c !== null) await api.saveTaskFile(f, c);
       }
       setDirty('tasks', false);
+      // Re-parse what was just written and snapshot it as the new baseline.
+      history.reset({
+        raw: { ...state.raw, 'tasks.js': nextTasks },
+        parsed: nextTasks ? parseTaskFile(nextTasks) : state.parsed,
+      });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -137,9 +152,27 @@ export function TasksEditor() {
 
   return (
     <div className="tasks-editor">
-      <header className="page-header">
+      <header className="page-header sticky-header">
         <h1>Tasks</h1>
         <div className="row gap">
+          <button
+            className="link"
+            onClick={history.undo}
+            disabled={!history.canUndo}
+            title="Undo (Ctrl+Z)"
+            aria-label="Undo last edit"
+          >
+            ↶ Undo
+          </button>
+          <button
+            className="link"
+            onClick={history.redo}
+            disabled={!history.canRedo}
+            title="Redo (Ctrl+Shift+Z)"
+            aria-label="Redo"
+          >
+            ↷ Redo
+          </button>
           <button onClick={() => void save()} disabled={!dirty || saving}>
             {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
           </button>
@@ -218,6 +251,23 @@ function TaskCard(props: {
   function setField(name: string, value: FieldValue) {
     props.onChange({ ...entry, fields: { ...entry.fields, [name]: value } });
   }
+  function clearField(name: string) {
+    const nextFields = { ...entry.fields };
+    delete nextFields[name];
+    props.onChange({ ...entry, fields: nextFields });
+  }
+  function getRawNoQuote(name: string): string {
+    const v = entry.fields[name];
+    if (!v) return '';
+    if (v.kind === 'array' || v.kind === 'object' || v.kind === 'function' || v.kind === 'unknown')
+      return v.raw;
+    return '';
+  }
+  const appliesToType = useMemo(
+    () => parseAppliesToType(getRawNoQuote('appliesToType')),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [entry.fields['appliesToType']],
+  );
   function getString(name: string): string {
     const v = entry.fields[name];
     if (!v) return '';
@@ -253,8 +303,25 @@ function TaskCard(props: {
       {expanded && (
         <div className="task-fields">
           <ScalarField label="name" value={getString('name')} onChange={(v) => setField('name', { kind: 'string', value: v })} />
-          <ScalarField label="title" value={getString('title')} onChange={(v) => setField('title', { kind: 'string', value: v })} />
+          <TitleFieldWithI18nHint
+            value={getString('title')}
+            onChange={(v) => setField('title', { kind: 'string', value: v })}
+          />
           <ScalarField label="icon" value={getString('icon')} onChange={(v) => setField('icon', { kind: 'string', value: v })} />
+          <PriorityField
+            value={getString('priority')}
+            label={getString('priorityLabel')}
+            onChangeValue={(v) =>
+              v === ''
+                ? clearField('priority')
+                : setField('priority', { kind: 'string', value: v })
+            }
+            onChangeLabel={(v) =>
+              v === ''
+                ? clearField('priorityLabel')
+                : setField('priorityLabel', { kind: 'string', value: v })
+            }
+          />
           <ScalarField
             label="appliesTo"
             value={getString('appliesTo')}
@@ -269,10 +336,12 @@ function TaskCard(props: {
           />
           <AppliesIfWithBuilder
             value={getRaw('appliesIf')}
+            appliesToType={appliesToType}
             onChange={(v) => setField('appliesIf', { kind: 'function', raw: v })}
           />
           <ResolvedIfWithPicker
             value={getRaw('resolvedIf')}
+            appliesToType={appliesToType}
             onChange={(v) => {
               // If the user picked an identifier, store as identifier; else as function.
               const looksLikeIdentifier = /^[a-zA-Z_$][\w$]*$/.test(v.trim());
@@ -286,6 +355,7 @@ function TaskCard(props: {
           />
           <EventsWithEditor
             value={getRaw('events')}
+            appliesToType={appliesToType}
             onChange={(v) => {
               // If the raw text starts with [, it's an array literal; else a generator expression.
               const isArrayShape = v.trim().startsWith('[');
@@ -297,6 +367,7 @@ function TaskCard(props: {
           />
           <ActionsWithEditor
             value={getRaw('actions')}
+            appliesToType={appliesToType}
             onChange={(v) => {
               const isArrayShape = v.trim().startsWith('[');
               setField(
@@ -314,6 +385,8 @@ function TaskCard(props: {
                     'name',
                     'title',
                     'icon',
+                    'priority',
+                    'priorityLabel',
                     'appliesTo',
                     'appliesToType',
                     'appliesIf',
@@ -345,7 +418,11 @@ function TaskCard(props: {
 
 /* --------------------- Inline wrapped builders --------------------- */
 
-function AppliesIfWithBuilder(props: { value: string; onChange: (v: string) => void }) {
+function AppliesIfWithBuilder(props: {
+  value: string;
+  onChange: (v: string) => void;
+  appliesToType: string[];
+}) {
   const [showBuilder, setShowBuilder] = useState(false);
   return (
     <label className="expr-field">
@@ -365,6 +442,7 @@ function AppliesIfWithBuilder(props: { value: string; onChange: (v: string) => v
       {showBuilder && (
         <AppliesIfBuilder
           value={props.value}
+          appliesToType={props.appliesToType}
           onCancel={() => setShowBuilder(false)}
           onSave={(v) => {
             props.onChange(v);
@@ -376,31 +454,51 @@ function AppliesIfWithBuilder(props: { value: string; onChange: (v: string) => v
   );
 }
 
-function ResolvedIfWithPicker(props: { value: string; onChange: (v: string) => void }) {
+function ResolvedIfWithPicker(props: {
+  value: string;
+  onChange: (v: string) => void;
+  appliesToType: string[];
+}) {
   return (
     <label className="expr-field">
       <span className="expr-label">
         <code>resolvedIf</code>
         <em className="muted"> — when this returns true the task disappears</em>
       </span>
-      <ResolvedWhenPicker value={props.value} onChange={props.onChange} />
+      <ResolvedWhenPicker
+        value={props.value}
+        onChange={props.onChange}
+        appliesToType={props.appliesToType}
+      />
     </label>
   );
 }
 
-function EventsWithEditor(props: { value: string; onChange: (v: string) => void }) {
+function EventsWithEditor(props: {
+  value: string;
+  onChange: (v: string) => void;
+  appliesToType: string[];
+}) {
   return (
     <label className="expr-field">
       <span className="expr-label">
         <code>events</code>
         <em className="muted"> — when the task is due relative to the trigger</em>
       </span>
-      <EventsEditor value={props.value} onChange={props.onChange} />
+      <EventsEditor
+        value={props.value}
+        onChange={props.onChange}
+        appliesToType={props.appliesToType}
+      />
     </label>
   );
 }
 
-function ActionsWithEditor(props: { value: string; onChange: (v: string) => void }) {
+function ActionsWithEditor(props: {
+  value: string;
+  onChange: (v: string) => void;
+  appliesToType: string[];
+}) {
   const forms = useApp((s) => s.forms);
   const formOptions = forms
     .filter((f) => f.category === 'app')
@@ -411,7 +509,12 @@ function ActionsWithEditor(props: { value: string; onChange: (v: string) => void
         <code>actions</code>
         <em className="muted"> — which form opens when the task is tapped</em>
       </span>
-      <ActionsEditor value={props.value} formOptions={formOptions} onChange={props.onChange} />
+      <ActionsEditor
+        value={props.value}
+        formOptions={formOptions}
+        onChange={props.onChange}
+        appliesToType={props.appliesToType}
+      />
     </label>
   );
 }
@@ -432,6 +535,92 @@ function ScalarField(props: {
         onChange={(e) => props.onChange(e.target.value)}
         placeholder={props.placeholder}
       />
+    </label>
+  );
+}
+
+/**
+ * `title` is almost always a translation key (e.g. `task.malaria.followup.title`)
+ * resolved against the project's `messages-<locale>.properties` files. The
+ * raw key shape is non-obvious to non-developers, so we detect the key
+ * pattern and surface a hint pointing at where the actual EN/NE strings
+ * need to live. Doesn't gate the input — the user can still type a raw
+ * string for hardcoded titles.
+ */
+function TitleFieldWithI18nHint(props: { value: string; onChange: (v: string) => void }) {
+  const looksLikeKey = /^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$/i.test(props.value.trim());
+  return (
+    <label className="expr-field">
+      <span className="expr-label">
+        <code>title</code>
+        <em className="muted"> — translation key or literal string</em>
+      </span>
+      <input
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        placeholder="task.malaria.followup.title"
+      />
+      {looksLikeKey && (
+        <span className="muted small" style={{ marginTop: 4 }}>
+          📖 This looks like a translation key. Add the EN + NE strings under
+          {' '}<code>app_settings/forms/translations/messages-en.properties</code> and
+          {' '}<code>messages-ne.properties</code> in your project folder.
+        </span>
+      )}
+    </label>
+  );
+}
+
+const PRIORITY_LEVELS = [
+  { value: '', label: '— default (medium) —' },
+  { value: 'high', label: 'high' },
+  { value: 'medium', label: 'medium' },
+  { value: 'low', label: 'low' },
+];
+
+/**
+ * Renders the optional task `priority` field as a typed dropdown plus an
+ * optional `priorityLabel` (also a translation key). Setting empty value
+ * deletes the fields entirely so the round-trip stays minimal — the JS
+ * serializer drops absent keys, matching the way unprioritised tasks ship.
+ */
+function PriorityField(props: {
+  value: string;
+  label: string;
+  onChangeValue: (v: string) => void;
+  onChangeLabel: (v: string) => void;
+}) {
+  const looksLikeLabelKey = /^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$/i.test(props.label.trim());
+  return (
+    <label className="expr-field">
+      <span className="expr-label">
+        <code>priority</code>
+        <em className="muted"> — affects sort order and color in the CHW task list</em>
+      </span>
+      <div className="row gap" style={{ flexWrap: 'wrap' }}>
+        <select
+          value={props.value}
+          onChange={(e) => props.onChangeValue(e.target.value)}
+          className="type-select"
+        >
+          {PRIORITY_LEVELS.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+        <input
+          value={props.label}
+          onChange={(e) => props.onChangeLabel(e.target.value)}
+          placeholder="priorityLabel (translation key, optional)"
+          style={{ flex: 1, minWidth: 240 }}
+        />
+      </div>
+      {props.label && looksLikeLabelKey && (
+        <span className="muted small" style={{ marginTop: 4 }}>
+          📖 priorityLabel is also a translation key — same .properties files as title.
+        </span>
+      )}
     </label>
   );
 }

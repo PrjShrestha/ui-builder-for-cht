@@ -1,0 +1,5 @@
+# exit 0
+Checking https://demo.dev.medicmobile.org ...
+- ddoc: medic 3.18.0
+- ddoc: medic-client 3.18.0
+✓ instance is reachable

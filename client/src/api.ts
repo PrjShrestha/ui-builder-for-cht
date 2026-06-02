@@ -5,11 +5,18 @@
 import type { XLSForm } from '@cht-ui/shared';
 import type { FormListEntry, ProjectInfo } from './state/store.js';
 
+export interface DeployConfig {
+  target: 'local' | 'instance' | 'url';
+  instance?: string;
+  url?: string;
+  user?: string;
+}
+
 async function jsonFetch<T>(input: string, init?: RequestInit): Promise<T> {
   const res = await fetch(input, {
     ...init,
     headers: {
-      'content-type': 'application/json',
+      ...(init?.body !== undefined ? { 'content-type': 'application/json' } : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -40,6 +47,97 @@ export const api = {
 
   closeProject: () =>
     jsonFetch<{ open: boolean }>('/api/project/close', { method: 'POST' }),
+
+  browse: (path: string) =>
+    jsonFetch<{
+      path: string;
+      parent: string | null;
+      entries: Array<{ name: string; isDirectory: boolean; isProjectRoot: boolean }>;
+    }>(`/api/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`),
+
+  browseShortcuts: () =>
+    jsonFetch<{ shortcuts: Array<{ label: string; path: string }> }>('/api/browse/shortcuts'),
+
+  browseSearch: (path: string, query: string) =>
+    jsonFetch<{ results: Array<{ path: string; name: string; isProjectRoot: boolean }> }>(
+      `/api/browse/search?path=${encodeURIComponent(path)}&query=${encodeURIComponent(query)}`,
+    ),
+
+  chtConfActions: () =>
+    jsonFetch<{
+      actions: Array<{
+        name: string;
+        category:
+          | 'validate'
+          | 'compile'
+          | 'convert'
+          | 'compress'
+          | 'backup'
+          | 'upload'
+          | 'danger'
+          | 'utility';
+        requiresInstance: boolean;
+        dangerous: boolean;
+        label: string;
+      }>;
+      binaryAvailable: boolean;
+      version: string | null;
+    }>('/api/cht-conf/actions'),
+
+  getDeployConfig: () =>
+    jsonFetch<{ config: DeployConfig | null }>('/api/cht-conf/config'),
+
+  setDeployConfig: (config: DeployConfig) =>
+    jsonFetch<{ ok: true; config: DeployConfig }>('/api/cht-conf/config', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    }),
+
+  runChtConfAction: (action: string, password?: string, extraArgs?: string[], dryRun?: boolean) =>
+    jsonFetch<{ ok: true; runId: string; dryRun?: boolean }>('/api/cht-conf/run', {
+      method: 'POST',
+      body: JSON.stringify({ action, password, extraArgs, dryRun }),
+    }),
+
+  /** Chained-run macro — runs N cht-conf actions sequentially as one streamed run. */
+  runChtConfSequence: (actions: string[], password?: string, dryRun?: boolean) =>
+    jsonFetch<{ ok: true; runId: string }>('/api/cht-conf/run-sequence', {
+      method: 'POST',
+      body: JSON.stringify({ actions, password, dryRun }),
+    }),
+
+  getChtConfRun: (runId: string) =>
+    jsonFetch<{
+      id: string;
+      action: string;
+      startedAt: number;
+      endedAt: number | null;
+      exitCode: number | null;
+      lines: string[];
+      running: boolean;
+    }>(`/api/cht-conf/runs/${encodeURIComponent(runId)}`),
+
+  cancelChtConfRun: (runId: string) =>
+    jsonFetch<{ ok: true }>(`/api/cht-conf/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: 'POST',
+    }),
+
+  listTemplates: () =>
+    jsonFetch<{
+      templates: Array<{
+        id: string;
+        label: string;
+        description: string;
+        forms: { app: number; contact: number };
+        hasStarterContent: boolean;
+      }>;
+    }>('/api/templates'),
+
+  createFromTemplate: (path: string, template: string) =>
+    jsonFetch<{ ok: true; path: string }>('/api/templates/create', {
+      method: 'POST',
+      body: JSON.stringify({ path, template }),
+    }),
 
   listForms: () => jsonFetch<{ forms: FormListEntry[] }>('/api/forms'),
 

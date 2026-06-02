@@ -19,6 +19,7 @@ import {
   isValidNumberLiteral,
   type ContactFormFields,
 } from './FieldPicker.js';
+import { ReportFieldPicker } from './ReportFieldPicker.js';
 
 export type { ContactFormFields };
 
@@ -29,6 +30,8 @@ interface Props {
   title?: string;
   /** Optional: contact forms whose fields populate the `contact_field` picker. */
   contactForms?: ContactFormFields[];
+  /** Optional: report-form basenames (from task.appliesToType) for the report_field picker. */
+  appliesToType?: string[];
 }
 
 export function AppliesIfBuilder(props: Props) {
@@ -168,6 +171,7 @@ export function AppliesIfBuilder(props: Props) {
                   key={idx}
                   rule={rule}
                   contactForms={props.contactForms}
+                  appliesToType={props.appliesToType}
                   onChange={(r) => updateRule(idx, r)}
                   onRemove={() => removeRule(idx)}
                 />
@@ -223,6 +227,7 @@ export function AppliesIfBuilder(props: Props) {
 function AppliesIfRuleRow(props: {
   rule: AppliesIfRule;
   contactForms?: ContactFormFields[];
+  appliesToType?: string[];
   onChange: (r: AppliesIfRule) => void;
   onRemove: () => void;
 }) {
@@ -333,10 +338,10 @@ function AppliesIfRuleRow(props: {
       return (
         <div className="row gap rule-row">
           <code>getField(report,</code>
-          <input
+          <ReportFieldPicker
             value={r.field}
-            onChange={(e) => props.onChange({ ...r, field: e.target.value })}
-            placeholder="field.path"
+            onChange={(v) => props.onChange({ ...r, field: v })}
+            availableForms={props.appliesToType ?? []}
           />
           <code>)</code>
           <select

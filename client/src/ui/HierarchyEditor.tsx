@@ -6,8 +6,11 @@
  * and forms/contact/place-types.json.
  */
 import { useEffect, useMemo, useState } from 'react';
+import { deriveHierarchyOrder, nudgeHierarchyPosition } from '@cht-ui/shared';
 import { api } from '../api.js';
 import { useApp } from '../state/store.js';
+import { useHistory } from '../state/useHistory.js';
+import { showUndoToast } from './UndoToast.js';
 
 interface ContactType extends Record<string, unknown> {
   id: string;
@@ -37,9 +40,14 @@ export function HierarchyEditor() {
   const dirty = useApp((s) => s.dirty['hierarchy'] ?? false);
   const saving = useApp((s) => s.saving['hierarchy'] ?? false);
 
-  const [data, setData] = useState<HierarchyData | null>(null);
+  const history = useHistory<HierarchyData>({
+    onUndo: () => setDirty('hierarchy', true),
+    onRedo: () => setDirty('hierarchy', true),
+  });
+  const data = history.current;
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -48,7 +56,7 @@ export function HierarchyEditor() {
       .getHierarchy()
       .then((d) => {
         if (!alive) return;
-        setData(d as HierarchyData);
+        history.reset(d as HierarchyData);
         setLoading(false);
       })
       .catch((e: Error) => {
@@ -59,10 +67,11 @@ export function HierarchyEditor() {
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setError]);
 
   function patch(next: HierarchyData) {
-    setData(next);
+    history.patch(next);
     setDirty('hierarchy', true);
   }
 
@@ -76,6 +85,7 @@ export function HierarchyEditor() {
         place_types_display: data.place_types_display,
       });
       setDirty('hierarchy', false);
+      history.reset(data);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -95,19 +105,83 @@ export function HierarchyEditor() {
 
   return (
     <div className="hierarchy-editor">
-      <header className="page-header">
+      <header className="page-header sticky-header">
         <h1>Hierarchy</h1>
         <div className="row gap">
-          <button onClick={() => addType(data, patch, setSelectedId)}>+ Type</button>
+          <button onClick={() => setAdding(true)}>+ Type</button>
+          <button
+            className="link"
+            onClick={history.undo}
+            disabled={!history.canUndo}
+            title="Undo (Ctrl+Z)"
+            aria-label="Undo last edit"
+          >
+            ↶ Undo
+          </button>
+          <button
+            className="link"
+            onClick={history.redo}
+            disabled={!history.canRedo}
+            title="Redo (Ctrl+Shift+Z)"
+            aria-label="Redo"
+          >
+            ↷ Redo
+          </button>
           <button onClick={() => void save()} disabled={!dirty || saving}>
             {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
           </button>
         </div>
       </header>
-      <p className="muted">
-        <strong>place_hierarchy_types order:</strong>{' '}
-        {data.place_hierarchy_types.join(' → ') || '(none)'}
-      </p>
+      <div className="hierarchy-order">
+        <strong className="muted small">place_hierarchy_types order:</strong>
+        {data.place_hierarchy_types.length === 0 && (
+          <span className="muted"> (none)</span>
+        )}
+        {data.place_hierarchy_types.map((id, i) => (
+          <span key={id} className="hierarchy-order-pill">
+            <button
+              className="link"
+              onClick={() => {
+                patch({
+                  ...data,
+                  place_hierarchy_types: nudgeHierarchyPosition(
+                    data.place_hierarchy_types,
+                    id,
+                    -1,
+                  ),
+                });
+              }}
+              disabled={i === 0}
+              aria-label={`Move ${id} earlier in the chain`}
+              title="Move earlier"
+            >
+              ←
+            </button>
+            <code>{id}</code>
+            <button
+              className="link"
+              onClick={() => {
+                patch({
+                  ...data,
+                  place_hierarchy_types: nudgeHierarchyPosition(
+                    data.place_hierarchy_types,
+                    id,
+                    1,
+                  ),
+                });
+              }}
+              disabled={i === data.place_hierarchy_types.length - 1}
+              aria-label={`Move ${id} later in the chain`}
+              title="Move later"
+            >
+              →
+            </button>
+          </span>
+        ))}
+        <span className="muted small">
+          Order follows the parent chain automatically. Use ←/→ to nudge places that share the same parent.
+        </span>
+      </div>
       <div className="hierarchy-grid">
         <section className="tree-pane">
           <h3>Contact types ({data.contact_types.length})</h3>
@@ -130,16 +204,17 @@ export function HierarchyEditor() {
               displayMap={data.place_types_display}
               onChange={(updated, displayName) => {
                 const nextDisplay = { ...data.place_types_display };
+                const id = updated.id ?? selected.id;
                 if (displayName !== undefined) {
-                  if (displayName.trim() === '') delete nextDisplay[updated.id];
-                  else nextDisplay[updated.id] = displayName;
+                  if (displayName.trim() === '') delete nextDisplay[id];
+                  else nextDisplay[id] = displayName;
                 }
                 patch({
                   ...data,
                   contact_types: data.contact_types.map((t) =>
                     t.id === selected.id ? { ...t, ...updated } : t,
                   ),
-                  place_hierarchy_types: syncHierarchyOrder(
+                  place_hierarchy_types: deriveHierarchyOrder(
                     data.place_hierarchy_types,
                     data.contact_types.map((t) =>
                       t.id === selected.id ? { ...t, ...updated } : t,
@@ -175,12 +250,7 @@ export function HierarchyEditor() {
                 setSelectedId(newId);
               }}
               onDelete={() => {
-                if (
-                  !window.confirm(
-                    `Delete type "${selected.id}"? This also removes it as a parent from other types.`,
-                  )
-                )
-                  return;
+                const snapshotId = history.currentSnapshotId;
                 const remaining = data.contact_types
                   .filter((t) => t.id !== selected.id)
                   .map((t) => {
@@ -195,6 +265,10 @@ export function HierarchyEditor() {
                   place_types_display: display,
                 });
                 setSelectedId(null);
+                showUndoToast({
+                  message: `Deleted type "${selected.id}"`,
+                  onUndo: () => history.jumpTo(snapshotId),
+                });
               }}
             />
           ) : (
@@ -202,6 +276,24 @@ export function HierarchyEditor() {
           )}
         </section>
       </div>
+
+      {adding && (
+        <AddTypeForm
+          existingIds={data.contact_types.map((t) => t.id)}
+          placeIds={data.contact_types.filter((t) => !t.person).map((t) => t.id)}
+          onCancel={() => setAdding(false)}
+          onCommit={(newType) => {
+            const nextTypes = [...data.contact_types, newType];
+            patch({
+              contact_types: nextTypes,
+              place_hierarchy_types: deriveHierarchyOrder(data.place_hierarchy_types, nextTypes),
+              place_types_display: { ...data.place_types_display },
+            });
+            setSelectedId(newType.id);
+            setAdding(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -369,44 +461,112 @@ function ContactTypeDetail(props: {
   );
 }
 
-function syncHierarchyOrder(prev: string[], types: ContactType[]): string[] {
-  // Hierarchy order should only include place (non-person) types.
-  const placeIds = new Set(types.filter((t) => !t.person).map((t) => t.id));
-  const filtered = prev.filter((p) => placeIds.has(p));
-  // Append any new place ids not yet in the order.
-  for (const p of placeIds) if (!filtered.includes(p)) filtered.push(p);
-  return filtered;
-}
+/**
+ * Inline modal for adding a new contact type. Replaces the old
+ * window.prompt + window.confirm pair (which Bhishan flagged as
+ * unprofessional) and lets the user set the parent at creation time so
+ * deriveHierarchyOrder places the type correctly without a follow-up edit.
+ */
+function AddTypeForm(props: {
+  existingIds: string[];
+  placeIds: string[];
+  onCancel: () => void;
+  onCommit: (newType: ContactType) => void;
+}) {
+  const [id, setId] = useState('');
+  const [isPerson, setIsPerson] = useState(false);
+  const [parentId, setParentId] = useState<string>('');
+  const duplicate = props.existingIds.includes(id);
+  const validId = /^[a-z][a-z0-9_]*$/.test(id);
+  const canCommit = id !== '' && validId && !duplicate;
 
-function addType(
-  data: HierarchyData,
-  patch: (n: HierarchyData) => void,
-  select: (id: string | null) => void,
-) {
-  const id = window.prompt('New type id (e.g. g50_subarea or person_chw)');
-  if (!id) return;
-  if (data.contact_types.some((t) => t.id === id)) {
-    window.alert('That id already exists.');
-    return;
+  function commit() {
+    if (!canCommit) return;
+    const newType: ContactType = {
+      id,
+      name_key: `contact.type.${id}`,
+      icon: '',
+      person: isPerson,
+    };
+    if (!isPerson) {
+      newType.create_form = `form:contact:${id}:create`;
+      newType.edit_form = `form:contact:${id}:edit`;
+    }
+    if (parentId) newType.parents = [parentId];
+    props.onCommit(newType);
   }
-  const isPerson = window.confirm('Person type? (Cancel for place type.)');
-  const newType: ContactType = {
-    id,
-    name_key: `contact.type.${id}`,
-    icon: '',
-    person: isPerson,
-  };
-  if (!isPerson) {
-    newType.create_form = `form:contact:${id}:create`;
-    newType.edit_form = `form:contact:${id}:edit`;
-  }
-  const next: HierarchyData = {
-    contact_types: [...data.contact_types, newType],
-    place_hierarchy_types: isPerson
-      ? data.place_hierarchy_types
-      : [...data.place_hierarchy_types, id],
-    place_types_display: { ...data.place_types_display },
-  };
-  patch(next);
-  select(id);
+
+  return (
+    <div
+      className="qtype-backdrop"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) props.onCancel();
+      }}
+    >
+      <div
+        className="qtype-modal"
+        style={{ maxWidth: 480 }}
+        role="dialog"
+        aria-label="Add contact type"
+      >
+        <div className="qtype-header">
+          <h2>Add contact type</h2>
+          <button className="link" onClick={props.onCancel} aria-label="Close">
+            ✕
+          </button>
+        </div>
+        <div style={{ padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <label className="qtype-name-field">
+            <span>Type id</span>
+            <input
+              autoFocus
+              value={id}
+              onChange={(e) => setId(e.target.value)}
+              placeholder="e.g. ward, chw, patient"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && canCommit) commit();
+              }}
+            />
+            <span className="muted small">
+              Lowercase letters, digits, underscores. Used in app_settings + form references.
+              {duplicate && <strong style={{ color: '#dc2626' }}> — already exists</strong>}
+              {id && !validId && !duplicate && (
+                <strong style={{ color: '#dc2626' }}> — invalid id</strong>
+              )}
+            </span>
+          </label>
+          <label className="row gap">
+            <input
+              type="checkbox"
+              checked={isPerson}
+              onChange={(e) => setIsPerson(e.target.checked)}
+            />
+            <span>Person type (e.g. CHW, patient) — leave unchecked for a place</span>
+          </label>
+          <label className="qtype-name-field">
+            <span>Parent (optional)</span>
+            <select value={parentId} onChange={(e) => setParentId(e.target.value)}>
+              <option value="">— no parent (root) —</option>
+              {props.existingIds.map((pid) => (
+                <option key={pid} value={pid}>
+                  {pid} {!props.placeIds.includes(pid) ? '(person)' : ''}
+                </option>
+              ))}
+            </select>
+            <span className="muted small">
+              For places, sets where it sits in the chain. For people, where they can be created.
+            </span>
+          </label>
+        </div>
+        <div className="qtype-actions">
+          <button className="link" onClick={props.onCancel}>
+            Cancel
+          </button>
+          <button onClick={commit} disabled={!canCommit}>
+            Add type
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

@@ -9,8 +9,23 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
+/**
+ * Persistent cht-conf deploy target. Password is NEVER persisted —
+ * the UI prompts each run.
+ */
+export interface DeployConfig {
+  target: 'local' | 'instance' | 'url';
+  /** Used when target === 'instance' (Medic-hosted: <name>.dev.medicmobile.org). */
+  instance?: string;
+  /** Used when target === 'url' (arbitrary URL). */
+  url?: string;
+  /** Username for `cht --user <name>`. */
+  user?: string;
+}
+
 interface StateFile {
   projectPath: string | null;
+  deployConfig?: DeployConfig | null;
 }
 
 const STATE_DIR = path.join(os.homedir(), '.cht-ui-builder');
@@ -23,9 +38,12 @@ async function ensureLoaded(): Promise<StateFile> {
   try {
     const raw = await fs.readFile(STATE_FILE, 'utf8');
     const parsed = JSON.parse(raw) as Partial<StateFile>;
-    cached = { projectPath: parsed.projectPath ?? null };
+    cached = {
+      projectPath: parsed.projectPath ?? null,
+      deployConfig: parsed.deployConfig ?? null,
+    };
   } catch {
-    cached = { projectPath: null };
+    cached = { projectPath: null, deployConfig: null };
   }
   return cached;
 }
@@ -44,6 +62,17 @@ export async function getProjectPath(): Promise<string | null> {
 export async function setProjectPath(p: string | null): Promise<void> {
   const s = await ensureLoaded();
   s.projectPath = p;
+  await persist();
+}
+
+export async function getDeployConfig(): Promise<DeployConfig | null> {
+  const s = await ensureLoaded();
+  return s.deployConfig ?? null;
+}
+
+export async function setDeployConfig(cfg: DeployConfig | null): Promise<void> {
+  const s = await ensureLoaded();
+  s.deployConfig = cfg;
   await persist();
 }
 

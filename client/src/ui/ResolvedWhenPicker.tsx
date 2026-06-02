@@ -4,19 +4,22 @@
  * `checkTaskResolvedForHomeVisit` (just shown by name); everything else
  * gets a raw code editor.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   parseResolvedIf,
   serializeResolvedIf,
   type ResolvedIfPattern,
 } from '@cht-ui/shared';
+import { InsertFieldButton } from './InsertFieldButton.js';
 
 interface Props {
   value: string;
   onChange: (next: string) => void;
+  appliesToType?: string[];
 }
 
-export function ResolvedWhenPicker({ value, onChange }: Props) {
+export function ResolvedWhenPicker({ value, onChange, appliesToType }: Props) {
+  const taRef = useRef<HTMLTextAreaElement>(null);
   const [pattern, setPattern] = useState<ResolvedIfPattern>(() => parseResolvedIf(value));
   const [rawText, setRawText] = useState<string>(value);
   const [showRaw, setShowRaw] = useState<boolean>(pattern.kind === 'raw');
@@ -96,15 +99,29 @@ export function ResolvedWhenPicker({ value, onChange }: Props) {
       )}
 
       {showRaw && (
-        <textarea
-          className="code-editor short"
-          value={rawText}
-          onChange={(e) => {
-            setRawText(e.target.value);
-            onChange(e.target.value);
-          }}
-          spellCheck={false}
-        />
+        <>
+          <div className="row gap">
+            <InsertFieldButton
+              availableForms={appliesToType ?? []}
+              value={rawText}
+              onChange={(v) => {
+                setRawText(v);
+                onChange(v);
+              }}
+              caret={taRef.current?.selectionStart ?? null}
+            />
+          </div>
+          <textarea
+            ref={taRef}
+            className="code-editor short"
+            value={rawText}
+            onChange={(e) => {
+              setRawText(e.target.value);
+              onChange(e.target.value);
+            }}
+            spellCheck={false}
+          />
+        </>
       )}
     </div>
   );

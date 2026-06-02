@@ -2,15 +2,18 @@
  * Visual editor for a task's `events` array. One card per event; raw-text
  * fallback for `someSchedule.map(...)` generator expressions.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { parseEvents, serializeEvents, type ParsedEvents, type SimpleEvent } from '@cht-ui/shared';
+import { InsertFieldButton } from './InsertFieldButton.js';
 
 interface Props {
   value: string;
   onChange: (next: string) => void;
+  appliesToType?: string[];
 }
 
-export function EventsEditor({ value, onChange }: Props) {
+export function EventsEditor({ value, onChange, appliesToType }: Props) {
+  const taRef = useRef<HTMLTextAreaElement>(null);
   const [parsed, setParsed] = useState<ParsedEvents>(() => parseEvents(value));
   const [rawText, setRawText] = useState<string>(value);
   const [showRaw, setShowRaw] = useState<boolean>(parsed.shape === 'raw');
@@ -78,15 +81,30 @@ export function EventsEditor({ value, onChange }: Props) {
       )}
 
       {showRaw && (
-        <textarea
-          className="code-editor short"
-          value={rawText}
-          onChange={(e) => {
-            setRawText(e.target.value);
-            onChange(e.target.value);
-          }}
-          spellCheck={false}
-        />
+        <>
+          <div className="row gap">
+            <InsertFieldButton
+              availableForms={appliesToType ?? []}
+              value={rawText}
+              onChange={(v) => {
+                setRawText(v);
+                onChange(v);
+              }}
+              caret={taRef.current?.selectionStart ?? null}
+            />
+            <span className="muted small">Use to splice a field reference into a dueDate body.</span>
+          </div>
+          <textarea
+            ref={taRef}
+            className="code-editor short"
+            value={rawText}
+            onChange={(e) => {
+              setRawText(e.target.value);
+              onChange(e.target.value);
+            }}
+            spellCheck={false}
+          />
+        </>
       )}
     </div>
   );

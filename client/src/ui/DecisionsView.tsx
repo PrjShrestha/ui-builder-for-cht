@@ -447,6 +447,10 @@ function relevantToHumanLines(cond: import('@cht-ui/shared').ParsedExpression): 
         return `${r.negated ? 'NOT ' : ''}${r.field} includes "${r.value}"`;
       case 'answered':
         return r.negated ? `${r.field} is empty` : `${r.field} is answered`;
+      case 'age':
+        return `age of ${r.field} ${r.op} ${r.value} years`;
+      case 'date_offset':
+        return `${r.field} is ${r.comparator === 'more_than' ? 'more than' : 'less than'} ${r.amount} ${r.unit} ${r.direction === 'ago' ? 'ago' : 'from now'}`;
       case 'raw':
         return r.text;
     }

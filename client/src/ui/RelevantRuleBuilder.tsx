@@ -10,6 +10,9 @@ import { useEffect, useState } from 'react';
 import {
   parseRelevant,
   serializeRelevant,
+  type DateOffsetComparator,
+  type DateOffsetDirection,
+  type DateUnit,
   type Operator,
   type ParsedExpression,
   type Rule,
@@ -48,14 +51,34 @@ export function RelevantRuleBuilder(props: Props) {
     setParsed({ ...parsed, rules: parsed.rules.filter((_, i) => i !== idx) });
   }
   function addRule(kind: Rule['kind']) {
-    const newRule: Rule =
-      kind === 'comparison'
-        ? { kind: 'comparison', field: props.fieldOptions[0] ?? '', op: '=', value: '', valueIsString: true }
-        : kind === 'selected'
-          ? { kind: 'selected', field: props.fieldOptions[0] ?? '', value: '', negated: false }
-          : kind === 'answered'
-            ? { kind: 'answered', field: props.fieldOptions[0] ?? '', negated: false }
-            : { kind: 'raw', text: '' };
+    const f0 = props.fieldOptions[0] ?? '';
+    let newRule: Rule;
+    switch (kind) {
+      case 'comparison':
+        newRule = { kind: 'comparison', field: f0, op: '=', value: '', valueIsString: true };
+        break;
+      case 'selected':
+        newRule = { kind: 'selected', field: f0, value: '', negated: false };
+        break;
+      case 'answered':
+        newRule = { kind: 'answered', field: f0, negated: false };
+        break;
+      case 'date_offset':
+        newRule = {
+          kind: 'date_offset',
+          field: f0,
+          comparator: 'more_than',
+          amount: '20',
+          unit: 'years',
+          direction: 'ago',
+        };
+        break;
+      case 'age':
+        newRule = { kind: 'age', field: f0, op: '>', value: '20' };
+        break;
+      default:
+        newRule = { kind: 'raw', text: '' };
+    }
     setParsed({ ...parsed, rules: [...parsed.rules, newRule] });
   }
 
@@ -135,6 +158,12 @@ export function RelevantRuleBuilder(props: Props) {
               </button>
               <button className="link" onClick={() => addRule('answered')}>
                 + answered check
+              </button>
+              <button className="link" onClick={() => addRule('age')}>
+                + age
+              </button>
+              <button className="link" onClick={() => addRule('date_offset')}>
+                + date check
               </button>
               <button className="link" onClick={() => addRule('raw')}>
                 + raw expression
@@ -230,6 +259,80 @@ function RuleRow(props: {
           placeholder="choice name"
         />
         <span>)</span>
+        <button className="link danger" onClick={props.onRemove}>×</button>
+      </div>
+    );
+  }
+  if (rule.kind === 'age') {
+    return (
+      <div className="row gap rule-row">
+        <span>age of</span>
+        <FieldPicker
+          value={rule.field}
+          options={props.fieldOptions}
+          onChange={(v) => props.onChange({ ...rule, field: v })}
+        />
+        <select
+          value={rule.op}
+          onChange={(e) => props.onChange({ ...rule, op: e.target.value as Operator })}
+        >
+          {OPERATORS.map((o) => (
+            <option key={o}>{o}</option>
+          ))}
+        </select>
+        <input
+          type="number"
+          value={rule.value}
+          onChange={(e) => props.onChange({ ...rule, value: e.target.value })}
+          style={{ width: 72 }}
+        />
+        <span>years</span>
+        <button className="link danger" onClick={props.onRemove}>×</button>
+      </div>
+    );
+  }
+  if (rule.kind === 'date_offset') {
+    return (
+      <div className="row gap rule-row">
+        <FieldPicker
+          value={rule.field}
+          options={props.fieldOptions}
+          onChange={(v) => props.onChange({ ...rule, field: v })}
+        />
+        <span>is</span>
+        <select
+          value={rule.comparator}
+          onChange={(e) =>
+            props.onChange({ ...rule, comparator: e.target.value as DateOffsetComparator })
+          }
+        >
+          <option value="more_than">more than</option>
+          <option value="less_than">less than</option>
+        </select>
+        <input
+          type="number"
+          value={rule.amount}
+          onChange={(e) => props.onChange({ ...rule, amount: e.target.value })}
+          style={{ width: 72 }}
+        />
+        <select
+          value={rule.unit}
+          onChange={(e) => props.onChange({ ...rule, unit: e.target.value as DateUnit })}
+        >
+          <option value="days">days</option>
+          <option value="weeks">weeks</option>
+          <option value="months">months</option>
+          <option value="years">years</option>
+        </select>
+        <select
+          value={rule.direction}
+          onChange={(e) =>
+            props.onChange({ ...rule, direction: e.target.value as DateOffsetDirection })
+          }
+        >
+          <option value="ago">ago</option>
+          <option value="from_now">from now</option>
+        </select>
         <button className="link danger" onClick={props.onRemove}>×</button>
       </div>
     );

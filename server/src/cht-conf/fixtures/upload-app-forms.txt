@@ -1,0 +1,5 @@
+# exit 0
+Uploading forms to https://demo.dev.medicmobile.org
+- malaria_screening: uploaded (rev 5-abc...)
+- malaria_followup: uploaded (rev 3-def...)
+✓ 2 forms deployed

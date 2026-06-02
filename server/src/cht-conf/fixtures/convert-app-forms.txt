@@ -1,0 +1,5 @@
+# exit 0
+Converting forms/app/*.xlsx -> *.xml
+- malaria_screening.xlsx -> malaria_screening.xml: ok
+- malaria_followup.xlsx -> malaria_followup.xml: ok
+✓ 2 forms converted

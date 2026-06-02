@@ -4,22 +4,25 @@
  * Card per action with: type radio, form picker, "pass visit window" checkbox.
  * Raw fallback for custom modifyContent bodies.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   parseActions,
   serializeActions,
   type ParsedActions,
   type TaskAction,
 } from '@cht-ui/shared';
+import { InsertFieldButton } from './InsertFieldButton.js';
 
 interface Props {
   value: string;
   /** Form basenames available in the project for the picker. */
   formOptions: string[];
   onChange: (next: string) => void;
+  appliesToType?: string[];
 }
 
-export function ActionsEditor({ value, formOptions, onChange }: Props) {
+export function ActionsEditor({ value, formOptions, onChange, appliesToType }: Props) {
+  const taRef = useRef<HTMLTextAreaElement>(null);
   const [parsed, setParsed] = useState<ParsedActions>(() => parseActions(value));
   const [showRaw, setShowRaw] = useState<boolean>(parsed.shape === 'raw');
   const [rawText, setRawText] = useState<string>(value);
@@ -84,15 +87,30 @@ export function ActionsEditor({ value, formOptions, onChange }: Props) {
       )}
 
       {showRaw && (
-        <textarea
-          className="code-editor short"
-          value={rawText}
-          onChange={(e) => {
-            setRawText(e.target.value);
-            onChange(e.target.value);
-          }}
-          spellCheck={false}
-        />
+        <>
+          <div className="row gap">
+            <InsertFieldButton
+              availableForms={appliesToType ?? []}
+              value={rawText}
+              onChange={(v) => {
+                setRawText(v);
+                onChange(v);
+              }}
+              caret={taRef.current?.selectionStart ?? null}
+            />
+            <span className="muted small">Use to splice a field reference into a modifyContent body.</span>
+          </div>
+          <textarea
+            ref={taRef}
+            className="code-editor short"
+            value={rawText}
+            onChange={(e) => {
+              setRawText(e.target.value);
+              onChange(e.target.value);
+            }}
+            spellCheck={false}
+          />
+        </>
       )}
     </div>
   );

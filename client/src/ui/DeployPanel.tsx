@@ -1,0 +1,597 @@
+/**
+ * cht-conf integration panel. Surfaces every cht-conf action as a button,
+ * grouped by category, with an inline log viewer that streams stdout/stderr
+ * from the spawned binary via Server-Sent Events.
+ *
+ * Auth & target: deploy actions (anything that hits an instance) are gated
+ * behind a target form (--local | --instance | --url) plus a username.
+ * Passwords are typed each run and never persisted.
+ */
+import { useEffect, useRef, useState } from 'react';
+import { api, type DeployConfig } from '../api.js';
+
+interface FriendlyHint {
+  patternId: string;
+  friendly: string;
+  hint?: string;
+  docsUrl?: string;
+  knownUpstreamBug?: boolean;
+  rawLine: string;
+}
+
+type Category =
+  | 'validate'
+  | 'compile'
+  | 'convert'
+  | 'compress'
+  | 'backup'
+  | 'upload'
+  | 'danger'
+  | 'utility';
+
+interface Action {
+  name: string;
+  category: Category;
+  requiresInstance: boolean;
+  dangerous: boolean;
+  label: string;
+}
+
+const CATEGORY_ORDER: Category[] = [
+  'validate',
+  'compile',
+  'convert',
+  'compress',
+  'backup',
+  'upload',
+  'utility',
+  'danger',
+];
+
+const CATEGORY_LABELS: Record<Category, string> = {
+  validate: 'Validate / Health check',
+  compile: 'Compile',
+  convert: 'Convert (xlsx → xml)',
+  compress: 'Compress media',
+  backup: 'Backup from instance',
+  upload: 'Deploy to instance',
+  utility: 'Utility',
+  danger: 'Danger zone',
+};
+
+const CATEGORY_HINTS: Record<Category, string> = {
+  validate: 'Read-only checks. Safe to run anytime.',
+  compile: 'Compiles app_settings.json from tasks.js, contact-summary, schedules.',
+  convert: 'Builds form XML from XLSX. Run before deploying forms.',
+  compress: 'Image / SVG / PNG optimisers. Local only.',
+  backup: 'Reads from the configured CHT instance. Saves to ./backups.',
+  upload: 'Writes to the configured CHT instance. Authenticate first.',
+  utility: 'CSV imports, hierarchy moves, user provisioning.',
+  danger: 'Destructive — irreversible. Requires explicit confirmation.',
+};
+
+export function DeployPanel() {
+  const [actions, setActions] = useState<Action[]>([]);
+  const [binaryAvailable, setBinaryAvailable] = useState<boolean>(true);
+  const [chtConfVersion, setChtConfVersion] = useState<string | null>(null);
+  const [config, setConfig] = useState<DeployConfig | null>(null);
+  const [password, setPassword] = useState('');
+  const [pendingAction, setPendingAction] = useState<Action | null>(null);
+  const [runId, setRunId] = useState<string | null>(null);
+  const [lines, setLines] = useState<string[]>([]);
+  const [hints, setHints] = useState<FriendlyHint[]>([]);
+  const [dryRun, setDryRun] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [exitCode, setExitCode] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const logEndRef = useRef<HTMLDivElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+
+  useEffect(() => {
+    void api.chtConfActions().then((r) => {
+      setActions(r.actions);
+      setBinaryAvailable(r.binaryAvailable);
+      setChtConfVersion(r.version);
+    });
+    void api.getDeployConfig().then((r) => setConfig(r.config ?? { target: 'local' }));
+  }, []);
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [lines]);
+
+  useEffect(() => {
+    return () => {
+      eventSourceRef.current?.close();
+    };
+  }, []);
+
+  async function saveConfig(next: DeployConfig) {
+    setConfig(next);
+    try {
+      await api.setDeployConfig(next);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function runAction(action: Action) {
+    setError(null);
+    if (action.dangerous) {
+      const ok = window.confirm(
+        `"${action.label}" is destructive and will affect the configured CHT instance.\n\nContinue?`,
+      );
+      if (!ok) return;
+    }
+    if (action.requiresInstance && !password) {
+      setPendingAction(action);
+      return;
+    }
+    await launch(action, password);
+  }
+
+  async function runMacro(macro: DeployMacroSpec) {
+    setError(null);
+    const needsPassword = macro.actions.some(
+      (a) => actions.find((x) => x.name === a)?.requiresInstance,
+    );
+    if (needsPassword && !password) {
+      setError(`"${macro.label}" needs a password — enter one above first.`);
+      return;
+    }
+    // Extra confirm for the broadest deploy — it touches forms AND settings
+    // on the live instance. Forms-only and settings-only macros don't
+    // double-confirm; this is just for "Deploy everything".
+    if (macro.id === 'deploy-everything') {
+      const ok = window.confirm(
+        `"${macro.label}" will upload app forms AND app settings to the configured CHT instance. Continue?`,
+      );
+      if (!ok) return;
+    }
+    setLines([]);
+    setHints([]);
+    setExitCode(null);
+    setRunning(true);
+    try {
+      const res = await api.runChtConfSequence(macro.actions, needsPassword ? password : undefined, dryRun);
+      setRunId(res.runId);
+      streamRun(res.runId);
+    } catch (e) {
+      setError((e as Error).message);
+      setRunning(false);
+    }
+  }
+
+  async function launch(action: Action, pw: string) {
+    setError(null);
+    setLines([]);
+    setHints([]);
+    setExitCode(null);
+    setRunning(true);
+    try {
+      const res = await api.runChtConfAction(
+        action.name,
+        action.requiresInstance ? pw : undefined,
+        undefined,
+        dryRun,
+      );
+      setRunId(res.runId);
+      streamRun(res.runId);
+    } catch (e) {
+      setError((e as Error).message);
+      setRunning(false);
+    }
+  }
+
+  function streamRun(id: string) {
+    eventSourceRef.current?.close();
+    const es = new EventSource(`/api/cht-conf/runs/${encodeURIComponent(id)}/stream`);
+    eventSourceRef.current = es;
+    es.addEventListener('line', (e) => {
+      const { line } = JSON.parse((e as MessageEvent).data) as { line: string };
+      setLines((prev) => [...prev, line]);
+    });
+    es.addEventListener('hint', (e) => {
+      const hint = JSON.parse((e as MessageEvent).data) as FriendlyHint;
+      setHints((prev) => [...prev, hint]);
+    });
+    es.addEventListener('done', (e) => {
+      const { exitCode: code } = JSON.parse((e as MessageEvent).data) as { exitCode: number | null };
+      setRunning(false);
+      setExitCode(code);
+      es.close();
+    });
+    es.onerror = () => {
+      es.close();
+      setRunning(false);
+    };
+  }
+
+  async function cancelRun() {
+    if (!runId) return;
+    try {
+      await api.cancelChtConfRun(runId);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  const grouped = new Map<Category, Action[]>();
+  for (const a of actions) {
+    if (!grouped.has(a.category)) grouped.set(a.category, []);
+    grouped.get(a.category)!.push(a);
+  }
+
+  return (
+    <div className="deploy-panel">
+      <header className="page-header">
+        <h1>Deploy</h1>
+        <div className="row gap">
+          <span className="muted small">
+            cht-conf {chtConfVersion ?? '?'}{' '}
+            {!binaryAvailable && <span className="badge warn">binary missing</span>}
+          </span>
+        </div>
+      </header>
+
+      {error && <div className="error-banner">{error}</div>}
+
+      <DeployTargetForm
+        config={config}
+        password={password}
+        onChangePassword={setPassword}
+        onChangeConfig={saveConfig}
+        onTestConnection={() => {
+          const a = actions.find((x) => x.name === 'check-for-updates');
+          if (a) void runAction(a);
+        }}
+      />
+
+      <DeployMacros
+        running={running}
+        password={password}
+        binaryAvailable={binaryAvailable}
+        onRun={(macro) => void runMacro(macro)}
+      />
+
+      <div className="card" style={{ padding: '10px 14px' }}>
+        <label className="row gap" style={{ alignItems: 'center', cursor: 'pointer' }}>
+          <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
+          <strong>Dry-run mode</strong>
+          <span className="muted small">
+            replay scripted output, do not contact cht-conf or the instance — useful to rehearse a deploy or to demo the tool
+          </span>
+        </label>
+      </div>
+
+      {pendingAction && (
+        <div className="card">
+          <p>
+            <strong>Enter password</strong> for <code>{config?.user ?? '(no user)'}</code> to run{' '}
+            <code>{pendingAction.name}</code>.
+          </p>
+          <div className="row gap">
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="password"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && password) {
+                  void launch(pendingAction, password);
+                  setPendingAction(null);
+                }
+              }}
+            />
+            <button
+              onClick={() => {
+                void launch(pendingAction, password);
+                setPendingAction(null);
+              }}
+              disabled={!password}
+            >
+              Run
+            </button>
+            <button className="link" onClick={() => setPendingAction(null)}>
+              cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="deploy-grid">
+        {CATEGORY_ORDER.filter((c) => (grouped.get(c)?.length ?? 0) > 0).map((cat) => (
+          <section
+            key={cat}
+            className={`deploy-category ${cat === 'danger' ? 'is-danger' : ''}`}
+          >
+            <h3>{CATEGORY_LABELS[cat]}</h3>
+            <p className="muted small">{CATEGORY_HINTS[cat]}</p>
+            <div className="deploy-actions">
+              {(grouped.get(cat) ?? []).map((a) => (
+                <button
+                  key={a.name}
+                  className={`action-btn ${a.dangerous ? 'danger' : ''}`}
+                  onClick={() => void runAction(a)}
+                  disabled={running}
+                  title={a.name}
+                >
+                  <span className="action-label">{a.label}</span>
+                  <code className="action-code">{a.name}</code>
+                  {a.requiresInstance && <span className="badge small">needs instance</span>}
+                </button>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+
+      <section className="deploy-log">
+        <div className="row gap log-toolbar">
+          <h3>Log</h3>
+          {running && (
+            <button className="link danger" onClick={() => void cancelRun()}>
+              Cancel run
+            </button>
+          )}
+          {!running && exitCode !== null && (
+            <span className={`badge ${exitCode === 0 ? '' : 'warn'}`}>
+              Exit code: {exitCode}
+            </span>
+          )}
+          {lines.length > 0 && (
+            <button className="link" onClick={() => { setLines([]); setHints([]); }} disabled={running}>
+              clear
+            </button>
+          )}
+        </div>
+
+        {hints.length > 0 && (
+          <div className="deploy-hints">
+            {hints.map((h, i) => (
+              <div
+                key={`${h.patternId}-${i}`}
+                className={`deploy-hint${h.knownUpstreamBug ? ' known-bug' : ''}`}
+              >
+                <div className="deploy-hint-head">
+                  <strong>{h.friendly}</strong>
+                  {h.knownUpstreamBug && (
+                    <span
+                      className="badge small"
+                      title="This is a known cht-conf upstream bug — not caused by your project files."
+                    >
+                      upstream — tracked
+                    </span>
+                  )}
+                </div>
+                {h.hint && <p className="deploy-hint-body">{h.hint}</p>}
+                {h.docsUrl && (
+                  <p className="deploy-hint-link">
+                    <a href={h.docsUrl} target="_blank" rel="noreferrer">
+                      open docs / upstream issue ↗
+                    </a>
+                  </p>
+                )}
+                <details className="deploy-hint-raw">
+                  <summary>raw output that triggered this</summary>
+                  <code>{h.rawLine}</code>
+                </details>
+              </div>
+            ))}
+          </div>
+        )}
+        <pre className="log-view">
+          {lines.length === 0 ? (
+            <span className="muted">No output yet. Click an action above to run it.</span>
+          ) : (
+            lines.join('\n')
+          )}
+          <div ref={logEndRef} />
+        </pre>
+      </section>
+    </div>
+  );
+}
+
+function DeployTargetForm(props: {
+  config: DeployConfig | null;
+  password: string;
+  onChangePassword: (v: string) => void;
+  onChangeConfig: (c: DeployConfig) => void;
+  onTestConnection: () => void;
+}) {
+  const { config } = props;
+  if (!config) return <p className="muted">Loading deploy config…</p>;
+
+  return (
+    <section className="deploy-target card">
+      <h3>Deploy target</h3>
+      <div className="row gap">
+        <label>
+          <input
+            type="radio"
+            name="target"
+            checked={config.target === 'local'}
+            onChange={() => props.onChangeConfig({ ...config, target: 'local' })}
+          />
+          <strong>--local</strong> (localhost:5985)
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="target"
+            checked={config.target === 'instance'}
+            onChange={() => props.onChangeConfig({ ...config, target: 'instance' })}
+          />
+          <strong>--instance</strong>
+          <input
+            value={config.instance ?? ''}
+            onChange={(e) => props.onChangeConfig({ ...config, instance: e.target.value })}
+            placeholder="e.g. demo (→ demo.dev.medicmobile.org)"
+            disabled={config.target !== 'instance'}
+          />
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="target"
+            checked={config.target === 'url'}
+            onChange={() => props.onChangeConfig({ ...config, target: 'url' })}
+          />
+          <strong>--url</strong>
+          <input
+            value={config.url ?? ''}
+            onChange={(e) => props.onChangeConfig({ ...config, url: e.target.value })}
+            placeholder="https://your-instance.medicmobile.org"
+            disabled={config.target !== 'url'}
+            style={{ minWidth: 280 }}
+          />
+        </label>
+      </div>
+      <div className="row gap">
+        <label>
+          <span>User</span>
+          <input
+            value={config.user ?? ''}
+            onChange={(e) => props.onChangeConfig({ ...config, user: e.target.value })}
+            placeholder="medic"
+          />
+        </label>
+        <label>
+          <span>Password</span>
+          <input
+            type="password"
+            value={props.password}
+            onChange={(e) => props.onChangePassword(e.target.value)}
+            placeholder="never stored — typed each session"
+          />
+        </label>
+      </div>
+      <div className="row gap">
+        <button onClick={props.onTestConnection} className="secondary">
+          🔌 Test connection
+        </button>
+        <span className="muted small">
+          Runs <code>cht --local check-for-updates</code> (or with your --url / --instance) and reports back in the log.
+        </span>
+      </div>
+      <p className="muted small">
+        Password is held in memory only, not saved to disk. Target + user persist in
+        <code> ~/.cht-ui-builder/state.json</code>.
+        Need a local CHT to test against? See{' '}
+        <a
+          href="https://docs.communityhealthtoolkit.org/contribute/code/dev-environment/"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Run a local CHT
+        </a>
+        {' '}— Docker image starts on{' '}
+        <code>localhost:5988</code> and the <code>--local</code> radio points at it.
+      </p>
+    </section>
+  );
+}
+
+/* -------------------- Deploy macros (chained runs) -------------------- */
+
+interface DeployMacroSpec {
+  id: string;
+  label: string;
+  description: string;
+  /** Ordered cht-conf action names to run. */
+  actions: string[];
+  /** Marks macros that touch the CHT instance. */
+  needsInstance: boolean;
+}
+
+const DEPLOY_MACROS: DeployMacroSpec[] = [
+  {
+    id: 'deploy-forms',
+    label: 'Deploy app forms',
+    description: 'validate → convert → upload',
+    actions: ['validate-app-forms', 'convert-app-forms', 'upload-app-forms'],
+    needsInstance: true,
+  },
+  {
+    id: 'deploy-settings',
+    label: 'Deploy app settings',
+    description: 'compile → upload',
+    actions: ['compile-app-settings', 'upload-app-settings'],
+    needsInstance: true,
+  },
+  {
+    id: 'deploy-everything',
+    label: 'Deploy everything',
+    description: 'validate → compile → convert → upload forms → upload settings',
+    actions: [
+      'validate-app-forms',
+      'compile-app-settings',
+      'convert-app-forms',
+      'upload-app-forms',
+      'upload-app-settings',
+    ],
+    needsInstance: true,
+  },
+  {
+    id: 'validate-only',
+    label: 'Validate everything (no upload)',
+    description: 'validate → compile → convert — safe rehearsal',
+    actions: ['validate-app-forms', 'compile-app-settings', 'convert-app-forms'],
+    needsInstance: false,
+  },
+];
+
+/**
+ * Pre-built macros that chain the most common cht-conf sequences. The
+ * individual-button grid below still exists for power users; this is the
+ * "what most people actually need" shortcut layer.
+ */
+function DeployMacros(props: {
+  running: boolean;
+  password: string;
+  binaryAvailable: boolean;
+  onRun: (macro: DeployMacroSpec) => void;
+}) {
+  return (
+    <section className="deploy-macros card">
+      <h3>Common deploys</h3>
+      <p className="muted small">
+        One click runs a sequence of cht-conf actions in order, streaming everything to the log.
+        Stops on the first failure.
+      </p>
+      <div className="deploy-macros-grid">
+        {DEPLOY_MACROS.map((m) => {
+          const missingPassword = m.needsInstance && !props.password;
+          const disabled = props.running || !props.binaryAvailable || missingPassword;
+          return (
+            <button
+              key={m.id}
+              className="deploy-macro-btn"
+              onClick={() => props.onRun(m)}
+              disabled={disabled}
+              title={missingPassword ? 'Enter the password above first' : m.actions.join(' → ')}
+            >
+              <span className="deploy-macro-label">{m.label}</span>
+              <span className="deploy-macro-desc">{m.description}</span>
+              <span className="deploy-macro-steps">
+                {m.actions.map((a, i) => (
+                  <span key={a} className="deploy-macro-step">
+                    {i > 0 && <span className="muted"> → </span>}
+                    <code>{a}</code>
+                  </span>
+                ))}
+              </span>
+              {missingPassword && (
+                <span className="muted small" style={{ color: '#b45309' }}>
+                  ⚠ enter password above first
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}

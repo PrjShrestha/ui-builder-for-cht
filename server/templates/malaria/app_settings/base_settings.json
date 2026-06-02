@@ -1,0 +1,84 @@
+{
+  "locales": [
+    { "code": "en", "name": "English" },
+    { "code": "ne", "name": "नेपाली" }
+  ],
+  "locale": "en",
+  "locale_outgoing": "en",
+  "date_format": "D MMM, YYYY",
+  "reported_date_format": "DD-MMM-YYYY HH:mm:ss",
+  "default_country_code": 977,
+  "phone_validation": "full",
+  "place_hierarchy_types": ["district", "municipality", "health_facility", "chw"],
+  "contact_types": [
+    {
+      "id": "district",
+      "name_key": "contact.type.district",
+      "group_key": "contact.type.district.plural",
+      "create_key": "contact.type.district.new",
+      "edit_key": "contact.type.place.edit",
+      "icon": "icon-district",
+      "create_form": "form:contact:district:create",
+      "edit_form": "form:contact:district:edit",
+      "parents": []
+    },
+    {
+      "id": "municipality",
+      "name_key": "contact.type.municipality",
+      "group_key": "contact.type.municipality.plural",
+      "create_key": "contact.type.municipality.new",
+      "edit_key": "contact.type.place.edit",
+      "icon": "icon-municipality",
+      "create_form": "form:contact:municipality:create",
+      "edit_form": "form:contact:municipality:edit",
+      "parents": ["district"]
+    },
+    {
+      "id": "health_facility",
+      "name_key": "contact.type.health_facility",
+      "group_key": "contact.type.health_facility.plural",
+      "create_key": "contact.type.health_facility.new",
+      "edit_key": "contact.type.place.edit",
+      "icon": "icon-facility",
+      "create_form": "form:contact:health_facility:create",
+      "edit_form": "form:contact:health_facility:edit",
+      "parents": ["municipality"]
+    },
+    {
+      "id": "chw",
+      "name_key": "contact.type.chw_area",
+      "group_key": "contact.type.chw_area.plural",
+      "create_key": "contact.type.chw_area.new",
+      "edit_key": "contact.type.place.edit",
+      "icon": "icon-chw-area",
+      "create_form": "form:contact:chw:create",
+      "edit_form": "form:contact:chw:edit",
+      "parents": ["health_facility"],
+      "count_visits": true
+    },
+    {
+      "id": "patient",
+      "name_key": "contact.type.patient",
+      "group_key": "contact.type.patient.plural",
+      "create_key": "contact.type.patient.new",
+      "edit_key": "contact.type.patient.edit",
+      "primary_contact_key": "contact.type.patient.primary",
+      "icon": "icon-patient",
+      "create_form": "form:contact:patient:create",
+      "edit_form": "form:contact:patient:edit",
+      "parents": ["chw"],
+      "person": true
+    }
+  ],
+  "roles": {
+    "national_admin": { "name": "usertype.national-manager" },
+    "chw": { "name": "usertype.chw", "offline": true }
+  },
+  "permissions": {
+    "can_fill_non_baseline_forms": ["national_admin", "chw"],
+    "can_view_tasks": ["national_admin", "chw"],
+    "can_edit": ["national_admin"],
+    "can_create_people": ["national_admin", "chw"],
+    "can_create_places": ["national_admin", "chw"]
+  }
+}

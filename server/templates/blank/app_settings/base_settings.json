@@ -1,0 +1,49 @@
+{
+  "locales": [
+    { "code": "en", "name": "English" }
+  ],
+  "locale": "en",
+  "locale_outgoing": "en",
+  "default_country_code": 977,
+  "phone_validation": "full",
+  "translations": [],
+  "place_hierarchy_types": ["district", "health_facility"],
+  "contact_types": [
+    {
+      "id": "district",
+      "name_key": "contact.type.district.plural",
+      "group_key": "contact.type.district.plural",
+      "create_key": "contact.type.district.new",
+      "edit_key": "contact.type.place.edit",
+      "icon": "icon-district",
+      "create_form": "form:contact:district:create",
+      "edit_form": "form:contact:district:edit",
+      "parents": []
+    },
+    {
+      "id": "health_facility",
+      "name_key": "contact.type.facility.plural",
+      "group_key": "contact.type.facility.plural",
+      "create_key": "contact.type.facility.new",
+      "edit_key": "contact.type.place.edit",
+      "icon": "icon-facility",
+      "create_form": "form:contact:health_facility:create",
+      "edit_form": "form:contact:health_facility:edit",
+      "parents": ["district"]
+    },
+    {
+      "id": "patient",
+      "name_key": "contact.type.patient.plural",
+      "group_key": "contact.type.patient.plural",
+      "create_key": "contact.type.patient.new",
+      "edit_key": "contact.type.person.edit",
+      "primary_contact_key": "contact.type.patient.primary",
+      "icon": "icon-patient",
+      "create_form": "form:contact:patient:create",
+      "edit_form": "form:contact:patient:edit",
+      "parents": ["health_facility"],
+      "person": true,
+      "count_visits": false
+    }
+  ]
+}

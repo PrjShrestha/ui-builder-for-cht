@@ -49,7 +49,57 @@ export interface RawRule {
   text: string;
 }
 
-export type Rule = ComparisonRule | SelectedRule | AnsweredRule | RawRule;
+export type DateUnit = 'days' | 'weeks' | 'months' | 'years';
+export type DateOffsetComparator = 'more_than' | 'less_than';
+export type DateOffsetDirection = 'ago' | 'from_now';
+
+/**
+ * "${field} is more/less than N days/weeks/months/years ago/from now" —
+ * sugar over a date-arithmetic XPath expression. Serializes to
+ *
+ *   today() - ${field} > 20*365.25     (more than 20 years ago)
+ *   today() - ${field} < 30            (less than 30 days ago)
+ *   ${field} - today() > 7             (more than 7 days from now)
+ */
+export interface DateOffsetRule {
+  kind: 'date_offset';
+  field: string;
+  comparator: DateOffsetComparator;
+  /** Number as a string, so we can preserve "1.5" or empty-while-editing. */
+  amount: string;
+  unit: DateUnit;
+  direction: DateOffsetDirection;
+}
+
+/**
+ * "Age computed from ${field} op N years" — sugar over
+ * `floor((today() - ${field}) div 365.25) op N`. Always whole-year integer
+ * age. Op uses the standard Operator set.
+ */
+export interface AgeRule {
+  kind: 'age';
+  field: string;
+  op: Operator;
+  /** Number as a string, e.g. "20". */
+  value: string;
+}
+
+export type Rule = ComparisonRule | SelectedRule | AnsweredRule | DateOffsetRule | AgeRule | RawRule;
+
+const UNIT_DAYS: Record<DateUnit, number> = {
+  days: 1,
+  weeks: 7,
+  months: 30,
+  years: 365.25,
+};
+
+function unitForMultiplier(mult: number | null): DateUnit | null {
+  if (mult === null || mult === 1) return 'days';
+  if (mult === 7) return 'weeks';
+  if (mult === 30) return 'months';
+  if (mult === 365.25) return 'years';
+  return null;
+}
 
 export interface ParsedExpression {
   combinator: Combinator;
@@ -135,6 +185,41 @@ function parseSinglePart(part: string): Rule {
   const t = part.trim();
   if (!t) return { kind: 'raw', text: '' };
 
+  // age: floor((today() - ${field}) div 365.25) OP N
+  const ageRe = /^floor\(\(\s*today\(\)\s*-\s*\$\{\s*([^}\s]+)\s*\}\s*\)\s*div\s*365(?:\.25)?\s*\)\s*(>=|<=|!=|=|>|<)\s*(-?\d+(?:\.\d+)?)$/i;
+  const ageMatch = ageRe.exec(t);
+  if (ageMatch && ageMatch[1] && ageMatch[2] && ageMatch[3] !== undefined) {
+    return {
+      kind: 'age',
+      field: ageMatch[1],
+      op: ageMatch[2] as Operator,
+      value: ageMatch[3],
+    };
+  }
+
+  // date_offset (ago):    (today() - ${field}) > N            | N*7 | N*30 | N*365.25
+  // date_offset (future): (${field} - today()) > N           | etc.
+  // Parens optional. Comparator is > / < (>= and <= treated as same intent).
+  const offRe = /^\(?\s*(today\(\)|\$\{\s*[^}\s]+\s*\})\s*-\s*(today\(\)|\$\{\s*[^}\s]+\s*\})\s*\)?\s*(>=|<=|>|<)\s*(-?\d+(?:\.\d+)?)(?:\s*\*\s*(-?\d+(?:\.\d+)?))?$/i;
+  const offMatch = offRe.exec(t);
+  if (offMatch) {
+    const left = offMatch[1]!;
+    const right = offMatch[2]!;
+    const op = offMatch[3]! as '>' | '<' | '>=' | '<=';
+    const amount = offMatch[4]!;
+    const mult = offMatch[5] === undefined ? null : Number(offMatch[5]);
+    const unit = unitForMultiplier(mult);
+    // Need exactly one ${field} and one today() in the subtraction.
+    const leftIsToday = left.toLowerCase() === 'today()';
+    const rightIsToday = right.toLowerCase() === 'today()';
+    if (unit !== null && leftIsToday !== rightIsToday) {
+      const field = (leftIsToday ? right : left).replace(/^\$\{\s*|\s*\}$/g, '');
+      const direction: DateOffsetDirection = leftIsToday ? 'ago' : 'from_now';
+      const comparator: DateOffsetComparator = op === '>' || op === '>=' ? 'more_than' : 'less_than';
+      return { kind: 'date_offset', field, comparator, amount, unit, direction };
+    }
+  }
+
   // not(selected(${field}, 'value'))
   const notSel = /^not\(\s*selected\(\s*\$\{\s*([^}\s]+)\s*\}\s*,\s*'([^']*)'\s*\)\s*\)$/i.exec(t);
   if (notSel && notSel[1] && notSel[2] !== undefined) {
@@ -179,6 +264,19 @@ function ruleToString(rule: Rule): string {
     case 'answered': {
       // Answered = `${f} != ''`; not answered = `${f} = ''`.
       return rule.negated ? `\${${rule.field}} = ''` : `\${${rule.field}} != ''`;
+    }
+    case 'date_offset': {
+      const op = rule.comparator === 'more_than' ? '>' : '<';
+      const days = UNIT_DAYS[rule.unit];
+      const rhs = days === 1 ? rule.amount : `${rule.amount}*${days}`;
+      const lhs =
+        rule.direction === 'ago'
+          ? `today() - \${${rule.field}}`
+          : `\${${rule.field}} - today()`;
+      return `${lhs} ${op} ${rhs}`;
+    }
+    case 'age': {
+      return `floor((today() - \${${rule.field}}) div 365.25) ${rule.op} ${rule.value}`;
     }
     case 'raw':
       return rule.text;

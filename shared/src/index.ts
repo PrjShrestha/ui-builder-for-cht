@@ -5,6 +5,8 @@ export * from './xlsform/dependencies.js';
 export * from './xlsform/relevantParser.js';
 export * from './xlsform/diff.js';
 export * from './xlsform/calculationBuilder.js';
+export * from './xlsform/renameList.js';
+export * from './hierarchy/hierarchyOrder.js';
 export * from './tasks/jsParser.js';
 export * from './tasks/contactSummaryParser.js';
 export * from './tasks/appliesIfParser.js';
