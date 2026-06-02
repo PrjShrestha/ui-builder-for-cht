@@ -33,7 +33,7 @@ import type { DragEndEvent } from '@dnd-kit/core';
 import {
   QUESTION_TYPES,
   STRUCTURAL_TYPES,
-  isHiddenInSimpleMode,
+  computeSimpleHiddenRowIds,
   isStructural,
   validateOrdering,
   predictViolationsForMove,
@@ -297,13 +297,18 @@ function SurveyTab(props: {
   const fieldChoices = useMemo(() => buildFieldChoices(form.survey, form.choices), [form.survey, form.choices]);
 
   // Group consecutive rows that fall inside a "collapsed" begin/end group block.
-  // In Simple mode we don't collapse — we just hide non-user-facing rows.
-  const displayItems = buildDisplayItems(form.survey, mode, collapsedGroups);
+  // In Simple mode we don't collapse — we just hide non-user-facing rows
+  // (group-aware: calculates inside CHT's `inputs/` block are plumbing and
+  // hidden, calculates elsewhere are treated as report outputs and kept).
+  const simpleHiddenIds = useMemo(
+    () => (mode === 'simple' ? computeSimpleHiddenRowIds(form.survey) : new Set<string>()),
+    [form.survey, mode],
+  );
+  const displayItems = buildDisplayItems(form.survey, mode, collapsedGroups, simpleHiddenIds);
   const visibleRowIds = displayItems.flatMap((it) =>
     it.kind === 'group' && it.collapsed ? [] : it.kind === 'group' ? it.rows.map((r) => r.rowId) : [it.row.rowId],
   );
-  const hiddenSimpleCount =
-    mode === 'simple' ? form.survey.filter((r) => isHiddenInSimpleMode(r)).length : 0;
+  const hiddenSimpleCount = simpleHiddenIds.size;
 
   function onDragEnd(e: DragEndEvent) {
     const { active, over } = e;
@@ -467,7 +472,7 @@ function SurveyTab(props: {
         </div>
         {mode === 'simple' && hiddenSimpleCount > 0 && (
           <span className="muted small">
-            {hiddenSimpleCount} structural / hidden / calculate row{hiddenSimpleCount === 1 ? '' : 's'} hidden — switch to Full to edit.
+            {hiddenSimpleCount} plumbing row{hiddenSimpleCount === 1 ? '' : 's'} hidden (structural, hidden, inputs/ calculates) — switch to Full to edit.
           </span>
         )}
         {mode === 'full' && (
@@ -611,10 +616,11 @@ function buildDisplayItems(
   survey: SurveyRow[],
   mode: 'simple' | 'full',
   collapsedGroups: Set<string>,
+  simpleHiddenIds: Set<string>,
 ): DisplayItem[] {
   if (mode === 'simple') {
     return survey
-      .filter((r) => !isHiddenInSimpleMode(r))
+      .filter((r) => !simpleHiddenIds.has(r.rowId))
       .map((row): DisplayItem => ({ kind: 'row', row }));
   }
   // Full mode: any begin/end group with a known collapsible name renders as a
@@ -769,7 +775,7 @@ function SurveyRowCard(props: {
               fieldOptions={props.fieldOptions}
               fieldChoices={props.fieldChoices}
               getColumn={(col) => row.extras[col] ?? ''}
-              appendToColumn={(col, frag) => setExtra(col, (row.extras[col] ?? '') + frag)}
+              setColumn={(col, value) => setExtra(col, value)}
             />
             <ExpressionField
               label="relevant"
@@ -1098,12 +1104,16 @@ function UnifiedConditionBuilder(props: {
   fieldOptions: string[];
   fieldChoices: Record<string, string[]>;
   getColumn: (col: string) => string;
-  appendToColumn: (col: string, fragment: string) => void;
+  setColumn: (col: string, value: string) => void;
 }) {
   const [column, setColumn] = useState<string>('');
   const [field, setField] = useState('');
   const [op, setOp] = useState<CondOp | ''>('');
   const [value, setValue] = useState('');
+  /** Snapshot of the column's value before the most recent insert. Cleared
+   *  after the user starts a new build or undoes. Lets the inline ↶ undo
+   *  button revert one full insert without depending on global Ctrl+Z. */
+  const [lastInsert, setLastInsert] = useState<{ col: string; before: string } | null>(null);
   const choices = field ? props.fieldChoices[field] : undefined;
   const needsField = op !== '' && (COND_OPS_NEED_FIELD as string[]).includes(op);
   const needsValue = op !== '' && (COND_OPS_NEED_VALUE as string[]).includes(op);
@@ -1136,14 +1146,30 @@ function UnifiedConditionBuilder(props: {
     if (!column) return;
     const s = build();
     if (!s) return;
-    props.appendToColumn(column, s);
+    const before = props.getColumn(column);
+    props.setColumn(column, before + s);
+    setLastInsert({ col: column, before });
     setOp('');
     setField('');
     setValue('');
   }
 
+  function doCancel() {
+    setColumn('');
+    setField('');
+    setOp('');
+    setValue('');
+  }
+
+  function doUndoInsert() {
+    if (!lastInsert) return;
+    props.setColumn(lastInsert.col, lastInsert.before);
+    setLastInsert(null);
+  }
+
   const preview = build();
   const canInsert = Boolean(column && preview);
+  const canCancel = Boolean(column || field || op || value);
 
   return (
     <div className="cond-strip cond-strip-unified">
@@ -1251,6 +1277,31 @@ function UnifiedConditionBuilder(props: {
       >
         + insert
       </button>
+      <button
+        type="button"
+        className="link"
+        onClick={(e) => {
+          e.preventDefault();
+          doCancel();
+        }}
+        disabled={!canCancel}
+        title="Clear the builder (does not touch the form)"
+      >
+        × cancel
+      </button>
+      {lastInsert && (
+        <button
+          type="button"
+          className="link"
+          onClick={(e) => {
+            e.preventDefault();
+            doUndoInsert();
+          }}
+          title={`Revert the last insert into ${lastInsert.col}`}
+        >
+          ↶ undo insert
+        </button>
+      )}
       {preview && <code className="cond-preview">{preview}</code>}
     </div>
   );

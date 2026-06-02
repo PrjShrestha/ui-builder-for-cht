@@ -160,9 +160,60 @@ const SIMPLE_MODE_VISIBLE_TYPES = new Set<string>([
  * True if the row should be hidden from the editor when the user has
  * selected "Simple" mode. This is a UI-only filter; the underlying
  * form.survey array is never mutated.
+ *
+ * Type-only check — does not know which group the row lives in. Prefer
+ * {@link computeSimpleHiddenRowIds} when the survey is available, because
+ * it treats `calculate` rows group-aware (only ones inside CHT's `inputs/`
+ * block are hidden).
  */
 export function isHiddenInSimpleMode(row: SurveyRow): boolean {
   const t = row.type.trim().toLowerCase();
   if ((STRUCTURAL_TYPES as readonly string[]).includes(t)) return true;
   return !SIMPLE_MODE_VISIBLE_TYPES.has(t);
+}
+
+/** CHT context-injection group name. Calculates inside it are plumbing
+ *  (they pull `contact.*` / `user.*` data and never carry a clinician's
+ *  answer), so Simple mode hides them while keeping other calculates —
+ *  which usually feed reports / tasks / contact-summary — visible. */
+const CHT_INPUTS_GROUP = 'inputs';
+
+/**
+ * Group-aware version of {@link isHiddenInSimpleMode}. Returns the set of
+ * `rowId`s that should be hidden in Simple mode for this survey.
+ *
+ * Behaviour for `calculate` rows:
+ *   - Inside the CHT `inputs/` group (at any depth) → hidden as plumbing.
+ *   - Anywhere else → visible (treated as a real report-bound output).
+ *
+ * Every other "plumbing" classification from {@link isHiddenInSimpleMode}
+ * (structural, hidden, start/end/today, etc.) is applied unchanged.
+ */
+export function computeSimpleHiddenRowIds(survey: SurveyRow[]): Set<string> {
+  const hidden = new Set<string>();
+  const groupStack: string[] = [];
+  for (const row of survey) {
+    const t = row.type.trim().toLowerCase();
+
+    // Pop before classifying an end marker, so rows after a closed group
+    // no longer see it on the stack.
+    if (t === 'end group' || t === 'end repeat') {
+      groupStack.pop();
+    }
+
+    if (t === 'calculate') {
+      const insideInputs = groupStack.some((g) => g.toLowerCase() === CHT_INPUTS_GROUP);
+      if (insideInputs) hidden.add(row.rowId);
+    } else if (isHiddenInSimpleMode(row)) {
+      hidden.add(row.rowId);
+    }
+
+    // Push after classifying, so a `begin group inputs` row is not itself
+    // considered "inside inputs" (it's structural and hidden anyway, but
+    // this keeps the stack semantics clean).
+    if (t === 'begin group' || t === 'begin repeat') {
+      groupStack.push(row.name);
+    }
+  }
+  return hidden;
 }

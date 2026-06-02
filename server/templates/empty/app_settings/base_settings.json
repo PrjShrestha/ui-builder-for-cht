@@ -1,0 +1,12 @@
+{
+  "locales": [
+    { "code": "en", "name": "English" }
+  ],
+  "locale": "en",
+  "locale_outgoing": "en",
+  "default_country_code": 1,
+  "phone_validation": "none",
+  "translations": [],
+  "place_hierarchy_types": [],
+  "contact_types": []
+}
