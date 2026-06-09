@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CHT UI Builder — Squad Kickoff</title>
+<style>
+  @page { size: A4 portrait; margin: 12mm 12mm 10mm 12mm; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    color: #111827;
+    background: #fff;
+    font-size: 9.5pt;
+    line-height: 1.32;
+  }
+  .page { width: 100%; }
+  .hdr {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 2px solid #1f2937;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+  }
+  .hdr h1 {
+    margin: 0;
+    font-size: 16pt;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .hdr .meta {
+    font-size: 8pt;
+    color: #6b7280;
+    font-variant-numeric: tabular-nums;
+  }
+  .tagline {
+    font-size: 9pt;
+    color: #4b5563;
+    font-style: italic;
+    margin-bottom: 8px;
+  }
+  h2 {
+    font-size: 9.5pt;
+    margin: 8px 0 3px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #1f2937;
+    font-weight: 700;
+    border-bottom: 1px solid #e5e7eb;
+    padding-bottom: 2px;
+  }
+  h2.tight { margin-top: 6px; }
+  p { margin: 0 0 4px 0; }
+  ul { margin: 2px 0 4px 16px; padding: 0; }
+  ul.tight { margin: 0 0 0 16px; }
+  li { margin-bottom: 1px; }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 8.5pt;
+    margin: 3px 0;
+  }
+  th, td {
+    text-align: left;
+    padding: 3px 5px;
+    border-bottom: 1px solid #e5e7eb;
+    vertical-align: top;
+  }
+  th {
+    background: #f9fafb;
+    font-weight: 600;
+    font-size: 8pt;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #4b5563;
+  }
+  .pill {
+    display: inline-block;
+    font-size: 7.5pt;
+    padding: 1px 6px;
+    border-radius: 9px;
+    background: #eef2ff;
+    color: #3730a3;
+    font-weight: 600;
+    margin-right: 3px;
+  }
+  .pill.green { background: #d1fae5; color: #065f46; }
+  .pill.amber { background: #fef3c7; color: #92400e; }
+  .pill.red { background: #fee2e2; color: #991b1b; }
+  .num {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    line-height: 14px;
+    text-align: center;
+    background: #2563eb;
+    color: white;
+    border-radius: 50%;
+    font-size: 7.5pt;
+    font-weight: 700;
+    margin-right: 4px;
+  }
+  .num.gray { background: #9ca3af; }
+  .footer {
+    margin-top: 8px;
+    padding-top: 5px;
+    border-top: 1px solid #e5e7eb;
+    font-size: 7.5pt;
+    color: #6b7280;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  strong { color: #111827; }
+  code {
+    font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+    font-size: 8.5pt;
+    background: #f3f4f6;
+    padding: 0 3px;
+    border-radius: 2px;
+  }
+  .quote {
+    border-left: 3px solid #2563eb;
+    padding: 2px 8px;
+    margin: 4px 0;
+    font-style: italic;
+    color: #1f2937;
+    font-size: 9pt;
+    background: #eff6ff;
+  }
+  .box {
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    padding: 5px 7px;
+  }
+  .box.amber { border-color: #fde68a; background: #fffbeb; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="hdr">
+    <h1>CHT UI Builder &mdash; Squad Kickoff</h1>
+    <div class="meta">v0.1 shipped &middot; Squad meeting prep</div>
+  </div>
+
+  <p class="tagline">A no-code editor that lets non-developers author, maintain, and deploy CHT app configurations &mdash; without touching XLSForm cell syntax, <code>tasks.js</code>, or the <code>cht</code> CLI.</p>
+
+  <div class="grid-2">
+    <div>
+      <h2 class="tight">Need</h2>
+      <p>Every CHT deployment needs a developer in the loop. Adding a survey question, inserting a hierarchy level, or shipping a follow-up task is engineering work &mdash; even when the change is operationally trivial. This bottlenecks CHT scaling to the long tail of district, NGO, and MoH deployments.</p>
+      <div class="quote">If a district health officer can change Excel, they should be able to change a CHT config.</div>
+    </div>
+    <div>
+      <h2 class="tight">Vision &amp; Mission</h2>
+      <p><strong>Vision (12&ndash;18 mo):</strong> Every CHT consultancy partner and Medic deployment can hand a project folder to a non-developer who can keep it healthy unattended &mdash; and deploy from the same tool.</p>
+      <p><strong>Mission:</strong> A local-first editor that operates on real cht-conf folders, preserves everything it doesn&rsquo;t touch byte-for-byte, surfaces every &ldquo;decision&rdquo; the system makes for clinician sign-off, and ships through cht-conf with friendly errors.</p>
+    </div>
+  </div>
+
+  <h2>Two product tracks &mdash; both first-class</h2>
+  <table>
+    <thead>
+      <tr><th></th><th>Edit existing</th><th>Start new</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Who</strong></td>
+        <td>Bhishan inheriting a config from a prior developer</td>
+        <td>Bhishan rolling out a new program (e.g. malaria screening)</td>
+      </tr>
+      <tr>
+        <td><strong>Entry</strong></td>
+        <td>Open project folder + folder browser</td>
+        <td>&ldquo;&#10024; Create new project&hellip;&rdquo; wizard</td>
+      </tr>
+      <tr>
+        <td><strong>Primary risk</strong></td>
+        <td>Round-trip drift &mdash; silently corrupting someone&rsquo;s work</td>
+        <td>Producing an incomplete project the CHT app refuses to load</td>
+      </tr>
+      <tr>
+        <td><strong>v0.1 status</strong></td>
+        <td><span class="pill green">Working</span> 47 round-trip tests locked</td>
+        <td><span class="pill green">Working</span> 4 templates: Blank, Empty, Malaria, CHT-default</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="grid-2">
+    <div>
+      <h2>MVP objectives &mdash; pick 3 of 5</h2>
+      <table>
+        <tbody>
+          <tr><td><span class="num">1</span><strong>Non-dev edits existing config end-to-end</strong> &mdash; Bhishan completes chis form-edit unattended</td></tr>
+          <tr><td><span class="num">2</span><strong>Non-dev scaffolds + deploys a new program</strong> &mdash; malaria journey &lt; 2 hours</td></tr>
+          <tr><td><span class="num">3</span><strong>Edits round-trip byte-stable</strong> &mdash; chis, gandaki, NSSD parse&rarr;serialize&rarr;parse equal</td></tr>
+          <tr><td><span class="num">4</span><strong>Clinician signs off on every rule</strong> &mdash; Decisions view aggregates appliesIf / context / calculation</td></tr>
+          <tr><td><span class="num">5</span><strong>Deploy errors are intelligible</strong> &mdash; top-10 cht-conf failures get plain-English summary</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <h2>MVP scope</h2>
+      <p><strong>In</strong> <span class="pill green">already shipped</span></p>
+      <ul class="tight">
+        <li>Edit existing forms (survey, choices, settings, properties, translations)</li>
+        <li>Hierarchy editor with topological derivation + insert/reorder</li>
+        <li>Task editor (priority, appliesIf, events, actions builders)</li>
+        <li>Contact-summary context flags editor</li>
+        <li>Decisions (sign-off) aggregated view</li>
+        <li>Deploy: macros + friendly errors + dry-run + 4 templates</li>
+        <li>Undo across all editors + sticky chrome</li>
+      </ul>
+      <p><strong>Out</strong> <span class="pill red">deliberate deferrals</span></p>
+      <ul class="tight">
+        <li>Live Enketo form preview (2-sprint project, post-MVP)</li>
+        <li>Contact-summary <code>fields[]</code> / <code>cards[]</code> editor</li>
+        <li><code>targets.js</code>, pyxform-on-save, git integration, SMS forms</li>
+      </ul>
+      <p><strong>Debate at the meeting</strong> <span class="pill amber">squad decision</span></p>
+      <ul class="tight">
+        <li>Form-XLSX generation in templates &mdash; in or out?</li>
+        <li>CI + Playwright fleet &mdash; in or post-MVP?</li>
+        <li>Live submission metrics from CHT &mdash; in or out?</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div>
+      <h2>Personas (active in dogfood loop)</h2>
+      <table>
+        <tbody>
+          <tr><td><strong>Bhishan KC</strong> &mdash; DHO Gandaki, Excel-fluent, used Kobo once. Protects: <em>task completion.</em></td></tr>
+          <tr><td><strong>Lal Bahadur</strong> &mdash; UI/UX/HCD lead, 12 yrs. Protects: <em>affordance, microcopy, a11y.</em></td></tr>
+          <tr><td><strong>Anita Tamang</strong> &mdash; QA engineer, 6 yrs health-tech. Protects: <em>testability, regression safety, CI.</em></td></tr>
+        </tbody>
+      </table>
+      <p style="font-size: 8.5pt; color: #4b5563; margin-top: 3px;">Every v0.1 change ran through a 3-persona review before declaring done. Formalize this as the squad&rsquo;s change-review pattern.</p>
+    </div>
+    <div>
+      <h2>Decisions to make today</h2>
+      <ul class="tight">
+        <li><span class="num gray">1</span>Pick 3 of 5 objectives</li>
+        <li><span class="num gray">2</span>Form-XLSX in templates &mdash; in/out?</li>
+        <li><span class="num gray">3</span>CI + Playwright &mdash; in/out?</li>
+        <li><span class="num gray">4</span>Demo audience for MVP &mdash; partner / Medic / MoH?</li>
+        <li><span class="num gray">5</span>License &amp; governance model?</li>
+        <li><span class="num gray">6</span>What does &ldquo;MVP launch&rdquo; concretely mean?</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="box amber" style="margin-top: 6px;">
+    <strong style="font-size: 9pt;">Risks to hold in mind &mdash;</strong>
+    <span style="font-size: 8.5pt;">
+    Round-trip drift is the existential risk (one corrupted save erases trust). &middot;
+    Polish beats new features until destructive surfaces are predictable. &middot;
+    cht-conf v3.x &rarr; CHT 4.x version skew will rot the error-translator. &middot;
+    No CI-grade CHT-in-a-box means real bugs slip through.
+    </span>
+  </div>
+
+  <div class="footer">
+    <div><strong>Now</strong> &middot; v0.1 on <code>origin/master</code> &middot; 66 tests passing &middot; <code>pnpm dev</code> &rarr; localhost:5173</div>
+    <div><strong>Repo</strong> &middot; github.com/PrjShrestha/ui-builder-for-cht</div>
+  </div>
+
+</div>
+</body>
+</html>
