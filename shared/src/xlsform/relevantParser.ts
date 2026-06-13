@@ -108,6 +108,41 @@ export interface ParsedExpression {
   isRawFallback: boolean;
 }
 
+/**
+ * A parenthesized mixed-combinator expression: `(A and B) or C`,
+ * `A or (B and C)`, `(A and B) or (C and D)`, etc.
+ *
+ * Structurally non-recursive: each `subgroup` is a same-combinator
+ * `ParsedExpression`, NOT another `GroupedExpression`. This enforces the
+ * two-levels-max grammar boundary at the type level — a three-level
+ * expression like `((A and B) or C) and D` cannot be represented and
+ * routes to raw at parse time.
+ *
+ * Added in Slice 2 of the condition-builder plan (docs/plans/
+ * condition-builder.md). The existing `parseRelevant`/`serializeRelevant`
+ * signatures are unchanged; this is exposed via the additive
+ * `parseRelevantGrouped` / `serializeAnyParsed` entry points so the 5
+ * existing consumers (RelevantRuleBuilder.tsx, CalculationBuilder.tsx,
+ * DecisionsView.tsx, shared/calculationBuilder.ts) never see the union.
+ */
+export interface GroupedExpression {
+  kind: 'grouped';
+  outerCombinator: Combinator;
+  /** Each subgroup is a same-combinator chain (non-recursive: no nested grouped). */
+  subgroups: ParsedExpression[];
+  /** True iff the grammar didn't match cleanly and we kept the whole thing as raw. */
+  isRawFallback: boolean;
+}
+
+/**
+ * Discriminated union of the flat (`ParsedExpression`) and parenthesized-
+ * mixed (`GroupedExpression`) shapes. Discriminate via `'subgroups' in
+ * parsed` — we deliberately do NOT add a `kind` field to
+ * `ParsedExpression` (that would break the `{...parsed, rules}` spreads
+ * at RelevantRuleBuilder.tsx:48/51 — see plan §3 HARD RULE).
+ */
+export type AnyParsed = ParsedExpression | GroupedExpression;
+
 /** Parse an expression into rules + a combinator (default 'and'). */
 export function parseRelevant(expr: string): ParsedExpression {
   const trimmed = expr.trim();
@@ -130,7 +165,26 @@ export function parseRelevant(expr: string): ParsedExpression {
     if (r.kind === 'raw') anyRaw = true;
     rules.push(r);
   }
-  return { combinator, rules, isRawFallback: anyRaw && rules.every((r) => r.kind === 'raw') };
+  const candidate: ParsedExpression = {
+    combinator,
+    rules,
+    isRawFallback: anyRaw && rules.every((r) => r.kind === 'raw'),
+  };
+
+  // §3.1 self-check (plan: docs/plans/condition-builder.md). The serializer
+  // canonicalizes spacing (`${a}='x'` → `${a} = 'x'`, comma after `,` in
+  // `selected(${f}, 'v')`, etc.), so a structured parse of a tight-spaced
+  // human input would silently reformat the user's text on save. To make
+  // byte-stability real: re-serialize the candidate and, if it doesn't
+  // match the original trimmed input, discard the structured result and
+  // return a single RawRule carrying the original text. This guarantees
+  // `serialize(parse(x)) === x.trim()` for every non-raw result, and any
+  // expression whose canonical form differs from the author's spelling
+  // is preserved verbatim as raw rather than reformatted.
+  if (!candidate.isRawFallback && serializeRelevant(candidate) !== trimmed) {
+    return { combinator: 'and', rules: [{ kind: 'raw', text: trimmed }], isRawFallback: true };
+  }
+  return candidate;
 }
 
 /** Serialize rules back to an XLSForm expression. */
@@ -281,4 +335,133 @@ function ruleToString(rule: Rule): string {
     case 'raw':
       return rule.text;
   }
+}
+
+/* ------------------------------------------------------------------------ */
+/*                         Grouped expression support                        */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Parse an expression that MAY include a parenthesized mixed-combinator
+ * outer structure (e.g. `(A and B) or C`). For flat input or anything
+ * else, delegates to `parseRelevant`.
+ *
+ * This is an additive entry point — `parseRelevant` is unchanged.
+ *
+ * Algorithm (plan §4):
+ *   1. Try paren-aware splits on both `or` and `and` at the top level.
+ *   2. If one combinator yields multiple top-level parts AND at least
+ *      one part is a fully-wrapped paren group → grouped expression.
+ *      Strip outer parens from each wrapped part and `parseRelevant`
+ *      the inner; un-wrapped parts go through `parseRelevant` as-is.
+ *   3. Any subgroup whose result is `isRawFallback: true` (would require
+ *      a third level of nesting) collapses the whole expression to raw.
+ *   4. Apply the §3.1 self-check: re-serialize and, if it doesn't byte-
+ *      match the trimmed input (e.g. inner-padded parens, redundant
+ *      parens, tight spacing inside subgroups), return a raw fallback.
+ */
+export function parseRelevantGrouped(expr: string): AnyParsed {
+  const trimmed = expr.trim();
+  if (!trimmed) return parseRelevant('');
+
+  // Paren-aware splits on each combinator at the top level. If only one
+  // yields multiple parts, that's the outer combinator (single-combinator
+  // chain → no grouping needed, defer to flat parser). If BOTH yield
+  // multiple parts at the top level (e.g. `A and B or C` with no parens),
+  // that's an unambiguously flat-mixed expression — stay raw.
+  const partsOr = splitOnCombinator(trimmed, 'or');
+  const partsAnd = splitOnCombinator(trimmed, 'and');
+
+  const orMulti = partsOr.length > 1;
+  const andMulti = partsAnd.length > 1;
+
+  if (orMulti && !andMulti && partsOr.some(isFullyWrapped)) {
+    const grouped = tryBuildGrouped(trimmed, 'or', partsOr);
+    if (grouped) return grouped;
+  }
+  if (andMulti && !orMulti && partsAnd.some(isFullyWrapped)) {
+    const grouped = tryBuildGrouped(trimmed, 'and', partsAnd);
+    if (grouped) return grouped;
+  }
+  // Defer to flat parser (which now self-checks per §3.1). For flat-mixed
+  // without parens (both combinators top-level), this hits the existing
+  // raw-fallback path at parseRelevant lines 120-122.
+  return parseRelevant(trimmed);
+}
+
+/**
+ * Best-effort grouped construction. Returns null if the candidate doesn't
+ * pass the §3.1 self-check or contains a `isRawFallback` subgroup
+ * (two-levels-max enforcement).
+ */
+function tryBuildGrouped(
+  trimmed: string,
+  outerCombinator: Combinator,
+  parts: string[],
+): GroupedExpression | null {
+  const subgroups: ParsedExpression[] = [];
+  for (const part of parts) {
+    const inner = isFullyWrapped(part) ? stripOuterParens(part) : part;
+    const parsed = parseRelevant(inner);
+    if (parsed.isRawFallback) return null; // two-levels-max: refuse
+    subgroups.push(parsed);
+  }
+  const candidate: GroupedExpression = {
+    kind: 'grouped',
+    outerCombinator,
+    subgroups,
+    isRawFallback: false,
+  };
+  // §3.1 self-check at the grouped level — routes inner-padded parens,
+  // redundant single-clause wraps, etc. to raw rather than reformatting.
+  if (serializeAnyParsed(candidate) !== trimmed) return null;
+  return candidate;
+}
+
+/**
+ * Serialize either a flat `ParsedExpression` or a grouped one. The grouped
+ * canonical form is `(A and B) or C` — only multi-rule subgroups get
+ * parens; single-rule subgroups stay bare. This matches plan §6 Bucket A.
+ *
+ * STRUCTURALLY guarantees no flat-mixed output: a `ParsedExpression` has
+ * exactly one combinator, and `GroupedExpression` introduces the second
+ * only inside explicit parens. There is no code path that can emit
+ * `a or b and c` at the same precedence level.
+ */
+export function serializeAnyParsed(parsed: AnyParsed): string {
+  if ('subgroups' in parsed) {
+    return parsed.subgroups
+      .map((sg) => {
+        const inner = serializeRelevant(sg);
+        // Wrap only when the subgroup has 2+ rules (the canonical form;
+        // bare single-rule subgroups don't need parens).
+        return sg.rules.length > 1 ? `(${inner})` : inner;
+      })
+      .join(` ${parsed.outerCombinator} `);
+  }
+  return serializeRelevant(parsed);
+}
+
+/** True iff `s` is wholly enclosed by a single matched paren pair. */
+function isFullyWrapped(s: string): boolean {
+  const t = s.trim();
+  if (t.length < 2 || t[0] !== '(' || t[t.length - 1] !== ')') return false;
+  let depth = 0;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      // If depth hits 0 before the last char, the leading `(` didn't enclose
+      // the whole string — e.g. `(A) and (B)`.
+      if (depth === 0 && i !== t.length - 1) return false;
+    }
+  }
+  return depth === 0;
+}
+
+/** Strip one balanced outer paren pair. Caller must have checked `isFullyWrapped`. */
+function stripOuterParens(s: string): string {
+  const t = s.trim();
+  return t.slice(1, -1).trim();
 }
