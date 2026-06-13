@@ -10,3 +10,6 @@ coverage/
 .vite/
 test-results/
 playwright-report/
+# Per-machine Claude Code permission allowlist; the project-scoped
+# .claude/settings.json IS checked in.
+.claude/settings.local.json
