@@ -25,6 +25,8 @@ export function FolderBrowser(props: {
   const [shortcuts, setShortcuts] = useState<Array<{ label: string; path: string }>>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [newFolderName, setNewFolderName] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -47,6 +49,22 @@ export function FolderBrowser(props: {
       setError((e as Error).message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function createFolder() {
+    const name = (newFolderName ?? '').trim();
+    if (!name || !path) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const res = await api.browseMkdir(path, name);
+      setNewFolderName(null);
+      await load(res.path); // drill into the folder we just made
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setCreating(false);
     }
   }
 
@@ -192,9 +210,41 @@ export function FolderBrowser(props: {
                 }}
                 placeholder="Paste a path"
               />
+              <button
+                className="secondary icon-btn"
+                onClick={() => setNewFolderName('')}
+                disabled={!path || showSearch || loading || newFolderName !== null}
+                title="Create a new folder here"
+              >
+                + New folder
+              </button>
             </div>
 
             {error && <div className="error-banner">{error}</div>}
+
+            {newFolderName !== null && (
+              <div className="row gap" style={{ margin: '8px 0' }}>
+                <input
+                  className="path-input"
+                  type="text"
+                  autoFocus
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void createFolder();
+                    if (e.key === 'Escape') setNewFolderName(null);
+                  }}
+                  placeholder={`New folder in ${shortName(path)}`}
+                  style={{ flex: 1 }}
+                />
+                <button onClick={() => void createFolder()} disabled={creating || !newFolderName.trim()}>
+                  {creating ? 'Creating…' : 'Create'}
+                </button>
+                <button className="secondary" onClick={() => setNewFolderName(null)} disabled={creating}>
+                  Cancel
+                </button>
+              </div>
+            )}
 
             {showSearch && (
               <div className="muted small drive-result-count">

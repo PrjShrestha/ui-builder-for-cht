@@ -63,6 +63,12 @@ export const api = {
       `/api/browse/search?path=${encodeURIComponent(path)}&query=${encodeURIComponent(query)}`,
     ),
 
+  browseMkdir: (path: string, name: string) =>
+    jsonFetch<{ path: string }>('/api/browse/mkdir', {
+      method: 'POST',
+      body: JSON.stringify({ path, name }),
+    }),
+
   chtConfActions: () =>
     jsonFetch<{
       actions: Array<{
