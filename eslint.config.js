@@ -43,6 +43,15 @@ export default [
     },
   },
   {
-    ignores: ['**/dist/**', '**/node_modules/**', '**/build/**', '**/.vite/**'],
+    ignores: [
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/build/**',
+      '**/.vite/**',
+      // server/templates/** are CommonJS scaffolding files copied verbatim
+      // into user CHT projects on "Create new project" — they're not source
+      // code the project authors. Linting them as ESM would never work.
+      'server/templates/**',
+    ],
   },
 ];

@@ -1,0 +1,22 @@
+{
+    "schemaVersion": 1,
+    "questionMappings": {
+        "app:pregnancy/lmp_date": {
+            "system": "http://loinc.org",
+            "code": "8665-2",
+            "display": "Date last menstrual period (caf\u00e9 escape)",
+            "source": "starter-pack",
+            "dictionaryVersion": "LOINC-2.82",
+            "status": "suggested",
+            "confirmedBy": null,
+            "confirmedAt": null,
+            "confidence": 0.10,
+            "unknownLargeInt": 9007199254740993,
+            "unknownExponent": 1e3,
+            "unknownTrailingZero": 1.0
+        }
+    },
+    "starterPack": null,
+    "choiceMappings": {},
+    "orphans": []
+}

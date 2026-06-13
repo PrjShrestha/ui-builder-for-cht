@@ -1,0 +1,70 @@
+{
+  "id": "cht-mch-v1",
+  "formId": "app:pregnancy",
+  "concepts": [
+    {
+      "questionName": "lmp_date",
+      "code": "8665-2",
+      "system": "http://loinc.org",
+      "display": "Last menstrual period start date",
+      "dictionaryVersion": "LOINC-2.82",
+      "aliases": ["LMP", "last menstrual period", "last period date"]
+    },
+    {
+      "questionName": "bp_systolic",
+      "code": "8480-6",
+      "system": "http://loinc.org",
+      "display": "Systolic blood pressure",
+      "dictionaryVersion": "LOINC-2.82",
+      "aliases": ["systolic BP", "SBP", "upper blood pressure"]
+    },
+    {
+      "questionName": "bp_diastolic",
+      "code": "8462-4",
+      "system": "http://loinc.org",
+      "display": "Diastolic blood pressure",
+      "dictionaryVersion": "LOINC-2.82",
+      "aliases": ["diastolic BP", "DBP", "lower blood pressure"]
+    },
+    {
+      "questionName": "weight_kg",
+      "code": "29463-7",
+      "system": "http://loinc.org",
+      "display": "Body weight",
+      "dictionaryVersion": "LOINC-2.82",
+      "aliases": ["weight", "patient weight", "kg"]
+    },
+    {
+      "questionName": "fundal_height_cm",
+      "code": "11881-0",
+      "system": "http://loinc.org",
+      "display": "Fundal height by tape measure",
+      "dictionaryVersion": "LOINC-2.82",
+      "aliases": ["fundal ht", "symphysis fundal height", "SFH"]
+    },
+    {
+      "questionName": "gravidity",
+      "code": "11996-6",
+      "system": "http://loinc.org",
+      "display": "Pregnancies total number",
+      "dictionaryVersion": "LOINC-2.82",
+      "aliases": ["gravida", "G-count", "number of pregnancies"]
+    },
+    {
+      "questionName": "parity",
+      "code": "11977-6",
+      "system": "http://loinc.org",
+      "display": "Pregnancies live births number",
+      "dictionaryVersion": "LOINC-2.82",
+      "aliases": ["para", "P-count", "live births"]
+    },
+    {
+      "questionName": "pregnancy_condition",
+      "code": "JB0Z",
+      "system": "http://id.who.int/icd/release/11/mms",
+      "display": "Maternal care for unspecified condition predominantly related to pregnancy",
+      "dictionaryVersion": "ICD11-2024-01",
+      "aliases": ["danger signs", "pregnancy complications", "maternal condition"]
+    }
+  ]
+}

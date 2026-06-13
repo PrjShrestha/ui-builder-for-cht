@@ -1,0 +1,14 @@
+{
+  "id": "poisoned-system-uri",
+  "formId": "app:test",
+  "concepts": [
+    {
+      "questionName": "diagnosis",
+      "code": "10828004",
+      "system": "http://snomed.info/sct",
+      "display": "Positive (qualifier value)",
+      "dictionaryVersion": "SCT-2024-09",
+      "aliases": ["positive"]
+    }
+  ]
+}

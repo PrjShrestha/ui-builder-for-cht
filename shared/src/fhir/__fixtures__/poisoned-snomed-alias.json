@@ -1,0 +1,18 @@
+{
+  "id": "poisoned-alias-text",
+  "formId": "app:test",
+  "concepts": [
+    {
+      "questionName": "lmp_date",
+      "code": "8665-2",
+      "system": "http://loinc.org",
+      "display": "Last menstrual period start date",
+      "dictionaryVersion": "LOINC-2.82",
+      "aliases": [
+        "LMP",
+        "last menstrual period",
+        "Date last menstrual period (SNOMED preferred term)"
+      ]
+    }
+  ]
+}

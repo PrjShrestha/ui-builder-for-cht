@@ -1,0 +1,48 @@
+{
+  "choiceMappings": {},
+  "futureBoolean": false,
+  "futureEmptyString": "",
+  "futureNumber": 0,
+  "futureUnknownTopLevel": "preserved verbatim",
+  "orphans": [
+    {
+      "code": "29463-7",
+      "confirmedAt": "2026-05-01T10:00:00Z",
+      "confirmedBy": "anita@qa",
+      "dictionaryVersion": "LOINC-2.82",
+      "display": "Body weight",
+      "originalKey": "app:pregnancy/weight_pre_v1_renamed",
+      "reason": "renamed-or-deleted",
+      "source": "starter-pack",
+      "system": "http://loinc.org"
+    }
+  ],
+  "questionMappings": {
+    "app:pregnancy/lmp_date": {
+      "code": "8665-2",
+      "confirmedAt": "2026-06-01T09:30:00Z",
+      "confirmedBy": "bhishan@gandaki",
+      "dictionaryVersion": "LOINC-2.82",
+      "display": "Last menstrual period start date",
+      "futurePerEntryNull": null,
+      "source": "starter-pack",
+      "status": "confirmed",
+      "system": "http://loinc.org"
+    },
+    "app:pregnancy/weight_kg": {
+      "code": "29463-7",
+      "confirmedAt": null,
+      "confirmedBy": null,
+      "dictionaryVersion": "LOINC-2.82",
+      "display": "Body weight (généralement mesuré en kg)",
+      "source": "starter-pack",
+      "status": "suggested",
+      "system": "http://loinc.org"
+    }
+  },
+  "schemaVersion": 1,
+  "starterPack": {
+    "appliedAt": "2026-06-05T10:30:00Z",
+    "id": "cht-mch-v1"
+  }
+}

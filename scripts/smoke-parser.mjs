@@ -1,12 +1,17 @@
 /**
- * Smoke test for the XLSForm parser/serializer.
+ * Smoke test for the parsers/serializers.
  *
  * Usage:
  *   node scripts/smoke-parser.mjs <path/to/some.xlsx>
+ *   node scripts/smoke-parser.mjs <path/to/fhir-mapping.json>
  *
- * Default: tests against gandaki/pregnancy.xlsx.
+ * The script branches on file extension:
+ *   .xlsx → XLSForm round-trip (AST stability)
+ *   .json → fhir-mapping idempotence (canonical serializer is a fixpoint)
  *
- * Goal: prove that parse → serialize → parse produces a stable AST. Any
+ * Default: XLSForm path against gandaki/pregnancy.xlsx.
+ *
+ * Goal: prove that parse → serialize → parse produces a stable result. Any
  * drift indicates the serializer is silently dropping or moving data.
  *
  * Note: this script is run with Node, so it imports the COMPILED `shared`
@@ -27,9 +32,29 @@ const target =
     'pregnancy.xlsx',
   );
 
-const { parseXlsForm, serializeXlsForm, validateOrdering, buildDependencyMap } = await import(
-  '../shared/dist/index.js'
-);
+const ext = path.extname(target).toLowerCase();
+
+if (ext === '.json') {
+  const { parseFhirMapping, serializeFhirMapping } = await import('../shared/dist/index.js');
+  console.log('# Reading', target);
+  const source = await readFile(target, 'utf8');
+  const out1 = serializeFhirMapping(parseFhirMapping(source));
+  const out2 = serializeFhirMapping(parseFhirMapping(out1));
+  const idempotent = out1 === out2;
+  const noOpOnOwnOutput = out1 === source;
+  console.log(`## Round-trip stable: ${idempotent ? 'YES' : 'NO'}`);
+  console.log(
+    `## No-op on input (input was already canonical): ${noOpOnOwnOutput ? 'YES' : 'NO (canonicalized once)'}`,
+  );
+  if (!idempotent) {
+    console.error('Idempotence failed — the serializer is not a fixpoint on its own output.');
+    process.exit(1);
+  }
+  console.log('OK');
+} else {
+  const { parseXlsForm, serializeXlsForm, validateOrdering, buildDependencyMap } = await import(
+    '../shared/dist/index.js'
+  );
 
 function summarize(form) {
   return {
@@ -91,6 +116,7 @@ if (!same) {
       if (i > 5) break;
     }
   }
-  process.exit(1);
+    process.exit(1);
+  }
+  console.log('OK');
 }
-console.log('OK');

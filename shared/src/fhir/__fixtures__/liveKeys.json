@@ -1,0 +1,5 @@
+[
+  "app:pregnancy/lmp_date",
+  "app:pregnancy/some_other_field",
+  "app:pregnancy/has%2Fslash"
+]

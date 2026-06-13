@@ -1,0 +1,47 @@
+name: ci
+# Minimal CI for the cht-ui-builder repo. The zero-SNOMED / licensing guard
+# in shared/src/fhir/roundtrip.test.ts is only meaningful if it runs unattended
+# (the legal exposure ships in the bundled pack on every push), so this
+# workflow's job is to make sure build + test + lint run on every push and PR.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build-test-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build shared (parsers + serializers)
+        run: pnpm --filter @cht-ui/shared build
+
+      - name: Run shared tests (incl. zero-SNOMED + round-trip oracle)
+        run: pnpm --filter @cht-ui/shared test
+
+      - name: Smoke-test fhir-mapping round-trip on the committed fixture
+        run: node scripts/smoke-parser.mjs shared/src/fhir/__fixtures__/mch-pregnancy.fhir-mapping.json
+
+      - name: Typecheck all workspaces
+        run: pnpm typecheck
+
+      # NOTE: `pnpm lint` is deferred from CI pending a separate cleanup PR.
+      # The repo's eslint.config.js declares Node globals only for *.ts/*.tsx
+      # and lacks browser globals for the client/ workspace and Node globals
+      # for *.mjs scripts — so ~100 pre-existing `no-undef` errors gate it
+      # today. The Standard codes slice itself is lint-clean
+      # (shared/src/fhir/** has zero new errors/warnings). Re-add this step
+      # once the eslint config is fixed.
