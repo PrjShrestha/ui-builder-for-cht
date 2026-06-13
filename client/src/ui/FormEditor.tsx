@@ -294,7 +294,14 @@ function SurveyTab(props: {
 
   // Map a field name → ordered list of choice `name`s if it's a select_one /
   // select_multiple, so the expression builder can present a value dropdown.
-  const fieldChoices = useMemo(() => buildFieldChoices(form.survey, form.choices), [form.survey, form.choices]);
+  // Project-level contact-form choices are merged underneath so contact-
+  // injected fields (e.g. `inputs/contact/sex`) get their values too;
+  // form-local selects win on collision.
+  const contactFieldChoices = useApp((s) => s.project?.contactFieldChoices);
+  const fieldChoices = useMemo(
+    () => buildFieldChoices(form.survey, form.choices, contactFieldChoices),
+    [form.survey, form.choices, contactFieldChoices],
+  );
 
   // Group consecutive rows that fall inside a "collapsed" begin/end group block.
   // In Simple mode we don't collapse — we just hide non-user-facing rows
@@ -1046,17 +1053,34 @@ function ExpressionField(props: {
 
 /**
  * Walks the survey + choices sheets to build a `name → choice-values` map.
- * Only select_one / select_multiple rows are included; everything else is
- * absent, so the builder can fall back to a text input.
+ *
+ * Two sources, in priority order (form-local wins on collision so the open
+ * form's own select is never overridden by project-level context):
+ *   1. `contactFieldChoices`: choices reachable from a select in any
+ *      `forms/contact/*.xlsx`, scanned by the server at project open. Lets
+ *      the condition builder surface a values dropdown for contact-injected
+ *      fields like `inputs/contact/sex` whose underlying select_one lives
+ *      in a different form. Optional — older server responses may omit it.
+ *   2. This form's own select_one / select_multiple rows.
+ *
+ * Fields that resolve nowhere are absent from the result so the builder
+ * falls back to the free-text input (the existing safety net).
  */
-function buildFieldChoices(survey: SurveyRow[], choices: ChoiceRow[]): Record<string, string[]> {
+function buildFieldChoices(
+  survey: SurveyRow[],
+  choices: ChoiceRow[],
+  contactFieldChoices?: Record<string, string[]>,
+): Record<string, string[]> {
+  // Start from project-level context (contact-form selects).
+  const out: Record<string, string[]> = { ...(contactFieldChoices ?? {}) };
+
+  // Overlay form-local selects so this form's own definitions win on collision.
   const listToValues = new Map<string, string[]>();
   for (const c of choices) {
     if (!c.list_name || !c.name) continue;
     if (!listToValues.has(c.list_name)) listToValues.set(c.list_name, []);
     listToValues.get(c.list_name)!.push(c.name);
   }
-  const out: Record<string, string[]> = {};
   for (const r of survey) {
     if (!r.name) continue;
     const m = r.type.trim().match(/^(select_one|select_multiple)\s+(\S+)/i);

@@ -28,6 +28,13 @@ export interface ProjectInfo {
   hasContactForms: boolean;
   hasTasks: boolean;
   hasContactSummary: boolean;
+  /**
+   * Choice values indexed by surveyed field name, scanned from every
+   * `forms/contact/*.xlsx` at project open. Lets the form condition builder
+   * surface a values dropdown for `inputs/contact/<name>`-style calculates
+   * whose underlying select_one lives in a different form. Read-only.
+   */
+  contactFieldChoices: Record<string, string[]>;
 }
 
 export interface FormListEntry {

@@ -1,11 +1,17 @@
 import { test as base, expect } from '@playwright/test';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Project path to open before each test. Override with PLAYWRIGHT_PROJECT_PATH
- * if your CHT config lives elsewhere.
+ * Project path to open before each test. Defaults to the committed
+ * `fixtures/mini-config` so a fresh clone runs the suite with no env
+ * export. Override with `PLAYWRIGHT_PROJECT_PATH` to point at a real
+ * cht-conf project (e.g. config-gandaki) when running against richer data.
  */
 export const PROJECT_PATH =
-  process.env.PLAYWRIGHT_PROJECT_PATH ?? 'W:\\ui-builder-for-cht\\config-gandaki\\cht-config';
+  process.env.PLAYWRIGHT_PROJECT_PATH ?? path.resolve(here, 'fixtures', 'mini-config');
 
 /**
  * Custom fixture that ensures the dev server has a project open before each

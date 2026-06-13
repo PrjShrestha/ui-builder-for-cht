@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { parseXlsForm } from '@cht-ui/shared';
 import { getProjectPath, setProjectPath } from '../state.js';
 
 /** Minimal shape returned to the client when describing a project. */
@@ -16,6 +17,17 @@ interface ProjectInfo {
   hasContactForms: boolean;
   hasTasks: boolean;
   hasContactSummary: boolean;
+  /**
+   * Choices reachable from contact-injected fields. Keyed by the surveyed
+   * field's `name` (e.g. "sex"); the value is the ordered list of choice
+   * `name`s from the corresponding select_one / select_multiple row in any
+   * `forms/contact/*.xlsx`. Used by the FormEditor condition builder to
+   * surface a values dropdown for `inputs/contact/<name>`-style calculates
+   * whose source row lives in a different form. Last-write-wins on name
+   * collision across contact forms (documented limitation; path-suffix
+   * matching is a future-sprint refinement).
+   */
+  contactFieldChoices: Record<string, string[]>;
 }
 
 async function fileExists(p: string): Promise<boolean> {
@@ -45,7 +57,61 @@ async function describeProject(projectPath: string): Promise<ProjectInfo> {
     hasContactForms: await dirHasFiles(path.join(projectPath, 'forms', 'contact'), ['.xlsx']),
     hasTasks: await fileExists(path.join(projectPath, 'tasks.js')),
     hasContactSummary: await fileExists(path.join(projectPath, 'contact-summary.templated.js')),
+    contactFieldChoices: await scanContactFieldChoices(projectPath),
   };
+}
+
+/**
+ * Walks `forms/contact/*.xlsx` and indexes their select_one / select_multiple
+ * rows into `{ [rowName]: choiceNames[] }`. Pure read; no XLSForm bytes are
+ * mutated. Failures (unreadable directory, bad workbook) degrade silently to
+ * an empty map — the condition builder's free-text fallback remains the
+ * safety net.
+ */
+async function scanContactFieldChoices(
+  projectPath: string,
+): Promise<Record<string, string[]>> {
+  const contactDir = path.join(projectPath, 'forms', 'contact');
+  let entries: string[];
+  try {
+    entries = await fs.readdir(contactDir);
+  } catch {
+    return {};
+  }
+  const xlsxFiles = entries.filter((e) => e.toLowerCase().endsWith('.xlsx'));
+  // Parallelize per-form parsing (mirrors the forms.ts listing pattern).
+  const perForm = await Promise.all(
+    xlsxFiles.map(async (filename) => {
+      try {
+        const buf = await fs.readFile(path.join(contactDir, filename));
+        const form = await parseXlsForm(buf);
+        // Index this form's choices sheet: list_name → choice names.
+        const listToValues = new Map<string, string[]>();
+        for (const c of form.choices) {
+          if (!c.list_name || !c.name) continue;
+          if (!listToValues.has(c.list_name)) listToValues.set(c.list_name, []);
+          listToValues.get(c.list_name)!.push(c.name);
+        }
+        // Walk this form's survey rows and pick out the selects.
+        const local: Record<string, string[]> = {};
+        for (const r of form.survey) {
+          if (!r.name) continue;
+          const m = r.type.trim().match(/^(select_one|select_multiple)\s+(\S+)/i);
+          if (!m) continue;
+          const vals = listToValues.get(m[2]!);
+          if (vals && vals.length > 0) local[r.name] = vals;
+        }
+        return local;
+      } catch {
+        // Unparseable workbook → skip silently; this is best-effort enrichment.
+        return {};
+      }
+    }),
+  );
+  // Merge (last-write-wins on collision — documented limitation).
+  const merged: Record<string, string[]> = {};
+  for (const local of perForm) Object.assign(merged, local);
+  return merged;
 }
 
 export async function registerProjectRoutes(app: FastifyInstance): Promise<void> {
@@ -174,6 +240,50 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       entries: await listDirEntries(abs),
     };
   });
+
+  app.post<{ Body: { path: string; name: string } }>(
+    '/api/browse/mkdir',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['path', 'name'],
+          properties: {
+            path: { type: 'string', minLength: 1 },
+            name: { type: 'string', minLength: 1 },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const parent = path.resolve(req.body.path.trim());
+      const name = req.body.name.trim();
+      // Reject anything that could escape the parent or isn't a plain folder name.
+      if (name === '.' || name === '..' || /[\\/]/.test(name) || name.includes('\0')) {
+        return reply.code(400).send({ error: `Invalid folder name: ${req.body.name}` });
+      }
+      if (!(await fileExists(parent))) {
+        return reply.code(400).send({ error: `Parent folder does not exist: ${parent}` });
+      }
+      if (!(await fs.stat(parent)).isDirectory()) {
+        return reply.code(400).send({ error: `Parent is not a directory: ${parent}` });
+      }
+      const target = path.join(parent, name);
+      // Defense in depth: the new folder must land directly under the parent.
+      if (path.dirname(target) !== parent) {
+        return reply.code(400).send({ error: `Invalid folder name: ${req.body.name}` });
+      }
+      if (await fileExists(target)) {
+        return reply.code(409).send({ error: `A folder named "${name}" already exists here.` });
+      }
+      try {
+        await fs.mkdir(target);
+      } catch (e) {
+        return reply.code(500).send({ error: `Could not create folder: ${(e as Error).message}` });
+      }
+      return { path: target };
+    },
+  );
 }
 
 async function isProjectRoot(p: string): Promise<boolean> {
