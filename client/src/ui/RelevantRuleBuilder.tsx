@@ -126,7 +126,7 @@ export function RelevantRuleBuilder(props: Props) {
                   checked={parsed.combinator === 'and'}
                   onChange={() => setParsed({ ...parsed, combinator: 'and' })}
                 />
-                ALL rules must match (AND)
+                and also (all rules must match)
               </label>
               <label>
                 <input
@@ -135,7 +135,7 @@ export function RelevantRuleBuilder(props: Props) {
                   checked={parsed.combinator === 'or'}
                   onChange={() => setParsed({ ...parsed, combinator: 'or' })}
                 />
-                ANY rule may match (OR)
+                or instead (any rule may match)
               </label>
             </div>
 

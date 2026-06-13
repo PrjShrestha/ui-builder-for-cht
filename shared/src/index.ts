@@ -21,6 +21,7 @@ export * from './fhir/parse.js';
 export * from './fhir/serialize.js';
 export * from './fhir/reconcile.js';
 export * from './fhir/starterPack.js';
+export * from './conditionBuilder/conditionReducer.js';
 // NOTE: ./fhir/loadStarterPack.ts is intentionally NOT re-exported. It
 // imports `node:fs` and is Node-only — re-exporting would break the client
 // bundle (Vite externalizes `node:fs` and the destructuring import throws

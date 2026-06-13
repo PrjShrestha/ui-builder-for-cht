@@ -12,7 +12,7 @@
  *  - relevant / calculation / constraint expressions (read-only, displayed but not edited)
  *  - properties.json (saved verbatim if loaded; UI editor lands in P1B)
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
   DndContext,
   KeyboardSensor,
@@ -44,6 +44,14 @@ import {
   type ChoiceRow,
   type XLSForm,
   type XLSFormDiff,
+  conditionBuilderReducer,
+  initialConditionBuilderState,
+  isDraftComplete,
+  isInsertReady,
+  serializeBuilderState,
+  type Clause,
+  type ClauseOp,
+  type ConditionColumn,
 } from '@cht-ui/shared';
 import { api } from '../api.js';
 import { useApp } from '../state/store.js';
@@ -1091,22 +1099,20 @@ function buildFieldChoices(
   return out;
 }
 
-type CondOp =
-  | '='
-  | '!='
-  | '>'
-  | '<'
-  | '>='
-  | '<='
-  | 'selected'
-  | 'and'
-  | 'or'
-  | 'not'
-  | 'ref'
-  | 'today';
+/**
+ * Operators the visual condition builder offers. NOTE: `and` and `or` are
+ * deliberately absent here — connectors live BETWEEN clauses (the
+ * between-clause pill in stacked mode), never inside a single one. This
+ * is the §3.7 structural guarantee: there is no UI path that can write
+ * `${a}='x' or ${b}>10 and ${c}='y'` flat-mixed to row.extras. To mix
+ * AND with OR, the user must press `( group these )` (commit C).
+ */
+type CondOp = ClauseOp;
 
-const COND_OPS_NEED_FIELD: CondOp[] = ['=', '!=', '>', '<', '>=', '<=', 'selected', 'not', 'ref'];
-const COND_OPS_NEED_VALUE: CondOp[] = ['=', '!=', '>', '<', '>=', '<=', 'selected'];
+const COND_OPS_NEED_FIELD: CondOp[] = [
+  '=', '!=', '>', '<', '>=', '<=', 'selected', 'selected-not', 'not', 'ref',
+];
+const COND_OPS_NEED_VALUE: CondOp[] = ['=', '!=', '>', '<', '>=', '<=', 'selected', 'selected-not'];
 
 const COLUMN_OPTIONS = [
   { value: 'relevant', label: 'Show when… (relevant)' },
@@ -1115,14 +1121,59 @@ const COLUMN_OPTIONS = [
   { value: 'choice_filter', label: 'Filter choices when… (choice_filter)' },
 ] as const;
 
+/** Microcopy per plan §10. */
+const CONNECTOR_LABELS = { and: 'and also', or: 'or instead' } as const;
+
+/**
+ * Comparison op → English. Used for the prose preview ("This row shows
+ * when: sex is female and age is more than 18"). `today()` / `not(${field})`
+ * / ref stay as code-style chips because there's no clean English form.
+ */
+const COMPARISON_PROSE: Record<'=' | '!=' | '>' | '<' | '>=' | '<=', string> = {
+  '=': 'is',
+  '!=': 'is not',
+  '>': 'is more than',
+  '<': 'is less than',
+  '>=': 'is at least',
+  '<=': 'is at most',
+};
+
+function clauseToProse(c: Clause): string {
+  if (c.op === '=' || c.op === '!=' || c.op === '>' || c.op === '<' || c.op === '>=' || c.op === '<=') {
+    return `${c.field} ${COMPARISON_PROSE[c.op]} ${c.value}`;
+  }
+  if (c.op === 'selected') return `${c.field} includes ${c.value}`;
+  if (c.op === 'selected-not') return `${c.field} does not include ${c.value}`;
+  if (c.op === 'not') return `not(\${${c.field}})`;
+  if (c.op === 'ref') return `\${${c.field}}`;
+  return 'today()';
+}
+
 /**
  * Unified condition builder shown above the raw column inputs.
  *
- *   [ column ▼ ]  [ field ▼ ]  [ logic ▼ ]  [ value ▼ / text ]   + insert   ${preview}
+ * Slice 2 commit B (docs/plans/condition-builder.md v0.2). The transient
+ * state lives in `useReducer(conditionBuilderReducer, ...)`. The strip's
+ * own op dropdown no longer carries `and`/`or` — those are the between-
+ * clause connector pill in stacked mode, and the legacy fragment-append
+ * path (`build()` returning ` and ` / ` or ` for direct string
+ * concatenation) is gone. All writes to `row.extras[column]` flow through
+ * `serializeBuilderState` → `serializeAnyParsed`.
  *
- * Inserts the assembled fragment into whichever column the user picked
- * (relevant / calculation / constraint / choice_filter). When the chosen
- * field is a select, the value cell becomes a dropdown of its choices.
+ * Layout:
+ *   - **One-clause fidelity**: when `clauses.length===0 && draft empty`,
+ *     OR `clauses.length===1 && draft empty && !rawFallback`, render a
+ *     single horizontal strip — same column/field/value dropdowns,
+ *     same free-text value fallback, same `+ insert` position as today.
+ *     No chip group, no preview header.
+ *   - **Stacked mode**: as soon as the chain has ≥2 clauses, OR the user
+ *     starts a draft on top of a committed clause, show the committed
+ *     clauses as chips with the between-clause connector pill, plus a
+ *     prose preview header `This row shows when: …`.
+ *   - **Raw fallback**: when the existing column value couldn't be cleanly
+ *     parsed (mixed AND/OR without parens, three-level nesting, etc.),
+ *     show the banner and keep chaining disabled; the existing text stays
+ *     visible + editable in the ExpressionField below.
  */
 function UnifiedConditionBuilder(props: {
   fieldOptions: string[];
@@ -1130,78 +1181,136 @@ function UnifiedConditionBuilder(props: {
   getColumn: (col: string) => string;
   setColumn: (col: string, value: string) => void;
 }) {
-  const [column, setColumn] = useState<string>('');
-  const [field, setField] = useState('');
-  const [op, setOp] = useState<CondOp | ''>('');
-  const [value, setValue] = useState('');
-  /** Snapshot of the column's value before the most recent insert. Cleared
-   *  after the user starts a new build or undoes. Lets the inline ↶ undo
-   *  button revert one full insert without depending on global Ctrl+Z. */
-  const [lastInsert, setLastInsert] = useState<{ col: string; before: string } | null>(null);
-  const choices = field ? props.fieldChoices[field] : undefined;
-  const needsField = op !== '' && (COND_OPS_NEED_FIELD as string[]).includes(op);
-  const needsValue = op !== '' && (COND_OPS_NEED_VALUE as string[]).includes(op);
+  const [state, dispatch] = useReducer(conditionBuilderReducer, initialConditionBuilderState);
 
-  function quote(v: string): string {
-    if (v === '') return "''";
-    if (/^\$\{[^}]+\}$/.test(v)) return v;
-    if (/^-?\d+(\.\d+)?$/.test(v)) return v;
-    return `'${v.replace(/'/g, "\\'")}'`;
+  // Whenever the user picks a column, hydrate the reducer from its
+  // existing value. parseRelevantGrouped routes anything outside our
+  // grammar to rawFallback (chaining disabled, text preserved).
+  function onPickColumn(col: ConditionColumn | ''): void {
+    const existingValue = col ? props.getColumn(col) : '';
+    dispatch({ kind: 'set-column', column: col, existingValue });
   }
 
-  function build(): string {
-    if (!op) return '';
-    if ((['=', '!=', '>', '<', '>=', '<='] as CondOp[]).includes(op)) {
-      if (!field) return '';
-      return `\${${field}} ${op} ${quote(value)}`;
-    }
-    if (op === 'selected') {
-      if (!field) return '';
-      return `selected(\${${field}}, ${quote(value || '')})`;
-    }
-    if (op === 'and' || op === 'or') return ` ${op} `;
-    if (op === 'not') return field ? `not(\${${field}})` : 'not()';
-    if (op === 'ref') return field ? `\${${field}}` : '';
-    if (op === 'today') return 'today()';
-    return '';
+  function setDraft(partial: Partial<Clause>): void {
+    dispatch({ kind: 'set-draft', partial });
   }
 
-  function doInsert() {
-    if (!column) return;
-    const s = build();
-    if (!s) return;
-    const before = props.getColumn(column);
-    props.setColumn(column, before + s);
-    setLastInsert({ col: column, before });
-    setOp('');
-    setField('');
-    setValue('');
+  function doAddAnother(): void {
+    if (!isDraftComplete(state.draft)) return;
+    const connector: 'and' | 'or' = state.lockedConnector ?? connectorChoice;
+    dispatch({ kind: 'commit-clause', connector });
   }
 
-  function doCancel() {
-    setColumn('');
-    setField('');
-    setOp('');
-    setValue('');
+  function doInsert(): void {
+    if (!state.column || !isInsertReady(state)) return;
+    // Write the serialized chain to row.extras[column], replacing whatever's
+    // there. Different from today's append-on-insert: chaining now produces
+    // the FULL expression, so we own the column's value end-to-end.
+    const out = serializeBuilderState(state);
+    props.setColumn(state.column, out);
+    // Reset the session by re-hydrating against the just-written value.
+    dispatch({ kind: 'set-column', column: state.column, existingValue: out });
   }
 
-  function doUndoInsert() {
-    if (!lastInsert) return;
-    props.setColumn(lastInsert.col, lastInsert.before);
-    setLastInsert(null);
+  function doStartOver(): void {
+    dispatch({ kind: 'start-over' });
   }
 
-  const preview = build();
-  const canInsert = Boolean(column && preview);
-  const canCancel = Boolean(column || field || op || value);
+  function doUndoLastClause(): void {
+    dispatch({ kind: 'pop-clause' });
+  }
+
+  // The connector picker default — only meaningful before lockedConnector
+  // is set. After that, the dropdown is disabled and displays the lock.
+  const [connectorChoice, setConnectorChoice] = useState<'and' | 'or'>('and');
+
+  const choices = state.draft.field ? props.fieldChoices[state.draft.field] : undefined;
+  const needsField = (COND_OPS_NEED_FIELD as string[]).includes(state.draft.op);
+  const needsValue = (COND_OPS_NEED_VALUE as string[]).includes(state.draft.op);
+
+  // "Stacked" iff the chain has reached the chip threshold. Plan §4:
+  // "the stacked-clause/chip UI only appears once a second clause exists."
+  const draftEmpty = state.draft.field === '' && state.draft.value === '' && state.draft.op === '=';
+  const stacked = state.clauses.length >= 2 || (state.clauses.length >= 1 && !draftEmpty);
+
+  const proseChips = state.clauses.map(clauseToProse);
+  const draftProse = isDraftComplete(state.draft) ? clauseToProse(state.draft) : '…';
 
   return (
     <div className="cond-strip cond-strip-unified">
+      {state.rawFallback !== null && (
+        <div
+          className="muted"
+          role="status"
+          style={{ width: '100%', padding: '4px 0' }}
+        >
+          This rule was hand-written. Edit as text, or clear it to use the builder.
+        </div>
+      )}
+
+      {stacked && state.rawFallback === null && (
+        <div style={{ width: '100%' }}>
+          <div className="muted ref-chips-hint" style={{ marginBottom: 4 }}>
+            This row shows when:{' '}
+            {state.clauses.map((_, i) => (
+              <span key={i}>
+                {i > 0 && (
+                  <span className="muted">
+                    {' '}{CONNECTOR_LABELS[state.connectors[i - 1] ?? 'and']}{' '}
+                  </span>
+                )}
+                <code className="cond-preview">{proseChips[i]}</code>
+              </span>
+            ))}
+            {!draftEmpty && (
+              <>
+                <span className="muted">
+                  {' '}{CONNECTOR_LABELS[state.lockedConnector ?? connectorChoice]}{' '}
+                </span>
+                <code className="cond-preview">{draftProse}</code>
+              </>
+            )}
+          </div>
+          <div
+            role="group"
+            aria-label="Conditions for showing this row"
+            className="row gap"
+            style={{ flexWrap: 'wrap', marginBottom: 6 }}
+          >
+            {state.clauses.map((c, i) => (
+              <span key={i} className="row gap" style={{ alignItems: 'center' }}>
+                {i > 0 && (
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {CONNECTOR_LABELS[state.connectors[i - 1] ?? 'and']}
+                  </span>
+                )}
+                <code className="cond-preview">{clauseToProse(c)}</code>
+                <button
+                  type="button"
+                  className="link"
+                  aria-label="remove rule"
+                  title="Remove this rule"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    // Pop only supports the LAST clause in commit B. Removing
+                    // an interior clause is a commit-C refinement.
+                    if (i === state.clauses.length - 1) doUndoLastClause();
+                  }}
+                  disabled={i !== state.clauses.length - 1}
+                >
+                  × remove rule
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       <span className="muted ref-chips-hint">build:</span>
       <select
         className="ref-chip-select"
-        value={column}
-        onChange={(e) => setColumn(e.target.value)}
+        value={state.column}
+        onChange={(e) => onPickColumn(e.target.value as ConditionColumn | '')}
         title="Which column to add the fragment to"
       >
         <option value="">— column —</option>
@@ -1213,13 +1322,10 @@ function UnifiedConditionBuilder(props: {
       </select>
       <select
         className="ref-chip-select"
-        value={field}
-        onChange={(e) => {
-          setField(e.target.value);
-          setValue('');
-        }}
+        value={state.draft.field}
+        onChange={(e) => setDraft({ field: e.target.value, value: '' })}
         title="Pick a field"
-        disabled={op !== '' && !needsField}
+        disabled={state.rawFallback !== null || !needsField}
       >
         <option value="">— field —</option>
         {props.fieldOptions.map((n) => (
@@ -1230,14 +1336,11 @@ function UnifiedConditionBuilder(props: {
       </select>
       <select
         className="ref-chip-select"
-        value={op}
-        onChange={(e) => {
-          setOp(e.target.value as CondOp | '');
-          setValue('');
-        }}
+        value={state.draft.op}
+        onChange={(e) => setDraft({ op: e.target.value as ClauseOp, value: '' })}
         title="Pick what to add"
+        disabled={state.rawFallback !== null}
       >
-        <option value="">— logic —</option>
         <optgroup label="comparison">
           <option value="=">= value</option>
           <option value="!=">≠ value</option>
@@ -1247,11 +1350,10 @@ function UnifiedConditionBuilder(props: {
           <option value="<=">≤ value</option>
         </optgroup>
         <optgroup label="select_multiple">
-          <option value="selected">selected(value)</option>
+          <option value="selected">includes value</option>
+          <option value="selected-not">does not include value</option>
         </optgroup>
         <optgroup label="logic">
-          <option value="and">and</option>
-          <option value="or">or</option>
           <option value="not">not(field)</option>
         </optgroup>
         <optgroup label="reference">
@@ -1262,10 +1364,10 @@ function UnifiedConditionBuilder(props: {
       {choices && choices.length > 0 ? (
         <select
           className="ref-chip-select"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
+          value={state.draft.value}
+          onChange={(e) => setDraft({ value: e.target.value })}
           title="Pick a value from this field's choices"
-          disabled={!needsValue}
+          disabled={state.rawFallback !== null || !needsValue}
         >
           <option value="">— value —</option>
           {choices.map((c) => (
@@ -1277,12 +1379,50 @@ function UnifiedConditionBuilder(props: {
       ) : (
         <input
           className="cond-value-input"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
+          value={state.draft.value}
+          onChange={(e) => setDraft({ value: e.target.value })}
           placeholder="value or ${other_field}"
-          disabled={!needsValue}
+          disabled={state.rawFallback !== null || !needsValue}
         />
       )}
+
+      {/* Between-clause connector picker. Visible whenever a chain is in
+          play; locked after the first connector is chosen so flat-mixed
+          AND/OR is structurally impossible (§3.3). The `( group these )`
+          escape hatch arrives in commit C. */}
+      {(state.clauses.length >= 1 || state.lockedConnector !== null) && (
+        <select
+          className="ref-chip-select"
+          value={state.lockedConnector ?? connectorChoice}
+          onChange={(e) => setConnectorChoice(e.target.value as 'and' | 'or')}
+          title={
+            state.lockedConnector
+              ? `Locked to "${CONNECTOR_LABELS[state.lockedConnector]}" for this chain. Use ( group these ) to mix — coming next.`
+              : 'How the next rule combines with this one'
+          }
+          disabled={state.lockedConnector !== null}
+        >
+          <option value="and">{CONNECTOR_LABELS.and}</option>
+          <option value="or">{CONNECTOR_LABELS.or}</option>
+        </select>
+      )}
+
+      <button
+        type="button"
+        className="link"
+        onClick={(e) => {
+          e.preventDefault();
+          doAddAnother();
+        }}
+        disabled={state.rawFallback !== null || !isDraftComplete(state.draft)}
+        title={
+          state.rawFallback !== null
+            ? 'Clear the hand-written text first to use the builder'
+            : 'Stage this clause and keep building'
+        }
+      >
+        + add another rule
+      </button>
       <button
         type="button"
         className="link"
@@ -1290,13 +1430,11 @@ function UnifiedConditionBuilder(props: {
           e.preventDefault();
           doInsert();
         }}
-        disabled={!canInsert}
+        disabled={!isInsertReady(state)}
         title={
-          !column
-            ? 'Pick a column first'
-            : preview
-              ? `Append to ${column}: ${preview}`
-              : 'Pick the rest above'
+          state.column
+            ? `Write the full chain to ${state.column}`
+            : 'Pick a column first'
         }
       >
         + insert
@@ -1306,27 +1444,26 @@ function UnifiedConditionBuilder(props: {
         className="link"
         onClick={(e) => {
           e.preventDefault();
-          doCancel();
+          doStartOver();
         }}
-        disabled={!canCancel}
-        title="Clear the builder (does not touch the form)"
+        disabled={state.clauses.length === 0 && draftEmpty}
+        title="Clear the in-progress chain (does not touch the saved value)"
       >
-        × cancel
+        × start over
       </button>
-      {lastInsert && (
+      {state.clauses.length > 0 && (
         <button
           type="button"
           className="link"
           onClick={(e) => {
             e.preventDefault();
-            doUndoInsert();
+            doUndoLastClause();
           }}
-          title={`Revert the last insert into ${lastInsert.col}`}
+          title="Pop the last committed clause off the chain"
         >
-          ↶ undo insert
+          ↶ undo last clause
         </button>
       )}
-      {preview && <code className="cond-preview">{preview}</code>}
     </div>
   );
 }

@@ -52,24 +52,44 @@ await writeXlsx(join(root, 'forms', 'contact', 'person.xlsx'), {
 });
 
 // App form: pregnancy.xlsx — `sex` arrives via inputs/contact/sex (calculate),
-// matching the canonical CHT contact-injection pattern. One real editable
-// question (`lmp_date`) so the e2e test can open the unified condition
-// builder, pick `sex` from the field dropdown, and assert the value cell
-// is a populated `<select>` (because `contactFieldChoices['sex']` reaches
-// the FormEditor from the server).
+// matching the canonical CHT contact-injection pattern. This form is the
+// fixture the editing-flow e2e suite exercises, so it deliberately carries
+// the surfaces a UAT tester reaches for:
+//
+//   - `lmp_date` (date)  — the only `date` row; the condition-builder spec
+//     discriminates it by its raw type chip, so KEEP IT THE ONLY DATE ROW.
+//   - `lmp_note` (note)  — `relevant = ${lmp_date} != ''` makes it depend on
+//     `lmp_date`, which sits immediately above it. Moving the note up (swap
+//     with lmp_date) is the dependency-breaking reorder the guard must catch;
+//     moving a row with no such reference is the benign control.
+//   - `danger_signs` (select_multiple) — a real multi-select with a 3-option
+//     choice list, so the inline-choices editing flow has something to edit.
+//   - `gravidity` (integer) — an untranslated row, so the `ne` "missing"
+//     counter on the Translate tab is non-zero and observable.
+//
+// Two locales (`label::en` + `label::ne`) so label + translation editing is
+// testable; `sex` still flows in via `inputs/contact/sex` so the
+// condition-builder dropdown spec keeps working unchanged.
 await writeXlsx(join(root, 'forms', 'app', 'pregnancy.xlsx'), {
   survey: [
-    ['type', 'name', 'label::en', 'calculation', 'required'],
-    ['begin group', 'inputs', '', '', ''],
-    ['begin group', 'contact', '', '', ''],
-    ['calculate', 'sex', '', '../inputs/contact/sex', ''],
-    ['calculate', '_id', '', '../inputs/contact/_id', ''],
-    ['end group', '', '', '', ''],
-    ['end group', '', '', '', ''],
-    ['date', 'lmp_date', 'Last menstrual period', '', 'yes'],
-    ['integer', 'gravidity', 'Number of pregnancies', '', ''],
+    ['type', 'name', 'label::en', 'label::ne', 'calculation', 'relevant', 'required'],
+    ['begin group', 'inputs', '', '', '', '', ''],
+    ['begin group', 'contact', '', '', '', '', ''],
+    ['calculate', 'sex', '', '', '../inputs/contact/sex', '', ''],
+    ['calculate', '_id', '', '', '../inputs/contact/_id', '', ''],
+    ['end group', '', '', '', '', '', ''],
+    ['end group', '', '', '', '', '', ''],
+    ['date', 'lmp_date', 'Last menstrual period', 'अन्तिम महिनावारी', '', '', 'yes'],
+    ['note', 'lmp_note', 'LMP recorded', '', '', "${lmp_date} != ''", ''],
+    ['select_multiple danger_signs', 'danger_signs', 'Danger signs', 'खतराका लक्षण', '', '', ''],
+    ['integer', 'gravidity', 'Number of pregnancies', '', '', '', ''],
   ],
-  choices: [['list_name', 'name', 'label::en']],
+  choices: [
+    ['list_name', 'name', 'label::en', 'label::ne'],
+    ['danger_signs', 'vaginal_bleeding', 'Vaginal bleeding', 'योनिबाट रक्तस्राव'],
+    ['danger_signs', 'severe_headache', 'Severe headache', ''],
+    ['danger_signs', 'blurred_vision', 'Blurred vision', ''],
+  ],
   settings: [
     // Canonical order matches serialize.ts:155 so the round-trip smoke passes.
     ['form_title', 'form_id', 'version'],

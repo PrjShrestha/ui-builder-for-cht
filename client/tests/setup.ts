@@ -21,7 +21,10 @@ export const PROJECT_PATH =
 export const test = base.extend<{ projectOpen: void }>({
   projectOpen: [
     async ({ request }, use) => {
-      const res = await request.post('http://localhost:5174/api/project/open', {
+      // 127.0.0.1 (not `localhost`) so the request lands on the IPv4 socket
+      // Fastify binds to; on Windows, Node resolves localhost → ::1 (IPv6)
+      // and the dev server doesn't listen there.
+      const res = await request.post('http://127.0.0.1:5174/api/project/open', {
         data: { path: PROJECT_PATH },
       });
       if (!res.ok()) {
