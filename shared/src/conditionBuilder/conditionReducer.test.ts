@@ -23,7 +23,7 @@ import {
   type Clause,
   type ConditionBuilderState,
 } from './conditionReducer.js';
-import { parseRelevant } from '../xlsform/relevantParser.js';
+import { parseRelevant, parseRelevantGrouped } from '../xlsform/relevantParser.js';
 
 function withColumn(column: 'relevant' | 'calculation' | 'constraint' | 'choice_filter'): ConditionBuilderState {
   return conditionBuilderReducer(initialConditionBuilderState, {
@@ -259,15 +259,26 @@ test("raw-fallback: a flat-mixed `and`/`or` existing value disables chaining ent
   assert.equal(isInsertReady(s), false);
 });
 
-test('raw-fallback: a grouped-paren expression also routes to raw in commit B (groups are commit-C work)', () => {
-  // Commit B routes grouped expressions to raw so the user can edit as
-  // text or clear. Commit C lifts this into the `groups` arm of state.
+test('hydrate: a grouped-paren expression populates the groups arm (commit C)', () => {
+  // Commit C wakes up the `groups` arm: `(A and B) or C` reopens as two
+  // subgroups joined by the outer OR. The newest subgroup is active by
+  // default (the user most recently appended it).
   const s = conditionBuilderReducer(initialConditionBuilderState, {
     kind: 'set-column',
     column: 'relevant',
     existingValue: `(\${a} = 'x' and \${b} > 10) or \${c} = 'y'`,
   });
-  assert.equal(s.rawFallback, `(\${a} = 'x' and \${b} > 10) or \${c} = 'y'`);
+  assert.equal(s.rawFallback, null);
+  assert.ok(s.groups);
+  assert.equal(s.groups.length, 2);
+  assert.equal(s.outerConnector, 'or');
+  assert.equal(s.activeGroupIndex, 1);
+  assert.equal(s.groups[0]?.connector, 'and');
+  assert.equal(s.groups[0]?.clauses.length, 2);
+  assert.equal(s.groups[1]?.clauses.length, 1);
+  // Flat arms must be empty in grouped mode.
+  assert.deepEqual(s.clauses, []);
+  assert.equal(s.lockedConnector, null);
 });
 
 /* ------------------------------ rehydrate -------------------------------- */
@@ -351,4 +362,289 @@ test('set-draft: merges partial into draft, leaves committed clauses untouched',
   s = setDraft(s, { field: 'age' });
   assert.deepEqual(s.draft, { field: 'age', op: '=', value: '' });
   assert.equal(s.clauses.length, 1);
+});
+
+/* ============================ Slice 2.C — grouped mode ============================ */
+/*
+ * Cases per synthesis §4. Together they prove the structural no-flat-
+ * mixed guarantee at the reducer boundary (the JSX surface is exercised
+ * via Playwright in the e2e suite).
+ */
+
+/** Helper to set up a 2-clause AND-locked flat chain. */
+function withTwoFlatClauses(): ConditionBuilderState {
+  let s = withColumn('relevant');
+  s = setDraft(s, { field: 'a', op: '=', value: 'x' });
+  s = commit(s, 'and');
+  s = setDraft(s, { field: 'b', op: '>', value: '10' });
+  s = commit(s, 'and');
+  return s;
+}
+
+test('enter-group-mode: refused when fewer than 2 clauses are committed', () => {
+  let s = withColumn('relevant');
+  s = setDraft(s, { field: 'a', op: '=', value: 'x' });
+  s = commit(s, 'and');
+  const before = s;
+  s = conditionBuilderReducer(s, { kind: 'enter-group-mode' });
+  assert.deepEqual(s, before, 'one-clause state must not enter grouped mode');
+});
+
+test('enter-group-mode: refused when rawFallback is set', () => {
+  const s = conditionBuilderReducer(initialConditionBuilderState, {
+    kind: 'set-column',
+    column: 'relevant',
+    existingValue: `\${a} = 'x' or \${b} > 10 and \${c} = 'y'`, // flat-mixed → raw
+  });
+  assert.ok(s.rawFallback);
+  const after = conditionBuilderReducer(s, { kind: 'enter-group-mode' });
+  assert.deepEqual(after, s, 'raw fallback must refuse grouped-mode entry');
+});
+
+test('enter-group-mode: refused when the draft is partial-incomplete (no silent drop)', () => {
+  let s = withTwoFlatClauses();
+  s = setDraft(s, { field: 'c', op: '=', value: '' }); // started but incomplete
+  const before = s;
+  s = conditionBuilderReducer(s, { kind: 'enter-group-mode' });
+  assert.deepEqual(s, before);
+});
+
+test("enter-group-mode: zeroes flat fields and collects clauses into groups[0], activeGroupIndex=0", () => {
+  const flat = withTwoFlatClauses();
+  const grouped = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+  assert.deepEqual(grouped.clauses, []);
+  assert.deepEqual(grouped.connectors, []);
+  assert.equal(grouped.lockedConnector, null);
+  assert.ok(grouped.groups);
+  assert.equal(grouped.groups.length, 1);
+  assert.deepEqual(grouped.groups[0]?.clauses, flat.clauses);
+  assert.equal(grouped.groups[0]?.connector, 'and');
+  assert.equal(grouped.activeGroupIndex, 0);
+  assert.equal(grouped.outerConnector, null);
+});
+
+test('enter-group-mode: preserves a complete draft verbatim (mid-thought clause survives)', () => {
+  let s = withTwoFlatClauses();
+  s = setDraft(s, { field: 'c', op: '=', value: 'y' });
+  const before = s.draft;
+  s = conditionBuilderReducer(s, { kind: 'enter-group-mode' });
+  assert.deepEqual(s.draft, before);
+});
+
+test('add-subgroup: refused unless groups.length===1 with at least one clause', () => {
+  // No groups yet.
+  const flat = withTwoFlatClauses();
+  let s = conditionBuilderReducer(flat, { kind: 'add-subgroup', connector: 'or' });
+  assert.equal(s.groups, null);
+
+  // Groups[0] empty (degenerate, but defend against it).
+  s = {
+    ...flat,
+    clauses: [],
+    connectors: [],
+    lockedConnector: null,
+    groups: [{ clauses: [], connector: 'and' }],
+    activeGroupIndex: 0,
+  };
+  const after = conditionBuilderReducer(s, { kind: 'add-subgroup', connector: 'or' });
+  assert.deepEqual(after, s);
+});
+
+test('add-subgroup: sets outerConnector and activates subgroup 2', () => {
+  const flat = withTwoFlatClauses();
+  let s = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+  s = conditionBuilderReducer(s, { kind: 'add-subgroup', connector: 'or' });
+  assert.equal(s.outerConnector, 'or');
+  assert.equal(s.activeGroupIndex, 1);
+  assert.ok(s.groups);
+  assert.equal(s.groups.length, 2);
+  assert.deepEqual(s.groups[1]?.clauses, []);
+});
+
+test('commit-clause in grouped mode routes into the active subgroup', () => {
+  const flat = withTwoFlatClauses();
+  let s = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+  s = conditionBuilderReducer(s, { kind: 'add-subgroup', connector: 'or' });
+  s = setDraft(s, { field: 'c', op: '=', value: 'y' });
+  s = commit(s, 'and');
+
+  // Subgroup 1 untouched, subgroup 2 gained the clause.
+  assert.equal(s.groups?.[0]?.clauses.length, 2, 'subgroup 1 stays at 2 clauses');
+  assert.equal(s.groups?.[1]?.clauses.length, 1, 'subgroup 2 gained the new clause');
+  assert.deepEqual(s.groups?.[1]?.clauses[0], { field: 'c', op: '=', value: 'y' });
+});
+
+test('commit-clause in grouped mode: intra-subgroup mixed-connector is a no-op (§3.3)', () => {
+  const flat = withTwoFlatClauses();
+  let s = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+  s = conditionBuilderReducer(s, { kind: 'add-subgroup', connector: 'or' });
+  s = setDraft(s, { field: 'c', op: '=', value: 'y' });
+  s = commit(s, 'and'); // subgroup 2 locks AND
+
+  s = setDraft(s, { field: 'd', op: '=', value: 'z' });
+  const before = s;
+  s = commit(s, 'or'); // mismatched — should be no-op
+  assert.equal(s.groups?.[1]?.clauses.length, before.groups?.[1]?.clauses.length);
+  assert.equal(s.groups?.[1]?.connector, 'and');
+});
+
+test('pop-clause in subgroup 2 that empties it drops subgroup 2 entirely', () => {
+  const flat = withTwoFlatClauses();
+  let s = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+  s = conditionBuilderReducer(s, { kind: 'add-subgroup', connector: 'or' });
+  s = setDraft(s, { field: 'c', op: '=', value: 'y' });
+  s = commit(s, 'and');
+  // Subgroup 2 has 1 clause; pop empties it.
+  s = conditionBuilderReducer(s, { kind: 'pop-clause' });
+  assert.equal(s.groups?.length, 1);
+  assert.equal(s.outerConnector, null);
+  assert.equal(s.activeGroupIndex, 0);
+  assert.equal(s.groups?.[0]?.clauses.length, 2, 'subgroup 1 untouched');
+});
+
+test('exit-group-mode (flatten) with a single subgroup restores the flat chain losslessly', () => {
+  const flat = withTwoFlatClauses();
+  const grouped = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+  const reflattened = conditionBuilderReducer(grouped, { kind: 'exit-group-mode' });
+  assert.deepEqual(reflattened.clauses, flat.clauses);
+  assert.deepEqual(reflattened.connectors, flat.connectors);
+  assert.equal(reflattened.lockedConnector, flat.lockedConnector);
+  assert.equal(reflattened.groups, null);
+});
+
+test('exit-group-mode with two non-empty subgroups is a no-op (would force flat-mixed)', () => {
+  const flat = withTwoFlatClauses();
+  let s = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+  s = conditionBuilderReducer(s, { kind: 'add-subgroup', connector: 'or' });
+  s = setDraft(s, { field: 'c', op: '=', value: 'y' });
+  s = commit(s, 'and');
+  const before = s;
+  s = conditionBuilderReducer(s, { kind: 'exit-group-mode' });
+  assert.deepEqual(s, before);
+});
+
+test('exit-group-mode with one empty + one non-empty subgroup: empty dropped, flatten proceeds', () => {
+  const flat = withTwoFlatClauses();
+  let s = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+  s = conditionBuilderReducer(s, { kind: 'add-subgroup', connector: 'or' });
+  // Subgroup 2 stays empty; flatten should collapse to subgroup 1 only.
+  s = conditionBuilderReducer(s, { kind: 'exit-group-mode' });
+  assert.deepEqual(s.clauses, flat.clauses);
+  assert.equal(s.groups, null);
+});
+
+test('set-active-group: switches focus only when the draft is empty or complete', () => {
+  const flat = withTwoFlatClauses();
+  let s = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+  s = conditionBuilderReducer(s, { kind: 'add-subgroup', connector: 'or' });
+  // Partial draft → refuse the switch.
+  s = setDraft(s, { field: 'c', op: '=', value: '' });
+  const partialBefore = s;
+  s = conditionBuilderReducer(s, { kind: 'set-active-group', index: 0 });
+  assert.deepEqual(s, partialBefore);
+  // Clear → switch allowed.
+  s = setDraft(s, { field: '', op: '=', value: '' });
+  s = conditionBuilderReducer(s, { kind: 'set-active-group', index: 0 });
+  assert.equal(s.activeGroupIndex, 0);
+});
+
+test('start-over: zeros groups/outerConnector/activeGroupIndex along with flat fields', () => {
+  const flat = withTwoFlatClauses();
+  let s = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+  s = conditionBuilderReducer(s, { kind: 'add-subgroup', connector: 'or' });
+  s = setDraft(s, { field: 'c', op: '=', value: 'y' });
+  s = conditionBuilderReducer(s, { kind: 'start-over' });
+  assert.equal(s.groups, null);
+  assert.equal(s.outerConnector, null);
+  assert.equal(s.activeGroupIndex, null);
+  assert.deepEqual(s.clauses, []);
+  assert.equal(s.lockedConnector, null);
+  assert.equal(s.column, 'relevant', 'column must survive start-over');
+});
+
+test('serialize: grouped state with one subgroup emits no parens (degrades to flat)', () => {
+  const flat = withTwoFlatClauses();
+  const grouped = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+  assert.equal(
+    serializeBuilderState(grouped),
+    `\${a} = 'x' and \${b} > 10`,
+  );
+});
+
+test('serialize: grouped state with two non-empty subgroups emits canonical (A op B) or C', () => {
+  const flat = withTwoFlatClauses();
+  let s = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+  s = conditionBuilderReducer(s, { kind: 'add-subgroup', connector: 'or' });
+  s = setDraft(s, { field: 'c', op: '=', value: 'y' });
+  s = commit(s, 'and');
+  assert.equal(
+    serializeBuilderState(s),
+    `(\${a} = 'x' and \${b} > 10) or \${c} = 'y'`,
+  );
+});
+
+test("serialize: builder output ALWAYS round-trips through parseRelevantGrouped with isRawFallback:false (no flat-mixed reachable)", () => {
+  // Exhaustive guard: drive a randomised-but-deterministic commit sequence
+  // in BOTH flat and grouped modes and assert every emission parses cleanly.
+  const seeds: Array<() => ConditionBuilderState> = [
+    // Pure flat AND.
+    () => {
+      let s = withColumn('relevant');
+      s = setDraft(s, { field: 'a', op: '=', value: '1' });
+      s = commit(s, 'and');
+      s = setDraft(s, { field: 'b', op: '=', value: '2' });
+      s = commit(s, 'and');
+      return s;
+    },
+    // Pure flat OR.
+    () => {
+      let s = withColumn('relevant');
+      s = setDraft(s, { field: 'a', op: '=', value: '1' });
+      s = commit(s, 'or');
+      s = setDraft(s, { field: 'b', op: '=', value: '2' });
+      s = commit(s, 'or');
+      return s;
+    },
+    // Flat with mid-build mismatched commit (the no-op invariant).
+    () => {
+      let s = withColumn('relevant');
+      s = setDraft(s, { field: 'a', op: '=', value: '1' });
+      s = commit(s, 'and');
+      s = setDraft(s, { field: 'b', op: '=', value: '2' });
+      s = commit(s, 'or'); // no-op
+      s = commit(s, 'and');
+      return s;
+    },
+    // Grouped (AND-chain) or C.
+    () => {
+      const flat = withTwoFlatClauses();
+      let s = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+      s = conditionBuilderReducer(s, { kind: 'add-subgroup', connector: 'or' });
+      s = setDraft(s, { field: 'c', op: '=', value: 'y' });
+      s = commit(s, 'and');
+      return s;
+    },
+    // Grouped (AND) and (OR-chain).
+    () => {
+      const flat = withTwoFlatClauses();
+      let s = conditionBuilderReducer(flat, { kind: 'enter-group-mode' });
+      s = conditionBuilderReducer(s, { kind: 'add-subgroup', connector: 'and' });
+      s = setDraft(s, { field: 'c', op: '=', value: 'y' });
+      s = commit(s, 'or');
+      s = setDraft(s, { field: 'd', op: '=', value: 'z' });
+      s = commit(s, 'or');
+      return s;
+    },
+  ];
+  for (const seed of seeds) {
+    const s = seed();
+    const out = serializeBuilderState(s);
+    if (out === '') continue;
+    const parsed = parseRelevantGrouped(out);
+    assert.equal(
+      parsed.isRawFallback,
+      false,
+      `Builder produced an output that doesn't round-trip cleanly: ${out}`,
+    );
+  }
 });

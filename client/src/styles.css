@@ -648,6 +648,58 @@ code {
   border-radius: 3px;
   color: #3730a3;
 }
+
+/* ---------- Grouped condition builder (Slice 2.C) ---------- */
+/* The subgroup stack renders inside the .cond-strip flex; each subgroup
+   is its own bordered card. The active card highlights via accent left-
+   border + slightly raised background; inactive cards stay dashed to
+   read as "switch to me to edit". Outer-connector pill sits between
+   cards on its own row. */
+.cond-subgroup-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.cond-subgroup {
+  border: 1px dashed #d1d5db;
+  border-left: 3px solid #d1d5db;
+  border-radius: 4px;
+  padding: 6px 8px;
+  background: #f9fafb;
+}
+.cond-subgroup.active {
+  border-style: solid;
+  border-left-color: #6366f1;
+  background: #eef2ff;
+}
+.cond-subgroup-header {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #4338ca;
+  background: transparent;
+  border: 0;
+  padding: 0 0 4px 0;
+  cursor: pointer;
+}
+.cond-subgroup-header:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.cond-subgroup-header[aria-pressed='false'] {
+  color: #6b7280;
+}
+.cond-outer-connector {
+  padding-left: 8px;
+  font-style: italic;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+}
+
 .expr-label strong { font-size: 13px; color: var(--text, #111); }
 .raw-col-tag {
   font-family: var(--mono, monospace);

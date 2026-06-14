@@ -12,7 +12,7 @@
  *  - relevant / calculation / constraint expressions (read-only, displayed but not edited)
  *  - properties.json (saved verbatim if loaded; UI editor lands in P1B)
  */
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
   DndContext,
   KeyboardSensor,
@@ -47,11 +47,13 @@ import {
   conditionBuilderReducer,
   initialConditionBuilderState,
   isDraftComplete,
+  isDraftEmpty,
   isInsertReady,
   serializeBuilderState,
   type Clause,
   type ClauseOp,
   type ConditionColumn,
+  type Subgroup,
 } from '@cht-ui/shared';
 import { api } from '../api.js';
 import { useApp } from '../state/store.js';
@@ -1195,9 +1197,27 @@ function UnifiedConditionBuilder(props: {
     dispatch({ kind: 'set-draft', partial });
   }
 
+  // The connector picker default — only meaningful before a connector is
+  // locked. After lock it's read-only and reflects the lock. In grouped
+  // mode the active subgroup carries its own connector lock.
+  const [connectorChoice, setConnectorChoice] = useState<'and' | 'or'>('and');
+
+  /**
+   * Resolve the locked connector for the current commit context. In flat
+   * mode it's `state.lockedConnector`. In grouped mode it's the active
+   * subgroup's `connector` (only locked once the subgroup has clauses).
+   */
+  function activeLockedConnector(): 'and' | 'or' | null {
+    if (state.groups === null) return state.lockedConnector;
+    const idx = state.activeGroupIndex;
+    if (idx === null) return null;
+    const active = state.groups[idx];
+    return active && active.clauses.length > 0 ? active.connector : null;
+  }
+
   function doAddAnother(): void {
     if (!isDraftComplete(state.draft)) return;
-    const connector: 'and' | 'or' = state.lockedConnector ?? connectorChoice;
+    const connector: 'and' | 'or' = activeLockedConnector() ?? connectorChoice;
     dispatch({ kind: 'commit-clause', connector });
   }
 
@@ -1220,21 +1240,62 @@ function UnifiedConditionBuilder(props: {
     dispatch({ kind: 'pop-clause' });
   }
 
-  // The connector picker default — only meaningful before lockedConnector
-  // is set. After that, the dropdown is disabled and displays the lock.
-  const [connectorChoice, setConnectorChoice] = useState<'and' | 'or'>('and');
+  function onGroupThese(): void {
+    dispatch({ kind: 'enter-group-mode' });
+  }
+
+  function onFlatten(): void {
+    dispatch({ kind: 'exit-group-mode' });
+  }
+
+  function onAddSubgroup(connector: 'and' | 'or'): void {
+    dispatch({ kind: 'add-subgroup', connector });
+  }
+
+  /**
+   * Switch the active subgroup. If the draft has been started but is not
+   * yet complete, confirm with the user before discarding it — never
+   * silently drop in-flight input (Lorena gate + Lal blocking #1).
+   */
+  function requestActiveGroupSwitch(index: number): void {
+    const draftStarted = !isDraftEmpty(state.draft);
+    const draftComplete = isDraftComplete(state.draft);
+    if (draftStarted && !draftComplete) {
+      // eslint-disable-next-line no-alert
+      const ok = window.confirm('Discard the in-flight rule?');
+      if (!ok) return;
+      dispatch({ kind: 'set-draft', partial: { field: '', op: '=', value: '' } });
+    }
+    dispatch({ kind: 'set-active-group', index });
+  }
 
   const choices = state.draft.field ? props.fieldChoices[state.draft.field] : undefined;
   const needsField = (COND_OPS_NEED_FIELD as string[]).includes(state.draft.op);
   const needsValue = (COND_OPS_NEED_VALUE as string[]).includes(state.draft.op);
 
-  // "Stacked" iff the chain has reached the chip threshold. Plan §4:
+  // "Stacked" iff the FLAT chain has reached the chip threshold. Plan §4:
   // "the stacked-clause/chip UI only appears once a second clause exists."
-  const draftEmpty = state.draft.field === '' && state.draft.value === '' && state.draft.op === '=';
+  // In grouped mode the card stack always renders.
+  const draftEmpty = isDraftEmpty(state.draft);
   const stacked = state.clauses.length >= 2 || (state.clauses.length >= 1 && !draftEmpty);
 
   const proseChips = state.clauses.map(clauseToProse);
   const draftProse = isDraftComplete(state.draft) ? clauseToProse(state.draft) : '…';
+
+  // Group-mode derived state.
+  const activeGroup: Subgroup | null =
+    state.groups !== null && state.activeGroupIndex !== null
+      ? (state.groups[state.activeGroupIndex] ?? null)
+      : null;
+  const activeSubgroupConnector = activeLockedConnector();
+  const canGroupThese =
+    state.groups === null &&
+    state.clauses.length >= 2 &&
+    state.lockedConnector !== null &&
+    state.rawFallback === null;
+  const canFlatten =
+    state.groups !== null &&
+    state.groups.filter((g) => g.clauses.length > 0).length <= 1;
 
   return (
     <div className="cond-strip cond-strip-unified">
@@ -1248,7 +1309,142 @@ function UnifiedConditionBuilder(props: {
         </div>
       )}
 
-      {stacked && state.rawFallback === null && (
+      {/*
+        Card stack — grouped mode. Each subgroup is its own bordered card;
+        the active card commits the next clause from the strip below.
+        Outer-connector pill renders between cards (or as a "+ add a
+        second subgroup" affordance when only subgroup 1 exists).
+      */}
+      {state.groups !== null && state.rawFallback === null && (
+        <div
+          role="group"
+          aria-label="Grouped conditions"
+          className="cond-subgroup-stack"
+          style={{ width: '100%' }}
+        >
+          <div className="muted ref-chips-hint" style={{ marginBottom: 4 }}>
+            This row shows when:
+          </div>
+          {state.groups.map((sg, gi) => (
+            <Fragment key={gi}>
+              <section
+                className={`cond-subgroup${gi === state.activeGroupIndex ? ' active' : ''}`}
+                aria-current={gi === state.activeGroupIndex ? 'true' : undefined}
+              >
+                <button
+                  type="button"
+                  className="cond-subgroup-header"
+                  aria-pressed={gi === state.activeGroupIndex}
+                  tabIndex={gi === state.activeGroupIndex ? 0 : -1}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    if (gi !== state.activeGroupIndex) requestActiveGroupSwitch(gi);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      const next = (gi + 1) % state.groups!.length;
+                      requestActiveGroupSwitch(next);
+                    }
+                  }}
+                >
+                  subgroup {gi + 1}
+                </button>
+                <div
+                  className="row gap"
+                  style={{ flexWrap: 'wrap', alignItems: 'center' }}
+                >
+                  {sg.clauses.map((c, ci) => (
+                    <span key={ci} className="row gap" style={{ alignItems: 'center' }}>
+                      {ci > 0 && (
+                        <span className="muted" style={{ fontSize: 12 }}>
+                          {CONNECTOR_LABELS[sg.connector]}
+                        </span>
+                      )}
+                      <code className="cond-preview">{clauseToProse(c)}</code>
+                      <button
+                        type="button"
+                        className="link"
+                        aria-label="remove rule"
+                        title={
+                          gi === state.activeGroupIndex && ci === sg.clauses.length - 1
+                            ? 'Remove this rule'
+                            : 'Switch to this subgroup to remove its last rule'
+                        }
+                        onClick={(e) => {
+                          e.preventDefault();
+                          if (
+                            gi === state.activeGroupIndex &&
+                            ci === sg.clauses.length - 1
+                          ) {
+                            doUndoLastClause();
+                          }
+                        }}
+                        disabled={
+                          gi !== state.activeGroupIndex ||
+                          ci !== sg.clauses.length - 1
+                        }
+                      >
+                        × remove rule
+                      </button>
+                    </span>
+                  ))}
+                  {sg.clauses.length === 0 && (
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      (empty — build a rule in the strip below)
+                    </span>
+                  )}
+                </div>
+              </section>
+              {/* Outer-connector pill row. Between subgroup 1 and subgroup
+                  2 once both exist, OR as the "+ add second subgroup"
+                  affordance when only subgroup 1 has at least one clause. */}
+              {gi === 0 && state.groups!.length === 2 && (
+                <div className="cond-outer-connector muted" style={{ fontSize: 12 }}>
+                  {state.outerConnector !== null
+                    ? CONNECTOR_LABELS[state.outerConnector]
+                    : CONNECTOR_LABELS.and}
+                </div>
+              )}
+              {gi === 0 &&
+                state.groups!.length === 1 &&
+                sg.clauses.length >= 1 && (
+                  <div
+                    className="cond-outer-connector row gap"
+                    style={{ alignItems: 'center', fontSize: 12 }}
+                  >
+                    <span className="muted">Add another subgroup with:</span>
+                    <button
+                      type="button"
+                      className="link"
+                      title="Start a second subgroup joined by 'and also'"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        onAddSubgroup('and');
+                      }}
+                    >
+                      {CONNECTOR_LABELS.and}
+                    </button>
+                    <button
+                      type="button"
+                      className="link"
+                      title="Start a second subgroup joined by 'or instead'"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        onAddSubgroup('or');
+                      }}
+                    >
+                      {CONNECTOR_LABELS.or}
+                    </button>
+                  </div>
+                )}
+            </Fragment>
+          ))}
+        </div>
+      )}
+
+      {/* Flat-mode chip row — only when not grouped. */}
+      {state.groups === null && stacked && state.rawFallback === null && (
         <div style={{ width: '100%' }}>
           <div className="muted ref-chips-hint" style={{ marginBottom: 4 }}>
             This row shows when:{' '}
@@ -1292,8 +1488,6 @@ function UnifiedConditionBuilder(props: {
                   title="Remove this rule"
                   onClick={(e) => {
                     e.preventDefault();
-                    // Pop only supports the LAST clause in commit B. Removing
-                    // an interior clause is a commit-C refinement.
                     if (i === state.clauses.length - 1) doUndoLastClause();
                   }}
                   disabled={i !== state.clauses.length - 1}
@@ -1387,20 +1581,24 @@ function UnifiedConditionBuilder(props: {
       )}
 
       {/* Between-clause connector picker. Visible whenever a chain is in
-          play; locked after the first connector is chosen so flat-mixed
-          AND/OR is structurally impossible (§3.3). The `( group these )`
-          escape hatch arrives in commit C. */}
-      {(state.clauses.length >= 1 || state.lockedConnector !== null) && (
+          play, OR in grouped mode whenever the active subgroup has at
+          least one clause. Locked after the first connector is chosen
+          (intra-subgroup or flat) so flat-mixed AND/OR is structurally
+          impossible (§3.3). The `( group these )` button is the escape
+          hatch for mixed combinators. */}
+      {((state.groups === null &&
+        (state.clauses.length >= 1 || state.lockedConnector !== null)) ||
+        (state.groups !== null && activeGroup !== null && activeGroup.clauses.length >= 1)) && (
         <select
           className="ref-chip-select"
-          value={state.lockedConnector ?? connectorChoice}
+          value={activeSubgroupConnector ?? connectorChoice}
           onChange={(e) => setConnectorChoice(e.target.value as 'and' | 'or')}
           title={
-            state.lockedConnector
-              ? `Locked to "${CONNECTOR_LABELS[state.lockedConnector]}" for this chain. Use ( group these ) to mix — coming next.`
+            activeSubgroupConnector !== null
+              ? 'Mixing "and also" with "or instead" needs grouping. Press ( group these ) to combine rules.'
               : 'How the next rule combines with this one'
           }
-          disabled={state.lockedConnector !== null}
+          disabled={activeSubgroupConnector !== null}
         >
           <option value="and">{CONNECTOR_LABELS.and}</option>
           <option value="or">{CONNECTOR_LABELS.or}</option>
@@ -1423,6 +1621,37 @@ function UnifiedConditionBuilder(props: {
       >
         + add another rule
       </button>
+      {canGroupThese && (
+        <button
+          type="button"
+          className="link"
+          onClick={(e) => {
+            e.preventDefault();
+            onGroupThese();
+          }}
+          title="Collect the current rules into a group so you can add rules joined by the other connector"
+        >
+          ( group these )
+        </button>
+      )}
+      {state.groups !== null && (
+        <button
+          type="button"
+          className="link"
+          onClick={(e) => {
+            e.preventDefault();
+            onFlatten();
+          }}
+          disabled={!canFlatten}
+          title={
+            canFlatten
+              ? 'Collapse the group back into a flat chain'
+              : 'Remove a subgroup before flattening'
+          }
+        >
+          flatten
+        </button>
+      )}
       <button
         type="button"
         className="link"
@@ -1446,12 +1675,17 @@ function UnifiedConditionBuilder(props: {
           e.preventDefault();
           doStartOver();
         }}
-        disabled={state.clauses.length === 0 && draftEmpty}
+        disabled={
+          state.clauses.length === 0 &&
+          draftEmpty &&
+          state.groups === null
+        }
         title="Clear the in-progress chain (does not touch the saved value)"
       >
         × start over
       </button>
-      {state.clauses.length > 0 && (
+      {(state.clauses.length > 0 ||
+        (activeGroup !== null && activeGroup.clauses.length > 0)) && (
         <button
           type="button"
           className="link"
