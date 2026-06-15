@@ -1217,24 +1217,28 @@ const COMPARISON_PROSE: Record<'=' | '!=' | '>' | '<' | '>=' | '<=', string> = {
 };
 
 /**
- * Display-only natural-language labels for the op `<select>` (plan v0.3 §4).
- * The option `value`s remain the canonical `ClauseOp` tokens — labels NEVER
- * reach `clauseToRule`/`serializeAnyParsed`. Comparison labels are derived
- * from `COMPARISON_PROSE` so the dropdown and the `This row shows when:`
- * prose preview share ONE microcopy source (Lal/Developer A5).
+ * Display-only natural-language labels for the op `<select>` (plan v0.3 §4,
+ * v0.3-punchlist B1). The option `value`s remain the canonical `ClauseOp`
+ * tokens — labels NEVER reach `clauseToRule`/`serializeAnyParsed`.
+ *
+ * **B1 fix (2026-06-15):** comparison labels are now `COMPARISON_PROSE`
+ * verbatim (`equals` / `is not` / `is more than` …), dropping the trailing
+ * "value" that read as a broken sentence and diverged from the
+ * `This row shows when:` prose preview. Dropdown and readback now share
+ * one microcopy source.
  *
  * Banned tokens: `not(`, `today()`, `${field}`, `selected(`, `div`, `floor`.
  * None must appear in any label the user picks.
  */
 const OPERATOR_LABELS: Record<ClauseOp, string> = {
-  '=': `equals value`,
-  '!=': `${COMPARISON_PROSE['!=']} value`,
-  '>': `${COMPARISON_PROSE['>']} value`,
-  '<': `${COMPARISON_PROSE['<']} value`,
-  '>=': `${COMPARISON_PROSE['>=']} value`,
-  '<=': `${COMPARISON_PROSE['<=']} value`,
-  selected: 'includes value',
-  'selected-not': 'does not include value',
+  '=': 'equals',
+  '!=': COMPARISON_PROSE['!='],
+  '>': COMPARISON_PROSE['>'],
+  '<': COMPARISON_PROSE['<'],
+  '>=': COMPARISON_PROSE['>='],
+  '<=': COMPARISON_PROSE['<='],
+  selected: 'includes',
+  'selected-not': 'does not include',
   not: 'is not selected',
   ref: 'has an answer',
   today: 'today',

@@ -10,7 +10,14 @@
  * by default (no env export needed).
  */
 import { test, expect } from './setup.js';
-import type { Locator } from '@playwright/test';
+import type { APIRequestContext, Locator } from '@playwright/test';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURE_DIR = path.resolve(here, 'fixtures', 'mini-config');
 
 test('condition builder — value cell is a populated dropdown for contact-injected `sex` field', async ({
   page,
@@ -434,3 +441,150 @@ test('v0.3 — relabeled op dropdown saves byte-identical canonical XPath (no la
   expect(rawValue).toBe(`\${sex} = 'female'`);
   expect(rawValue).not.toMatch(/equals|includes|is more than|has an answer/i);
 });
+
+/* ====== Punch-list B2 — cancel-safety × start over (QA #1 regression) ====== */
+/*
+ * Plan v0.2 §3.5: `× start over` clears reducer state only and MUST NOT
+ * call setColumn/setExtra. Therefore opening a row with an existing
+ * single-clause `relevant`, staging two new clauses (without inserting),
+ * pressing `× start over`, and saving the form MUST leave the on-disk
+ * `relevant` byte-identical to its original spelling.
+ *
+ * The proof is at the API/serializer level: we GET the form via the
+ * Fastify route before AND after the dance, and compare the persisted
+ * `row.extras['relevant']` byte-for-byte. The reducer-level start-over
+ * tests (conditionReducer.test.ts) pin the state-shape contract but
+ * cannot prove byte-safety — a pure reducer has no write side-effect to
+ * assert against.
+ *
+ * Setup nuance: the committed fixture's lmp_note row carries
+ * `${lmp_date} != ''` which the relevant parser maps to the
+ * `kind: 'answered'` rule — that rule has no Clause representation, so
+ * the reducer's hydrateColumn routes it to raw-fallback (chaining
+ * disabled, controls greyed out). We can't drive the dance against
+ * lmp_note as-is.
+ *
+ * Instead we SEED a builder-buildable single-clause relevant on the
+ * lmp_date row via the UI first ("setup phase"), save it, capture the
+ * persisted bytes, then run the cancel-safety dance against THAT row
+ * ("test phase"). The setup-phase save is its own implicit byte-stability
+ * check; the test-phase assertion is the actual §3.5 regression guard.
+ */
+test('punch-list B2 — × start over saves byte-identical row.extras[relevant] (cancel-safety)', async ({
+  page,
+  request,
+}) => {
+  // Isolate the save target — never touch the committed fixture even if
+  // (especially if) a regression leaks a write through start-over.
+  const tmpProject = await fs.mkdtemp(path.join(os.tmpdir(), 'cht-ui-e2e-cancel-'));
+  try {
+    await fs.cp(FIXTURE_DIR, tmpProject, { recursive: true });
+
+    const opened = await request.post('http://127.0.0.1:5174/api/project/open', {
+      data: { path: tmpProject },
+    });
+    expect(opened.ok()).toBeTruthy();
+
+    /* -------------------------- SETUP PHASE -------------------------- */
+
+    // The lmp_date row starts with NO relevant. Seed a builder-buildable
+    // single clause via the UI so we have an "existing single-clause" to
+    // exercise the §3.5 contract against.
+    await page.goto('/');
+    await expect(page.getByText(path.basename(tmpProject)).first()).toBeVisible();
+    await page.locator('.nav-item', { hasText: 'Forms' }).click();
+    await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+
+    const dateRow = page
+      .locator('.survey-row')
+      .filter({ has: page.locator('code.type-chip-raw', { hasText: /^date$/ }) });
+    await dateRow.getByRole('button', { name: /show advanced/ }).click();
+    const setupStrip = dateRow.locator('.cond-strip-unified');
+    await expect(setupStrip).toBeVisible();
+    await setupStrip.locator('.ref-chip-select').nth(0).selectOption('relevant');
+    await buildClause(setupStrip, 'sex', '=', 'female');
+    await setupStrip.getByRole('button', { name: '+ insert' }).click();
+
+    // Save the seeded relevant.
+    await page.locator('.page-header').getByRole('button', { name: 'Save', exact: true }).click();
+    await page.locator('.rule-builder-card').getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(
+      page.locator('.page-header').getByRole('button', { name: 'Saved', exact: true }),
+    ).toBeVisible();
+
+    // Capture the persisted byte-string. This is the contract's anchor.
+    const before = await readRelevantForLmpDate(request);
+    expect(before, 'setup phase must have persisted a non-empty relevant').not.toBe('');
+
+    /* --------------------------- TEST PHASE -------------------------- */
+
+    // Reload from scratch so the lmp_date row's strip rehydrates from
+    // the just-saved disk bytes (the existing single-clause we need).
+    await page.goto('/');
+    await page.locator('.nav-item', { hasText: 'Forms' }).click();
+    await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+    const reloadedDate = page
+      .locator('.survey-row')
+      .filter({ has: page.locator('code.type-chip-raw', { hasText: /^date$/ }) });
+    await reloadedDate.getByRole('button', { name: /show advanced/ }).click();
+    const strip = reloadedDate.locator('.cond-strip-unified');
+    await expect(strip).toBeVisible();
+
+    // Picking the column rehydrates the existing single-clause into the
+    // builder state — no write yet.
+    await strip.locator('.ref-chip-select').nth(0).selectOption('relevant');
+
+    // Stage 2 new clauses WITHOUT clicking `+ insert`. Each `+ add another
+    // rule` push updates reducer state only; the value column is also
+    // reducer-state, never row.extras. (`sex` and `_id` are the only
+    // earlierFields reachable for the lmp_date row.)
+    await buildClause(strip, 'sex', '=', 'male');
+    await strip.getByRole('button', { name: '+ add another rule' }).click();
+    await buildClause(strip, '_id', '=', 'x');
+    await strip.getByRole('button', { name: '+ add another rule' }).click();
+
+    // Discard. §3.5 contract: zero call to setColumn/setExtra.
+    await strip.getByRole('button', { name: '× start over' }).click();
+
+    // §3.5 byte-safety proof, dual signal:
+    //
+    //   (a) The page-header dirty flag — `Saved` (disabled) means no
+    //       setExtra/patch was called by the reducer's start-over. If the
+    //       reducer had leaked a write, the button would flip to
+    //       `Save` (enabled). This is the in-memory contract guard.
+    //
+    //   (b) The on-disk bytes — re-reading via the API returns the
+    //       setup-phase value verbatim. (Even if (a) somehow lied, we
+    //       never invoked the save path after the staging dance, so the
+    //       disk bytes remain authoritative.)
+    //
+    // Both must hold. Together they pin §3.5: a present row.extras key
+    // is NEVER mutated as a side-effect of the cancel flow.
+    await expect(
+      page.locator('.page-header').getByRole('button', { name: 'Saved', exact: true }),
+      '× start over must not dirty the form — proves zero setExtra call',
+    ).toBeVisible();
+
+    const after = await readRelevantForLmpDate(request);
+    expect(after).toBe(before);
+  } finally {
+    await fs.rm(tmpProject, { recursive: true, force: true });
+  }
+});
+
+/** Read `row.extras['relevant']` for the `lmp_date` row via the form API.
+ *  Returns the empty string when missing — preserves the §3.5 setExtra
+ *  delete-on-empty semantics ("absent" and "empty" are indistinguishable
+ *  through the serializer). */
+async function readRelevantForLmpDate(
+  request: APIRequestContext,
+): Promise<string> {
+  const res = await request.get('http://127.0.0.1:5174/api/forms/app:pregnancy');
+  expect(res.ok()).toBeTruthy();
+  const body = (await res.json()) as {
+    form: { survey: Array<{ name: string; extras: Record<string, string> }> };
+  };
+  const row = body.form.survey.find((r) => r.name === 'lmp_date');
+  expect(row, 'mini-config fixture must carry lmp_date').toBeTruthy();
+  return row!.extras['relevant'] ?? '';
+}
