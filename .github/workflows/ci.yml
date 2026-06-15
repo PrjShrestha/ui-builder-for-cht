@@ -45,3 +45,47 @@ jobs:
       # today. The Standard codes slice itself is lint-clean
       # (shared/src/fhir/** has zero new errors/warnings). Re-add this step
       # once the eslint config is fixed.
+
+  e2e:
+    # Browser-driven Playwright suite against the committed mini-config fixture.
+    # playwright.config.ts boots a non-watch API server (server `start`) + Vite
+    # via its `webServer` block, so this job just needs the builds in place.
+    # Only the fresh-clone-safe specs run here; helper-builder.spec.ts needs a
+    # real cht-conf project with a contact-summary file and is excluded until
+    # the fixture grows one (see PR notes).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # webServer runs `server start` (node dist) + Vite (serves prebuilt
+      # shared/dist), so both must be built before Playwright launches them.
+      - name: Build shared + server
+        run: |
+          pnpm --filter @cht-ui/shared build
+          pnpm --filter @cht-ui/server build
+
+      - name: Install Playwright browser
+        run: pnpm --filter @cht-ui/client exec playwright install --with-deps chromium
+
+      - name: Run e2e (condition-builder + form-editing)
+        run: pnpm --filter @cht-ui/client exec playwright test condition-builder.spec.ts form-editing.spec.ts
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: client/playwright-report/
+          retention-days: 7

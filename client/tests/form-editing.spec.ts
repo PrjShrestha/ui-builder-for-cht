@@ -42,17 +42,12 @@ async function openPregnancy(page: Page): Promise<void> {
   await expect(page.locator('.survey-row').first()).toBeVisible();
 }
 
-/**
- * Switch the survey editor to Full mode. Simple mode (the default) hides
- * select_one/select_multiple rows, so the choices + reorder flows run in
- * Full — where the `inputs` group stays collapsed into one accordion, leaving
- * exactly the four editable rows [lmp_date, lmp_note, danger_signs, gravidity]
- * visible as `.survey-row`s.
- */
-async function switchToFull(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Full', exact: true }).click();
-  await expect(rowByType(page, /^select_multiple danger_signs$/)).toBeVisible();
-}
+// All tests run in the editor's DEFAULT Simple mode. After the
+// isHiddenInSimpleMode base-token fix, Simple mode shows exactly the four
+// user-facing rows [lmp_date, lmp_note, danger_signs, gravidity] (the inputs/
+// calculates + structural rows stay hidden). The danger-signs select being
+// visible here is itself the end-to-end regression guard for that fix —
+// before it, every select question was hidden in the default view.
 
 /** A survey row discriminated by the raw type chip it renders (stable text). */
 function rowByType(page: Page, rawType: RegExp) {
@@ -74,7 +69,6 @@ test('choices — add, rename label, and remove options on the danger-signs mult
   page,
 }) => {
   await openPregnancy(page);
-  await switchToFull(page);
 
   const dangerRow = rowByType(page, /^select_multiple danger_signs$/);
   await expect(dangerRow).toBeVisible();
@@ -161,7 +155,6 @@ test('reorder — a move with no broken references goes through without a prompt
   page,
 }) => {
   await openPregnancy(page);
-  await switchToFull(page);
   expect(await visibleRowNames(page)).toEqual([
     'lmp_date',
     'lmp_note',
@@ -187,7 +180,6 @@ test('reorder — the guard fires and blocks a move that would break a ${field} 
   page,
 }) => {
   await openPregnancy(page);
-  await switchToFull(page);
 
   // lmp_note has `relevant = ${lmp_date} != ''`. Moving it up swaps it above
   // lmp_date — the guard must warn and, on dismiss, leave the order untouched.
@@ -212,7 +204,6 @@ test('reorder — the guard is overridable: accepting the warning performs the m
   page,
 }) => {
   await openPregnancy(page);
-  await switchToFull(page);
 
   page.once('dialog', (d) => void d.accept());
   await rowByType(page, /^note$/).getByRole('button', { name: 'move up' }).click();
@@ -255,7 +246,6 @@ test('round-trip — an edit survives save → reload → re-parse on an isolate
     await page.locator('.nav-item', { hasText: 'Forms' }).click();
     await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
     await expect(page.locator('.survey-row').first()).toBeVisible();
-    await switchToFull(page);
 
     const dangerRow = rowByType(page, /^select_multiple danger_signs$/);
     await dangerRow.getByRole('button', { name: /show advanced/ }).click();
@@ -278,7 +268,6 @@ test('round-trip — an edit survives save → reload → re-parse on an isolate
     await page.locator('.nav-item', { hasText: 'Forms' }).click();
     await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
     await expect(page.locator('.survey-row').first()).toBeVisible();
-    await switchToFull(page);
 
     const reloadedDanger = rowByType(page, /^select_multiple danger_signs$/);
     await reloadedDanger.getByRole('button', { name: /show advanced/ }).click();
