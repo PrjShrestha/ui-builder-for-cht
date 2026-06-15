@@ -14,6 +14,7 @@ import {
   parseCalculation,
   serializeCalculation,
   parseRelevant,
+  serializeRelevant,
   type CalculationRule,
   type ParsedCalculation,
 } from '@cht-ui/shared';
@@ -177,7 +178,7 @@ export function CalculationBuilder(props: Props) {
         {editingCondIdx !== null && buildable && parsed.rules[editingCondIdx] && (
           <RelevantRuleBuilder
             column={`rule #${editingCondIdx + 1} condition`}
-            value={serializeRelevantStub(parsed.rules[editingCondIdx]!.condition)}
+            value={serializeRelevant(parsed.rules[editingCondIdx]!.condition)}
             fieldOptions={props.fieldOptions}
             onCancel={() => setEditingCondIdx(null)}
             onSave={(v) => {
@@ -216,25 +217,3 @@ function serializeConditionSummary(cond: import('@cht-ui/shared').ParsedExpressi
   return parts.join(` ${cond.combinator} `);
 }
 
-function serializeRelevantStub(cond: import('@cht-ui/shared').ParsedExpression): string {
-  // Reuse the project's relevant serializer by re-importing it lazily.
-  // Implemented inline to avoid a dependency cycle.
-  if (cond.rules.length === 0) return '';
-  const parts = cond.rules.map((r) => {
-    switch (r.kind) {
-      case 'comparison': {
-        const v = r.valueIsString ? `'${r.value.replace(/'/g, "\\'")}'` : r.value;
-        return `\${${r.field}} ${r.op} ${v}`;
-      }
-      case 'selected': {
-        const inner = `selected(\${${r.field}}, '${r.value.replace(/'/g, "\\'")}')`;
-        return r.negated ? `not(${inner})` : inner;
-      }
-      case 'answered':
-        return r.negated ? `\${${r.field}} = ''` : `\${${r.field}} != ''`;
-      case 'raw':
-        return r.text;
-    }
-  });
-  return parts.join(` ${cond.combinator} `);
-}
