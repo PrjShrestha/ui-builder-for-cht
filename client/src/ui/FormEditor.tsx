@@ -436,14 +436,19 @@ function SurveyTab(props: {
   // re-types the row whose rowId is `pickerEditRowId` instead of inserting.
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerEditRowId, setPickerEditRowId] = useState<string | null>(null);
+  // §A3 — when the user clicks "+ add inside <group>", remember the index
+  // we should insert the new row(s) at. `null` means "append to the end"
+  // (the legacy default). Cleared after every commit/cancel.
+  const [pendingInsertIndex, setPendingInsertIndex] = useState<number | null>(null);
   const existingListNames = useMemo(() => {
     const s = new Set<string>();
     for (const c of form.choices) if (c.list_name) s.add(c.list_name);
     return [...s].sort();
   }, [form.choices]);
 
-  function addQuestion() {
+  function addQuestion(insertIndex?: number) {
     setPickerEditRowId(null);
+    setPendingInsertIndex(insertIndex ?? null);
     setPickerOpen(true);
   }
 
@@ -475,6 +480,19 @@ function SurveyTab(props: {
     const isBeginGroup = commitedType === 'begin group';
     const isBeginRepeat = commitedType === 'begin repeat';
 
+    // §A3 — splice the new row(s) at `pendingInsertIndex` if the user
+    // came via "+ add inside" / "+ add row here", otherwise append. Two
+    // helpers share the splice so the structural-pair and single-row
+    // branches stay symmetric.
+    const insertAt = pendingInsertIndex;
+    setPendingInsertIndex(null);
+    function spliceSurvey(rows: SurveyRow[]): SurveyRow[] {
+      if (insertAt === null || insertAt < 0 || insertAt > form.survey.length) {
+        return [...form.survey, ...rows];
+      }
+      return [...form.survey.slice(0, insertAt), ...rows, ...form.survey.slice(insertAt)];
+    }
+
     // §A1 — committing a structural tile inserts a MATCHED begin/end pair
     // as one edit. The picker only offers the `begin` tile; the user never
     // adds an `end` row directly. Without this, the picker emitted an
@@ -502,7 +520,7 @@ function SurveyTab(props: {
         required: '',
         extras: {},
       };
-      patch({ ...form, survey: [...form.survey, beginRow, endRow] });
+      patch({ ...form, survey: spliceSurvey([beginRow, endRow]) });
       return;
     }
 
@@ -529,7 +547,7 @@ function SurveyTab(props: {
       });
       nextChoices = [...form.choices, ...additions];
     }
-    patch({ ...form, survey: [...form.survey, newRow], choices: nextChoices });
+    patch({ ...form, survey: spliceSurvey([newRow]), choices: nextChoices });
   }
 
   function openTypePickerFor(rowId: string) {
@@ -655,6 +673,21 @@ function SurveyTab(props: {
             className="survey-group-children"
           >
             {item.children.map(renderItem)}
+            {/* §A3 — "+ add inside" inserts a new row at the end of this
+                 group, just BEFORE the matching `end` row. The end-row's
+                 survey index is the insert point. */}
+            <button
+              type="button"
+              className="link survey-add-inside"
+              onClick={() => {
+                const endIdx = form.survey.findIndex((r) => r.rowId === item.endRowId);
+                if (endIdx < 0) return;
+                addQuestion(endIdx);
+              }}
+              title={`Insert a new row inside this ${item.structuralType}`}
+            >
+              + add inside {item.name || `(${item.structuralType})`}
+            </button>
           </div>
         )}
       </div>
@@ -664,7 +697,7 @@ function SurveyTab(props: {
   return (
     <div className="survey-tab">
       <div className="row gap toolbar">
-        <button onClick={addQuestion}>+ Question</button>
+        <button onClick={() => addQuestion()}>+ Question</button>
         <div className="row gap mode-toggle">
           <button
             className={mode === 'simple' ? 'active' : 'link'}
@@ -721,6 +754,7 @@ function SurveyTab(props: {
           onCancel={() => {
             setPickerOpen(false);
             setPickerEditRowId(null);
+            setPendingInsertIndex(null);
           }}
           onCommit={handlePickerCommit}
         />
