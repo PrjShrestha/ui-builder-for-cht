@@ -283,3 +283,91 @@ test('round-trip — an edit survives save → reload → re-parse on an isolate
     await fs.rm(tmpProject, { recursive: true, force: true });
   }
 });
+
+/* ============== §A1 + §A6 — group-authoring balance guard ================ */
+/*
+ * docs/plans/survey-groups-and-scaffold.md §A1 — committing a structural
+ * tile (Group / Repeat) must insert a MATCHED begin/end pair, not the
+ * lone `begin` row the pre-fix code emitted. Without this, every
+ * group-add produced an unbalanced survey that pyxform / cht-conf would
+ * reject on deploy.
+ *
+ * §A6 — the save path refuses to write an unbalanced survey. The
+ * test below proves both contracts: add a group via the picker, confirm
+ * the resulting survey has BOTH a `begin group` and a matching `end group`,
+ * AND that the page-header save flow succeeds (no structural-issue banner,
+ * no error toast). The save guard would surface a danger badge if A1
+ * regressed.
+ */
+test('§A1+§A6 — adding a Group via the picker emits a balanced begin/end pair and save proceeds', async ({
+  page,
+  request,
+}) => {
+  // Isolate the save target.
+  const tmpProject = await fs.mkdtemp(path.join(os.tmpdir(), 'cht-ui-e2e-group-'));
+  try {
+    await fs.cp(FIXTURE_DIR, tmpProject, { recursive: true });
+
+    const opened = await request.post('http://127.0.0.1:5174/api/project/open', {
+      data: { path: tmpProject },
+    });
+    expect(opened.ok()).toBeTruthy();
+
+    await page.goto('/');
+    await expect(page.getByText(path.basename(tmpProject)).first()).toBeVisible();
+    await page.locator('.nav-item', { hasText: 'Forms' }).click();
+    await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+    await expect(page.locator('.survey-row').first()).toBeVisible();
+
+    // Switch to Full mode so the structural rows render and the picker
+    // can offer the structural tiles.
+    await page.getByRole('button', { name: 'Full', exact: true }).click();
+
+    // Open the picker.
+    await page.getByRole('button', { name: '+ Question' }).click();
+    const picker = page.locator('.qtype-modal');
+    await expect(picker).toBeVisible();
+
+    // Name the new group BEFORE picking the tile (the picker auto-commits
+    // on tile click for tiles that need no list — Kobo parity, see
+    // QuestionTypePicker.handlePick line ~145).
+    await picker
+      .locator('input[placeholder*="has_fever"], input[placeholder*="patient_age"]')
+      .first()
+      .fill('triage');
+
+    // Pick the Group tile — single click commits (Group needs no list).
+    await picker
+      .locator('.qtype-tile')
+      .filter({ has: page.locator('.qtype-tile-label', { hasText: /^Group$/ }) })
+      .click();
+
+    // Modal closes after commit.
+    await expect(picker).not.toBeVisible();
+
+    // §A1 — both a `begin group` and an `end group` row appear with the
+    // typed name. The pre-fix code only produced the begin row.
+    const beginRow = rowByType(page, /^begin group$/).filter({
+      has: page.locator('input.name-input[value="triage"]'),
+    });
+    const endRow = rowByType(page, /^end group$/).filter({
+      has: page.locator('input.name-input[value="triage"]'),
+    });
+    await expect(beginRow).toHaveCount(1);
+    await expect(endRow).toHaveCount(1);
+
+    // §A6 — no danger banner; save proceeds without the structural guard
+    // tripping. Click the page-header Save and walk through the diff modal.
+    await expect(
+      page.locator('.page-header .badge.danger'),
+      'structural-violations banner must not appear for a balanced survey',
+    ).toHaveCount(0);
+    await page.locator('.page-header').getByRole('button', { name: 'Save', exact: true }).click();
+    await page.locator('.rule-builder-card').getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(
+      page.locator('.page-header').getByRole('button', { name: 'Saved', exact: true }),
+    ).toBeVisible();
+  } finally {
+    await fs.rm(tmpProject, { recursive: true, force: true });
+  }
+});

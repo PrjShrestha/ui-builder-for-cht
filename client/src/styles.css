@@ -274,6 +274,11 @@ code {
   background: var(--border);
 }
 .badge.warn { background: var(--warn-bg); color: var(--warn-text); }
+.badge.danger {
+  background: #fee2e2;
+  color: #991b1b;
+  font-weight: 600;
+}
 
 /* ---- Overview cards ---- */
 .overview-grid {

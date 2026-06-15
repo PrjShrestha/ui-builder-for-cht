@@ -41,6 +41,8 @@ import {
   predictViolationsForMove,
   violationsByRowId,
   diffXlsForms,
+  findStructuralViolations,
+  type StructuralViolation,
   type FieldKind,
   type OrderingViolation,
   type SurveyRow,
@@ -148,6 +150,17 @@ export function FormEditor({ formId }: { formId: string }) {
 
   function requestSave() {
     if (!form || !originalForm) return;
+    // §A6 — refuse to save an unbalanced survey. The validator is read-only
+    // and ran moments ago for the violations banner; re-running here guards
+    // against any race where the UI banner lagged a mutation.
+    const structural = findStructuralViolations(form.survey);
+    if (structural.length > 0) {
+      const first = structural[0]!;
+      setError(
+        `Can't save — the form has unbalanced groups/repeats. First issue: ${first.message}`,
+      );
+      return;
+    }
     setPendingSaveDiff(diffXlsForms(originalForm, form));
   }
 
@@ -171,6 +184,13 @@ export function FormEditor({ formId }: { formId: string }) {
 
   const violations = useMemo(() => (form ? validateOrdering(form) : []), [form]);
   const violationsByRow = useMemo(() => violationsByRowId(violations), [violations]);
+  // §A4 structural-balance — read-only analysis, recomputed on every edit
+  // so the banner reflects the current edit immediately. Empty array
+  // means a balanced survey.
+  const structuralViolations: StructuralViolation[] = useMemo(
+    () => (form ? findStructuralViolations(form.survey) : []),
+    [form],
+  );
 
   if (loading) return <div className="loading">Loading {formId}…</div>;
   if (!form) return <div className="loading">No form data.</div>;
@@ -183,6 +203,14 @@ export function FormEditor({ formId }: { formId: string }) {
           <code className="form-id">{formId}</code>
         </div>
         <div className="row gap">
+          {structuralViolations.length > 0 && (
+            <span
+              className="badge danger"
+              title={structuralViolations.map((v) => v.message).join('\n')}
+            >
+              {structuralViolations.length} structural issue(s) — save blocked
+            </span>
+          )}
           {violations.length > 0 && (
             <span className="badge warn">{violations.length} ordering issue(s)</span>
           )}
@@ -437,6 +465,41 @@ function SurveyTab(props: {
     // Add mode: append a new row + (for selects) any inline choice rows.
     const counter = form.survey.length + 1;
     const stamp = `${form.survey.length + 1}`;
+    const commitedType = commit.type.trim().toLowerCase();
+    const isBeginGroup = commitedType === 'begin group';
+    const isBeginRepeat = commitedType === 'begin repeat';
+
+    // §A1 — committing a structural tile inserts a MATCHED begin/end pair
+    // as one edit. The picker only offers the `begin` tile; the user never
+    // adds an `end` row directly. Without this, the picker emitted an
+    // unbalanced survey that pyxform/cht-conf rejected on deploy
+    // (docs/plans/survey-groups-and-scaffold.md §A1).
+    if (isBeginGroup || isBeginRepeat) {
+      const groupName = commit.name || `g${counter}`;
+      const beginRow: SurveyRow = {
+        rowId: `r_new_${stamp}_${counter}_begin`,
+        type: commit.type,
+        name: groupName,
+        // CHT convention: structural rows carry NO_LABEL when label cells exist;
+        // the picker's user-typed label (if any) lives in extras already.
+        labels: { en: '' },
+        required: '',
+        extras: { ...commit.extras },
+      };
+      const endRow: SurveyRow = {
+        rowId: `r_new_${stamp}_${counter}_end`,
+        type: isBeginGroup ? 'end group' : 'end repeat',
+        // CHT-conf convention: the `end` row repeats the group name so that
+        // re-serialize keeps it. Some templates omit it; both round-trip.
+        name: groupName,
+        labels: { en: '' },
+        required: '',
+        extras: {},
+      };
+      patch({ ...form, survey: [...form.survey, beginRow, endRow] });
+      return;
+    }
+
     const newRow: SurveyRow = {
       rowId: `r_new_${stamp}_${counter}`,
       type: commit.type,
