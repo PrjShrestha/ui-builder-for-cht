@@ -42,6 +42,7 @@ import {
   violationsByRowId,
   diffXlsForms,
   findStructuralViolations,
+  structuralMarker,
   type StructuralViolation,
   type FieldKind,
   type OrderingViolation,
@@ -344,6 +345,9 @@ function SurveyTab(props: {
 }) {
   const { form, patch, violationsByRow } = props;
   const undo = props.undo;
+  // §A4 surfaces structural-violation refusals via the shared error
+  // toast so the user sees why a move was blocked.
+  const setError = useApp((s) => s.setError);
   const [mode, setMode] = useState<'simple' | 'full'>('simple');
   // Begin-row IDs the user has explicitly TOGGLED via the group header.
   // The set stores "flip from default" intent — a group whose name is in
@@ -414,20 +418,59 @@ function SurveyTab(props: {
     const oldIndex = form.survey.findIndex((r) => r.rowId === active.id);
     const newIndex = form.survey.findIndex((r) => r.rowId === over.id);
     if (oldIndex < 0 || newIndex < 0) return;
-    // Predict violations; if any, confirm with the user before moving.
-    const broken = predictViolationsForMove(form, String(active.id), newIndex);
-    if (broken.length > 0) {
-      const ok = window.confirm(
-        `Moving this row will break dependency on: ${broken.join(', ')}.\n\n` +
-          `These fields are referenced in the row's expressions but defined later. Move anyway?`,
-      );
-      if (!ok) return;
+
+    // §A4 group-as-unit drag — if the dragged row is a `begin group` /
+    // `begin repeat`, the move slices the ENTIRE begin..end block as one
+    // unit. The leaf-drag path is unchanged for plain rows.
+    const activeMarker = structuralMarker(form.survey[oldIndex]!);
+    const isGroupBegin = activeMarker === 'begin-group' || activeMarker === 'begin-repeat';
+    let predictedSurvey: SurveyRow[];
+    if (isGroupBegin) {
+      const endIdx = findMatchingEndIndex(form.survey, oldIndex);
+      if (endIdx < 0) {
+        // Unbalanced source — leave the survey alone; the §A6 banner
+        // already tells the user to fix the imbalance.
+        return;
+      }
+      // Refuse drops inside the group's own span (you can't move a group
+      // into itself).
+      if (newIndex > oldIndex && newIndex <= endIdx) {
+        setError('Move blocked — a group cannot land inside its own contents.');
+        return;
+      }
+      predictedSurvey = moveSurveySlice(form.survey, oldIndex, endIdx, newIndex);
+    } else {
+      predictedSurvey = arrayMove(form.survey, oldIndex, newIndex);
     }
-    const next: XLSForm = {
-      ...form,
-      survey: arrayMove(form.survey, oldIndex, newIndex),
-    };
-    patch(next);
+
+    // §A4 leaf safety — predict what the survey would look like after
+    // this move and refuse if it would introduce a structural violation.
+    // The save-time guard (§A6) would block the eventual write anyway,
+    // but catching it at the drag-end avoids putting the form into an
+    // un-savable state in the first place.
+    const prevStructural = findStructuralViolations(form.survey);
+    const nextStructural = findStructuralViolations(predictedSurvey);
+    if (nextStructural.length > prevStructural.length) {
+      const first = nextStructural[nextStructural.length - 1]!;
+      setError(`Move blocked — it would unbalance the form: ${first.message}`);
+      return;
+    }
+
+    // Predict dependency violations; if any, confirm with the user.
+    // (Skipped for group-as-unit moves — the dependency validator is
+    // per-row and a group move's per-row impact is harder to summarize;
+    // the save-time validator still catches a broken survey.)
+    if (!isGroupBegin) {
+      const broken = predictViolationsForMove(form, String(active.id), newIndex);
+      if (broken.length > 0) {
+        const ok = window.confirm(
+          `Moving this row will break dependency on: ${broken.join(', ')}.\n\n` +
+            `These fields are referenced in the row's expressions but defined later. Move anyway?`,
+        );
+        if (!ok) return;
+      }
+    }
+    patch({ ...form, survey: predictedSurvey });
   }
 
   // Phase-2 picker draft. Held in local state so the row doesn't enter
@@ -582,6 +625,18 @@ function SurveyTab(props: {
     if (idx < 0) return;
     const newIndex = idx + direction;
     if (newIndex < 0 || newIndex >= form.survey.length) return;
+
+    // §A4 — same boundary check as onDragEnd so arrow-key reorders can't
+    // split a begin/end pair either.
+    const predictedSurvey = arrayMove(form.survey, idx, newIndex);
+    const prevStructural = findStructuralViolations(form.survey);
+    const nextStructural = findStructuralViolations(predictedSurvey);
+    if (nextStructural.length > prevStructural.length) {
+      const first = nextStructural[nextStructural.length - 1]!;
+      setError(`Move blocked — it would unbalance the form: ${first.message}`);
+      return;
+    }
+
     const broken = predictViolationsForMove(form, rowId, newIndex);
     if (broken.length > 0) {
       const ok = window.confirm(
@@ -589,7 +644,7 @@ function SurveyTab(props: {
       );
       if (!ok) return;
     }
-    patch({ ...form, survey: arrayMove(form.survey, idx, newIndex) });
+    patch({ ...form, survey: predictedSurvey });
   }
 
   function toggleGroup(beginRowId: string) {
@@ -643,54 +698,15 @@ function SurveyTab(props: {
     // into the header. Each nesting level indents its children by the CSS
     // padding-left on `.survey-group-children` (cumulative through the
     // DOM, so a depth-3 group is indented 3×).
-    const isCollapsed = item.collapsed;
-    const kindLabel = item.structuralType === 'repeat' ? 'begin repeat → end repeat' : 'begin group → end group';
     return (
-      <div
+      <SurveyGroupAccordion
         key={item.beginRowId}
-        className={`survey-group-accordion depth-${item.depth}`}
-        data-structural-type={item.structuralType}
-      >
-        <button
-          type="button"
-          className="survey-group-header"
-          onClick={() => toggleGroup(item.beginRowId)}
-          aria-expanded={!isCollapsed}
-          aria-controls={`group-children-${item.beginRowId}`}
-          title={isCollapsed ? 'Expand group' : 'Collapse group'}
-        >
-          <span className="caret" aria-hidden="true">
-            {isCollapsed ? '▸' : '▾'}
-          </span>
-          <code>{item.name || '(unnamed)'}</code>
-          <span className="muted small">
-            {item.innerRowCount} row{item.innerRowCount === 1 ? '' : 's'} inside ({kindLabel})
-          </span>
-        </button>
-        {!isCollapsed && (
-          <div
-            id={`group-children-${item.beginRowId}`}
-            className="survey-group-children"
-          >
-            {item.children.map(renderItem)}
-            {/* §A3 — "+ add inside" inserts a new row at the end of this
-                 group, just BEFORE the matching `end` row. The end-row's
-                 survey index is the insert point. */}
-            <button
-              type="button"
-              className="link survey-add-inside"
-              onClick={() => {
-                const endIdx = form.survey.findIndex((r) => r.rowId === item.endRowId);
-                if (endIdx < 0) return;
-                addQuestion(endIdx);
-              }}
-              title={`Insert a new row inside this ${item.structuralType}`}
-            >
-              + add inside {item.name || `(${item.structuralType})`}
-            </button>
-          </div>
-        )}
-      </div>
+        item={item}
+        renderItem={renderItem}
+        toggleGroup={toggleGroup}
+        addQuestion={addQuestion}
+        formSurvey={form.survey}
+      />
     );
   }
 
@@ -821,6 +837,51 @@ type DisplayItem =
       collapsed: boolean;
     };
 
+/**
+ * Find the survey index of the `end` row that matches the `begin` row at
+ * `beginIdx`. Returns -1 if the survey is unbalanced (no matching end).
+ * Used by §A4 group-as-unit drag to compute the begin..end slice bounds.
+ */
+function findMatchingEndIndex(survey: SurveyRow[], beginIdx: number): number {
+  const beginMarker = structuralMarker(survey[beginIdx]!);
+  if (beginMarker !== 'begin-group' && beginMarker !== 'begin-repeat') return -1;
+  let depth = 1;
+  for (let j = beginIdx + 1; j < survey.length; j++) {
+    const m = structuralMarker(survey[j]!);
+    if (m === 'begin-group' || m === 'begin-repeat') depth++;
+    else if (m === 'end-group' || m === 'end-repeat') {
+      depth--;
+      if (depth === 0) return j;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Move the contiguous slice `[fromStart, fromEnd]` (inclusive) of `survey`
+ * to land starting at `toIndex` (interpreted in the ORIGINAL survey
+ * indexing). Pure — returns a new array. Used for §A4 group-as-unit drag
+ * so the entire begin..end subtree moves as one.
+ */
+function moveSurveySlice<T>(
+  arr: T[],
+  fromStart: number,
+  fromEnd: number,
+  toIndex: number,
+): T[] {
+  if (fromStart < 0 || fromEnd >= arr.length || fromStart > fromEnd) return arr;
+  const sliceLength = fromEnd - fromStart + 1;
+  const slice = arr.slice(fromStart, fromEnd + 1);
+  const without = [...arr.slice(0, fromStart), ...arr.slice(fromEnd + 1)];
+  // Translate toIndex from original-survey to without-slice indexing.
+  let insertAt: number;
+  if (toIndex <= fromStart) insertAt = toIndex;
+  else if (toIndex >= fromEnd) insertAt = toIndex - sliceLength + 1;
+  else insertAt = fromStart;
+  insertAt = Math.max(0, Math.min(insertAt, without.length));
+  return [...without.slice(0, insertAt), ...slice, ...without.slice(insertAt)];
+}
+
 /** Walk a `DisplayItem[]` tree and return every row ID currently
  *  visible (expanded). Collapsed groups contribute zero rows — the entire
  *  begin..end subtree is hidden from the DndContext + sortable. */
@@ -922,6 +983,89 @@ function walkChildren(ctx: WalkCtx, depth: number): DisplayItem[] {
     ctx.index++;
   }
   return items;
+}
+
+/**
+ * Render a (potentially nested) group accordion as a sortable unit.
+ * The group as a whole is a useSortable target with the begin row's id;
+ * its drag handle moves the entire begin..end slice (§A4 group-as-unit
+ * drag) via the slice-aware onDragEnd handler in SurveyTab. The
+ * children are rendered recursively through `renderItem` so nesting
+ * keeps working at any depth.
+ */
+function SurveyGroupAccordion(props: {
+  item: Extract<DisplayItem, { kind: 'group' }>;
+  renderItem: (item: DisplayItem) => ReactElement;
+  toggleGroup: (beginRowId: string) => void;
+  addQuestion: (insertIndex?: number) => void;
+  formSurvey: SurveyRow[];
+}) {
+  const { item } = props;
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: item.beginRowId });
+  const style: import('react').CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+  };
+  const isCollapsed = item.collapsed;
+  const kindLabel =
+    item.structuralType === 'repeat' ? 'begin repeat → end repeat' : 'begin group → end group';
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`survey-group-accordion depth-${item.depth}`}
+      data-structural-type={item.structuralType}
+    >
+      <div className="survey-group-header-row">
+        <button
+          type="button"
+          className="drag-handle group-drag-handle"
+          aria-label={`drag group ${item.name || '(unnamed)'}`}
+          {...attributes}
+          {...listeners}
+        >
+          ⋮⋮
+        </button>
+        <button
+          type="button"
+          className="survey-group-header"
+          onClick={() => props.toggleGroup(item.beginRowId)}
+          aria-expanded={!isCollapsed}
+          aria-controls={`group-children-${item.beginRowId}`}
+          title={isCollapsed ? 'Expand group' : 'Collapse group'}
+        >
+          <span className="caret" aria-hidden="true">
+            {isCollapsed ? '▸' : '▾'}
+          </span>
+          <code>{item.name || '(unnamed)'}</code>
+          <span className="muted small">
+            {item.innerRowCount} row{item.innerRowCount === 1 ? '' : 's'} inside ({kindLabel})
+          </span>
+        </button>
+      </div>
+      {!isCollapsed && (
+        <div id={`group-children-${item.beginRowId}`} className="survey-group-children">
+          {item.children.map(props.renderItem)}
+          {/* §A3 — "+ add inside" inserts a new row at the end of this group,
+               just BEFORE the matching `end` row. */}
+          <button
+            type="button"
+            className="link survey-add-inside"
+            onClick={() => {
+              const endIdx = props.formSurvey.findIndex((r) => r.rowId === item.endRowId);
+              if (endIdx < 0) return;
+              props.addQuestion(endIdx);
+            }}
+            title={`Insert a new row inside this ${item.structuralType}`}
+          >
+            + add inside {item.name || `(${item.structuralType})`}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function SurveyRowCard(props: {

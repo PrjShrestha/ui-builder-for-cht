@@ -1130,6 +1130,25 @@ code {
   font-size: 13px;
 }
 .survey-group-header:hover { background: var(--border); }
+/* §A4 — drag handle on the group accordion. Sits left of the header so
+ * the user has a clear grab affordance for moving the whole group. */
+.survey-group-header-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+.group-drag-handle {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: grab;
+  font-family: ui-monospace, monospace;
+}
+.group-drag-handle:hover { color: var(--text); }
+.survey-group-header-row .survey-group-header { flex: 1; }
 .survey-group-header .caret { color: var(--text-muted); width: 12px; }
 /* Cumulative indent: each .survey-group-children adds 12px of left padding,
  * so a depth-N group's leaves are indented N×12px. Replaces the old
