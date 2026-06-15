@@ -658,6 +658,36 @@ function SurveyTab(props: {
   }
 
   /**
+   * §A5 Ungroup — remove the begin/end shell of a group, leaving its
+   * children at the parent depth. Refuses if the input is unbalanced
+   * (the begin has no matching end) — the §A6 banner already tells the
+   * user to fix the imbalance first. Children stay in survey order, just
+   * with the structural rows excised.
+   *
+   * (The plan also locks a "Group these" wrap affordance for N contiguous
+   * rows; that requires a multi-select mechanism not in the editor yet
+   * and is deferred to a follow-up slice. Plan §A5 wrap.)
+   */
+  function ungroup(beginRowId: string) {
+    const beginIdx = form.survey.findIndex((r) => r.rowId === beginRowId);
+    if (beginIdx < 0) return;
+    const endIdx = findMatchingEndIndex(form.survey, beginIdx);
+    if (endIdx < 0) {
+      setError(
+        'Cannot ungroup — this group has no matching end row. Fix the imbalance first.',
+      );
+      return;
+    }
+    // Slice out the begin row and the end row; children stay in place.
+    const next = [
+      ...form.survey.slice(0, beginIdx),
+      ...form.survey.slice(beginIdx + 1, endIdx),
+      ...form.survey.slice(endIdx + 1),
+    ];
+    patch({ ...form, survey: next });
+  }
+
+  /**
    * Render a `DisplayItem` — a flat row card, or a (potentially nested)
    * group container that recursively renders its children. Pulled out so
    * the rendering walk can mirror the recursive `buildDisplayItems` walk
@@ -705,6 +735,7 @@ function SurveyTab(props: {
         renderItem={renderItem}
         toggleGroup={toggleGroup}
         addQuestion={addQuestion}
+        ungroup={ungroup}
         formSurvey={form.survey}
       />
     );
@@ -998,6 +1029,7 @@ function SurveyGroupAccordion(props: {
   renderItem: (item: DisplayItem) => ReactElement;
   toggleGroup: (beginRowId: string) => void;
   addQuestion: (insertIndex?: number) => void;
+  ungroup: (beginRowId: string) => void;
   formSurvey: SurveyRow[];
 }) {
   const { item } = props;
@@ -1043,6 +1075,17 @@ function SurveyGroupAccordion(props: {
           <span className="muted small">
             {item.innerRowCount} row{item.innerRowCount === 1 ? '' : 's'} inside ({kindLabel})
           </span>
+        </button>
+        {/* §A5 Ungroup — removes the begin/end shell, keeping children
+            at the parent depth. Hidden behind a low-emphasis link so it
+            doesn't compete with the header's collapse toggle. */}
+        <button
+          type="button"
+          className="link group-ungroup"
+          onClick={() => props.ungroup(item.beginRowId)}
+          title="Remove this group's begin/end, keeping the rows inside"
+        >
+          ungroup
         </button>
       </div>
       {!isCollapsed && (

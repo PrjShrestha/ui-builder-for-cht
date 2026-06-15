@@ -1149,6 +1149,12 @@ code {
 }
 .group-drag-handle:hover { color: var(--text); }
 .survey-group-header-row .survey-group-header { flex: 1; }
+.group-ungroup {
+  font-size: 11px;
+  padding: 0 10px;
+  color: var(--text-muted);
+}
+.group-ungroup:hover { color: var(--text); }
 .survey-group-header .caret { color: var(--text-muted); width: 12px; }
 /* Cumulative indent: each .survey-group-children adds 12px of left padding,
  * so a depth-N group's leaves are indented N×12px. Replaces the old
