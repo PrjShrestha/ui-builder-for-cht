@@ -246,3 +246,191 @@ test('condition builder — no UI sequence can write a flat-mixed value (§3.7 s
   expect(rawValue).not.toContain('(');
   expect(rawValue).not.toMatch(/\band\b[^()]*\bor\b|\bor\b[^()]*\band\b/);
 });
+
+/* ============== v0.3 — type-aware soft filter + natural-language labels ============== */
+/*
+ * Plan v0.3 §6 pins six Playwright cases. All anchor on the `gravidity`
+ * row (the only `integer` row in the fixture) so `earlierFields` carries
+ * a useful variety:
+ *   - `sex` (calculate, choice-upgraded via fieldChoices)
+ *   - `_id` (calculate, no choices → unknown)
+ *   - `lmp_date` (date)
+ *   - `lmp_note` (note → text)
+ *   - `danger_signs` (select_multiple → choice)
+ * That mix lets each test verify a different filter direction without
+ * adding new fixture rows.
+ */
+
+/** Resolve the `gravidity` row card (the only `integer` row). */
+function gravidityRow(page: import('@playwright/test').Page) {
+  return page
+    .locator('.survey-row')
+    .filter({ has: page.locator('code.type-chip-raw', { hasText: /^integer$/ }) });
+}
+
+/** Read option text values from a <select>, grouped by their <optgroup> label. */
+async function optgroupSnapshot(sel: Locator): Promise<Record<string, string[]>> {
+  return await sel.evaluate((el) => {
+    const out: Record<string, string[]> = {};
+    for (const g of el.querySelectorAll('optgroup')) {
+      const label = g.getAttribute('label') ?? '';
+      out[label] = Array.from(g.querySelectorAll('option')).map((o) => o.getAttribute('value') ?? '');
+    }
+    return out;
+  });
+}
+
+test('v0.3 — op-first filtering: picking `is more than` groups date/numeric typical, text+choice atypical, still selectable', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.locator('.nav-item', { hasText: 'Forms' }).click();
+  await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+
+  const row = gravidityRow(page);
+  await row.getByRole('button', { name: /show advanced/ }).click();
+  const strip = row.locator('.cond-strip-unified');
+  const dropdowns = strip.locator('.ref-chip-select');
+  await dropdowns.nth(0).selectOption('relevant');
+  // Pick the natural-language label for `>` — option `value` is still `>`.
+  await dropdowns.nth(2).selectOption('>');
+
+  const fieldSelect = dropdowns.nth(1);
+  const snap = await optgroupSnapshot(fieldSelect);
+  // `lmp_date` (date) typical; `_id` (unknown) always-pass; `lmp_note`
+  // (text) atypical for ordering ops; choice fields (sex, danger_signs)
+  // atypical too.
+  expect(snap['Typical for this check']).toContain('lmp_date');
+  expect(snap['Typical for this check']).toContain('_id');
+  expect(snap['Other fields']).toContain('lmp_note');
+  // Atypical field is STILL selectable (never hard-hidden).
+  await fieldSelect.selectOption('lmp_note');
+  await expect(fieldSelect).toHaveValue('lmp_note');
+});
+
+test('v0.3 — field-first ordering: picking date `lmp_date` groups comparison ops Common; all 11 still in DOM', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.locator('.nav-item', { hasText: 'Forms' }).click();
+  await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+
+  const row = gravidityRow(page);
+  await row.getByRole('button', { name: /show advanced/ }).click();
+  const strip = row.locator('.cond-strip-unified');
+  const dropdowns = strip.locator('.ref-chip-select');
+  await dropdowns.nth(0).selectOption('relevant');
+  // Pick a date field FIRST so the op picker partitions field-first.
+  await dropdowns.nth(1).selectOption('lmp_date');
+
+  const opSelect = dropdowns.nth(2);
+  const snap = await optgroupSnapshot(opSelect);
+  // All 11 op values must appear somewhere in the DOM (no hiding).
+  const all = ([] as string[]).concat(...Object.values(snap));
+  for (const op of ['=', '!=', '>', '<', '>=', '<=', 'selected', 'selected-not', 'not', 'ref', 'today']) {
+    expect(all).toContain(op);
+  }
+  // Comparison ordering ops are grouped under "Common operators".
+  expect(snap['Common operators']).toContain('>');
+  expect(snap['Common operators']).toContain('<');
+  expect(snap['Common operators']).toContain('>=');
+  expect(snap['Common operators']).toContain('<=');
+});
+
+test('v0.3 — Show all fields toggle flattens the field list (escape hatch)', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.locator('.nav-item', { hasText: 'Forms' }).click();
+  await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+
+  const row = gravidityRow(page);
+  await row.getByRole('button', { name: /show advanced/ }).click();
+  const strip = row.locator('.cond-strip-unified');
+  const dropdowns = strip.locator('.ref-chip-select');
+  await dropdowns.nth(0).selectOption('relevant');
+  await dropdowns.nth(2).selectOption('>');
+
+  const fieldSelect = dropdowns.nth(1);
+  const beforeSnap = await optgroupSnapshot(fieldSelect);
+  expect(Object.keys(beforeSnap).length).toBeGreaterThanOrEqual(2);
+
+  // Toggle on — the persistent "Show all fields" label/checkbox.
+  await strip.getByRole('checkbox', { name: 'Show all fields' }).check();
+
+  // Now flat list (no optgroups).
+  const afterSnap = await optgroupSnapshot(fieldSelect);
+  expect(Object.keys(afterSnap)).toHaveLength(0);
+});
+
+test('v0.3 — `includes` (selected) narrows field list to choice incl. contact-injected sex', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.locator('.nav-item', { hasText: 'Forms' }).click();
+  await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+
+  const row = gravidityRow(page);
+  await row.getByRole('button', { name: /show advanced/ }).click();
+  const strip = row.locator('.cond-strip-unified');
+  const dropdowns = strip.locator('.ref-chip-select');
+  await dropdowns.nth(0).selectOption('relevant');
+  // `selected` is the canonical op value; its dropdown label is `includes value`.
+  await dropdowns.nth(2).selectOption('selected');
+
+  const fieldSelect = dropdowns.nth(1);
+  const snap = await optgroupSnapshot(fieldSelect);
+  // `sex` is choice-upgraded via fieldChoices (contact-injected select).
+  expect(snap['Typical for this check']).toContain('sex');
+  expect(snap['Typical for this check']).toContain('danger_signs');
+  // Non-choice rows (date, text) appear under "Other fields", still selectable.
+  expect(snap['Other fields']).toContain('lmp_date');
+});
+
+test('v0.3 — unknown-kind field (`_id`) is always-pass: reachable under ordering op `>`', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.locator('.nav-item', { hasText: 'Forms' }).click();
+  await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+
+  const row = gravidityRow(page);
+  await row.getByRole('button', { name: /show advanced/ }).click();
+  const strip = row.locator('.cond-strip-unified');
+  const dropdowns = strip.locator('.ref-chip-select');
+  await dropdowns.nth(0).selectOption('relevant');
+  await dropdowns.nth(2).selectOption('>');
+
+  const fieldSelect = dropdowns.nth(1);
+  const snap = await optgroupSnapshot(fieldSelect);
+  // `_id` is a `calculate` with no fieldChoices → unknown → always-pass.
+  expect(snap['Typical for this check']).toContain('_id');
+});
+
+test('v0.3 — relabeled op dropdown saves byte-identical canonical XPath (no label leakage)', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.locator('.nav-item', { hasText: 'Forms' }).click();
+  await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+
+  // Use the existing `lmp_date` row anchor for parity with the Slice 2 happy path.
+  const lmpRow = page
+    .locator('.survey-row')
+    .filter({ has: page.locator('code.type-chip-raw', { hasText: /^date$/ }) });
+  await lmpRow.getByRole('button', { name: /show advanced/ }).click();
+  const strip = lmpRow.locator('.cond-strip-unified');
+  await strip.locator('.ref-chip-select').nth(0).selectOption('relevant');
+
+  // Build `${sex} = 'female'` using the relabeled dropdown ("equals value").
+  await buildClause(strip, 'sex', '=', 'female');
+  await strip.getByRole('button', { name: '+ insert' }).click();
+
+  // The persisted raw XPath uses the canonical `=` token, not "equals".
+  const relevantField = lmpRow.locator('.expr-field', {
+    hasText: 'Show this question when…',
+  });
+  const rawValue = await relevantField.locator('textarea, input').first().inputValue();
+  expect(rawValue).toBe(`\${sex} = 'female'`);
+  expect(rawValue).not.toMatch(/equals|includes|is more than|has an answer/i);
+});

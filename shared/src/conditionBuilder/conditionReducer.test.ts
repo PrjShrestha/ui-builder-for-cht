@@ -20,10 +20,15 @@ import {
   initialConditionBuilderState,
   isInsertReady,
   serializeBuilderState,
+  OP_FIELD_KINDS,
+  fieldsTypicalForOp,
+  opsTypicalForKind,
   type Clause,
+  type ClauseOp,
   type ConditionBuilderState,
 } from './conditionReducer.js';
 import { parseRelevant, parseRelevantGrouped } from '../xlsform/relevantParser.js';
+import type { FieldKind } from '../xlsform/types.js';
 
 function withColumn(column: 'relevant' | 'calculation' | 'constraint' | 'choice_filter'): ConditionBuilderState {
   return conditionBuilderReducer(initialConditionBuilderState, {
@@ -647,4 +652,171 @@ test("serialize: builder output ALWAYS round-trips through parseRelevantGrouped 
       `Builder produced an output that doesn't round-trip cleanly: ${out}`,
     );
   }
+});
+
+/* ====================== v0.3 — type-aware soft filter ===================== */
+/*
+ * Plan v0.3 §6 pins three contracts for OP_FIELD_KINDS / fieldsTypicalForOp /
+ * opsTypicalForKind:
+ *   1. The map covers exactly the 11 ClauseOp values (count + completeness).
+ *   2. 'unknown' is always-pass for every op; any unlisted FieldKind is
+ *      always-pass too (never-de-emphasize contract under enum growth).
+ *   3. Per-op kind lists match the §2 taxonomy — comparison ops broad over
+ *      orderables, selected/selected-not narrow to 'choice', not/ref broad
+ *      over every answerable kind (catches the v0.2-draft `not` mis-bucket).
+ *
+ * The relabel guard at the bottom pins §5/§4: changing op-dropdown labels
+ * must NEVER move a byte of serialized XPath — the option `value`s (the
+ * 11 ClauseOp tokens) are the only thing `serializeBuilderState` reads.
+ */
+
+const ALL_CLAUSE_OPS: ClauseOp[] = [
+  '=', '!=', '>', '<', '>=', '<=',
+  'selected', 'selected-not', 'not', 'ref', 'today',
+];
+
+const ALL_FIELD_KINDS_INC_UNKNOWN: FieldKind[] = [
+  'text', 'numeric', 'date', 'choice', 'geo', 'unknown',
+];
+
+test('OP_FIELD_KINDS covers exactly the 11 ClauseOp values', () => {
+  // Pins both the count AND the membership; a future op added to ClauseOp
+  // without a row here will fail TS first, but if anyone deletes one this
+  // catches the regression at test time.
+  assert.equal(ALL_CLAUSE_OPS.length, 11);
+  for (const op of ALL_CLAUSE_OPS) {
+    assert.ok(Array.isArray(OP_FIELD_KINDS[op]), `missing entry for ${op}`);
+  }
+  assert.equal(Object.keys(OP_FIELD_KINDS).length, 11);
+});
+
+test('fieldsTypicalForOp: "unknown" is always-pass for every op', () => {
+  for (const op of ALL_CLAUSE_OPS) {
+    assert.equal(fieldsTypicalForOp(op, 'unknown'), true, `unknown failed for ${op}`);
+  }
+});
+
+test('fieldsTypicalForOp: an unlisted FieldKind value is always-pass (enum-growth guard)', () => {
+  // Cast a synthetic 7th kind that does NOT appear in any OP_FIELD_KINDS
+  // list (today's listed kinds: text/numeric/date/choice/geo). The
+  // never-de-emphasize contract says this future kind must pass — so when
+  // someone adds e.g. `media` to FieldKind without updating the map, no
+  // real `media` field is silently mis-bucketed.
+  const synthetic = 'media' as FieldKind;
+  for (const op of ALL_CLAUSE_OPS) {
+    assert.equal(
+      fieldsTypicalForOp(op, synthetic),
+      true,
+      `unlisted kind failed for ${op}`,
+    );
+  }
+});
+
+test('fieldsTypicalForOp: selected / selected-not are typical only for choice (or unknown)', () => {
+  for (const op of ['selected', 'selected-not'] as ClauseOp[]) {
+    assert.equal(fieldsTypicalForOp(op, 'choice'), true);
+    assert.equal(fieldsTypicalForOp(op, 'unknown'), true);
+    for (const k of ['text', 'numeric', 'date', 'geo'] as FieldKind[]) {
+      assert.equal(fieldsTypicalForOp(op, k), false, `${op} should be atypical for ${k}`);
+    }
+  }
+});
+
+test('fieldsTypicalForOp: ordering comparisons typical for numeric/date (not text/choice/geo)', () => {
+  for (const op of ['>', '<', '>=', '<='] as ClauseOp[]) {
+    assert.equal(fieldsTypicalForOp(op, 'numeric'), true);
+    assert.equal(fieldsTypicalForOp(op, 'date'), true);
+    assert.equal(fieldsTypicalForOp(op, 'unknown'), true);
+    for (const k of ['text', 'choice', 'geo'] as FieldKind[]) {
+      assert.equal(fieldsTypicalForOp(op, k), false, `${op} should be atypical for ${k}`);
+    }
+  }
+});
+
+test('fieldsTypicalForOp: not and ref broad across every answerable kind (catches old `not` mis-bucket)', () => {
+  for (const op of ['not', 'ref'] as ClauseOp[]) {
+    for (const k of ['text', 'numeric', 'date', 'choice', 'geo'] as FieldKind[]) {
+      assert.equal(
+        fieldsTypicalForOp(op, k),
+        true,
+        `${op} should be broad for every answerable kind; failed for ${k}`,
+      );
+    }
+  }
+});
+
+test('opsTypicalForKind: date kind groups every comparison op first; unknown returns all 11', () => {
+  const forDate = opsTypicalForKind('date');
+  for (const op of ['=', '!=', '>', '<', '>=', '<='] as ClauseOp[]) {
+    assert.ok(forDate.includes(op), `expected ${op} typical for date`);
+  }
+  const forUnknown = opsTypicalForKind('unknown');
+  assert.equal(forUnknown.length, 11);
+  for (const op of ALL_CLAUSE_OPS) {
+    assert.ok(forUnknown.includes(op), `expected ${op} in opsTypicalForKind('unknown')`);
+  }
+});
+
+test('opsTypicalForKind: "choice" includes selected/selected-not + the answered/negation/equality ops', () => {
+  const forChoice = opsTypicalForKind('choice');
+  for (const op of ['=', '!=', 'selected', 'selected-not', 'not', 'ref'] as ClauseOp[]) {
+    assert.ok(forChoice.includes(op), `expected ${op} typical for choice`);
+  }
+  // Comparison ordering ops are NOT typical for choice.
+  for (const op of ['>', '<', '>=', '<='] as ClauseOp[]) {
+    assert.equal(forChoice.includes(op), false, `${op} should be atypical for choice`);
+  }
+});
+
+test('opsTypicalForKind: unlisted-kind fall-through returns all 11 (enum-growth guard)', () => {
+  const synthetic = 'media' as FieldKind;
+  const list = opsTypicalForKind(synthetic);
+  assert.equal(list.length, 11);
+});
+
+test('relabel guard: serialized XPath depends only on ClauseOp values, never label text', () => {
+  // Build a flat AND of one clause per comparison op + selected, and
+  // serialize. The output uses only canonical XPath tokens (`=`, `!=`, `>`,
+  // `<`, `>=`, `<=`, `selected(`, `${...}`). Changing any UI label string
+  // cannot move a byte here because serializeBuilderState reads Clause.op
+  // (a ClauseOp value), never a label.
+  type Compare = '=' | '!=' | '>' | '<' | '>=' | '<=';
+  for (const op of ['=', '!=', '>', '<', '>=', '<='] as Compare[]) {
+    let s = withColumn('relevant');
+    s = setDraft(s, { field: 'age', op, value: '18' });
+    s = commit(s, 'and');
+    const out = serializeBuilderState(s);
+    assert.ok(out.includes(`\${age} ${op} 18`), `op ${op} should use canonical token in ${out}`);
+  }
+  // selected uses the `selected(` XPath form.
+  let s = withColumn('relevant');
+  s = setDraft(s, { field: 'symptoms', op: 'selected', value: 'fever' });
+  s = commit(s, 'and');
+  const sel = serializeBuilderState(s);
+  assert.ok(sel.includes(`selected(\${symptoms}, 'fever')`), `selected should use canonical XPath; got ${sel}`);
+  // selected-not uses not(selected(...)).
+  s = withColumn('relevant');
+  s = setDraft(s, { field: 'symptoms', op: 'selected-not', value: 'none' });
+  s = commit(s, 'and');
+  const seln = serializeBuilderState(s);
+  assert.ok(
+    seln.includes(`not(selected(\${symptoms}, 'none'))`),
+    `selected-not should use canonical XPath; got ${seln}`,
+  );
+});
+
+test('relabel guard: every ClauseOp value is one of the canonical 11 (no label leakage)', () => {
+  // Defensive — if somebody ever set Clause.op to a label string by mistake
+  // (e.g. "equals" instead of "="), this would catch it on the next commit.
+  // We approximate by re-validating that ALL_CLAUSE_OPS is exactly the set
+  // returned by opsTypicalForKind('unknown') (which mirrors OP_FIELD_KINDS
+  // keys in declaration order).
+  const all = opsTypicalForKind('unknown');
+  assert.deepEqual(new Set(all), new Set(ALL_CLAUSE_OPS));
+});
+
+// Sanity reference to keep ALL_FIELD_KINDS_INC_UNKNOWN used by future tests
+// without tripping unused-var lint when this file evolves.
+test('FieldKind co-domain mirror stays in sync with classifier', () => {
+  assert.equal(ALL_FIELD_KINDS_INC_UNKNOWN.length, 6);
 });

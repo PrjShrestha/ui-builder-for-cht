@@ -33,12 +33,15 @@ import type { DragEndEvent } from '@dnd-kit/core';
 import {
   QUESTION_TYPES,
   STRUCTURAL_TYPES,
+  SELECT_TYPE_RE,
   computeSimpleHiddenRowIds,
   isStructural,
+  inferFieldKind,
   validateOrdering,
   predictViolationsForMove,
   violationsByRowId,
   diffXlsForms,
+  type FieldKind,
   type OrderingViolation,
   type SurveyRow,
   type ChoiceRow,
@@ -50,6 +53,8 @@ import {
   isDraftEmpty,
   isInsertReady,
   serializeBuilderState,
+  fieldsTypicalForOp,
+  opsTypicalForKind,
   type Clause,
   type ClauseOp,
   type ConditionColumn,
@@ -313,6 +318,29 @@ function SurveyTab(props: {
     [form.survey, form.choices, contactFieldChoices],
   );
 
+  // Map field name → FieldKind for the type-aware soft filter (plan v0.3).
+  // Choice-upgrade: a row with non-empty `fieldChoices[name]` (a Slice 1
+  // contact-injected `select_one` calculate, or this form's own select)
+  // classifies as 'choice' regardless of its raw `row.type`, so the op
+  // picker keeps `includes`/`does not include` typical for it. Names not
+  // present in the survey but present in `fieldChoices` get a defensive
+  // 'choice' entry too (they aren't in `fieldOptions`, but it keeps the
+  // map consistent for downstream lookups). This is pure render data —
+  // never reaches `clauseToRule`/`serializeAnyParsed` (Lal/Developer A5).
+  const fieldKinds = useMemo<Record<string, FieldKind>>(() => {
+    const out: Record<string, FieldKind> = {};
+    for (const r of form.survey) {
+      if (!r.name) continue;
+      const baseKind = inferFieldKind(r.type);
+      const hasChoices = (fieldChoices[r.name]?.length ?? 0) > 0;
+      out[r.name] = hasChoices ? 'choice' : baseKind;
+    }
+    for (const name of Object.keys(fieldChoices)) {
+      if (!(name in out)) out[name] = 'choice';
+    }
+    return out;
+  }, [form.survey, fieldChoices]);
+
   // Group consecutive rows that fall inside a "collapsed" begin/end group block.
   // In Simple mode we don't collapse — we just hide non-user-facing rows
   // (group-aware: calculates inside CHT's `inputs/` block are plumbing and
@@ -531,6 +559,7 @@ function SurveyTab(props: {
                             violations={violationsByRow.get(row.rowId) ?? []}
                             fieldOptions={earlierFields}
                             fieldChoices={fieldChoices}
+                            fieldKinds={fieldKinds}
                             form={form}
                             patch={patch}
                             update={(u) => updateRow(row.rowId, u)}
@@ -558,6 +587,7 @@ function SurveyTab(props: {
                   violations={violationsByRow.get(row.rowId) ?? []}
                   fieldOptions={earlierFields}
                   fieldChoices={fieldChoices}
+                  fieldKinds={fieldKinds}
                   form={form}
                   patch={patch}
                   update={(u) => updateRow(row.rowId, u)}
@@ -680,6 +710,10 @@ function SurveyRowCard(props: {
   violations: OrderingViolation[];
   fieldOptions: string[];
   fieldChoices: Record<string, string[]>;
+  /** Coarse FieldKind per field name, for type-aware op/field soft-filter
+   *  (plan v0.3). Names absent from this map are treated as 'unknown' at
+   *  the picker (always-pass) — never silently mis-bucketed. */
+  fieldKinds: Record<string, FieldKind>;
   /** Whole form + patch, so the inline choices editor can mutate form.choices. */
   form: XLSForm;
   patch: (next: XLSForm) => void;
@@ -791,6 +825,7 @@ function SurveyRowCard(props: {
             <UnifiedConditionBuilder
               fieldOptions={props.fieldOptions}
               fieldChoices={props.fieldChoices}
+              fieldKinds={props.fieldKinds}
               getColumn={(col) => row.extras[col] ?? ''}
               setColumn={(col, value) => setExtra(col, value)}
             />
@@ -1093,7 +1128,7 @@ function buildFieldChoices(
   }
   for (const r of survey) {
     if (!r.name) continue;
-    const m = r.type.trim().match(/^(select_one|select_multiple)\s+(\S+)/i);
+    const m = r.type.trim().match(SELECT_TYPE_RE);
     if (!m) continue;
     const vals = listToValues.get(m[2]!);
     if (vals && vals.length > 0) out[r.name] = vals;
@@ -1140,6 +1175,30 @@ const COMPARISON_PROSE: Record<'=' | '!=' | '>' | '<' | '>=' | '<=', string> = {
   '<=': 'is at most',
 };
 
+/**
+ * Display-only natural-language labels for the op `<select>` (plan v0.3 §4).
+ * The option `value`s remain the canonical `ClauseOp` tokens — labels NEVER
+ * reach `clauseToRule`/`serializeAnyParsed`. Comparison labels are derived
+ * from `COMPARISON_PROSE` so the dropdown and the `This row shows when:`
+ * prose preview share ONE microcopy source (Lal/Developer A5).
+ *
+ * Banned tokens: `not(`, `today()`, `${field}`, `selected(`, `div`, `floor`.
+ * None must appear in any label the user picks.
+ */
+const OPERATOR_LABELS: Record<ClauseOp, string> = {
+  '=': `equals value`,
+  '!=': `${COMPARISON_PROSE['!=']} value`,
+  '>': `${COMPARISON_PROSE['>']} value`,
+  '<': `${COMPARISON_PROSE['<']} value`,
+  '>=': `${COMPARISON_PROSE['>=']} value`,
+  '<=': `${COMPARISON_PROSE['<=']} value`,
+  selected: 'includes value',
+  'selected-not': 'does not include value',
+  not: 'is not selected',
+  ref: 'has an answer',
+  today: 'today',
+};
+
 function clauseToProse(c: Clause): string {
   if (c.op === '=' || c.op === '!=' || c.op === '>' || c.op === '<' || c.op === '>=' || c.op === '<=') {
     return `${c.field} ${COMPARISON_PROSE[c.op]} ${c.value}`;
@@ -1180,6 +1239,9 @@ function clauseToProse(c: Clause): string {
 function UnifiedConditionBuilder(props: {
   fieldOptions: string[];
   fieldChoices: Record<string, string[]>;
+  /** FieldKind per field name. Missing keys fall through to 'unknown'
+   *  (always-pass) — see plan v0.3 §3 never-de-emphasize contract. */
+  fieldKinds: Record<string, FieldKind>;
   getColumn: (col: string) => string;
   setColumn: (col: string, value: string) => void;
 }) {
@@ -1272,6 +1334,66 @@ function UnifiedConditionBuilder(props: {
   const choices = state.draft.field ? props.fieldChoices[state.draft.field] : undefined;
   const needsField = (COND_OPS_NEED_FIELD as string[]).includes(state.draft.op);
   const needsValue = (COND_OPS_NEED_VALUE as string[]).includes(state.draft.op);
+
+  // ---- v0.3 type-aware soft filter --------------------------------------
+  // Local UI state only — NEVER enters BuilderState or any serialization
+  // path (Lal/Developer A7). If a saved/rehydrated field would be atypical
+  // for the current op, default the toggle to ON so the saved selection is
+  // never visually stranded.
+  const [showAllFields, setShowAllFields] = useState(false);
+  const kindOf = (n: string): FieldKind => props.fieldKinds[n] ?? 'unknown';
+
+  // Op-first partition for the field picker. Active whenever the op takes
+  // a field (so `today` doesn't activate filtering; the field select is
+  // disabled in that case anyway). Selected field is forced into the
+  // typical bucket so it always renders adjacent to the picker.
+  const fieldHasOpHint = needsField;
+  const splitFieldsByOp = fieldHasOpHint && !showAllFields;
+  const typicalFields: string[] = [];
+  const atypicalFields: string[] = [];
+  if (splitFieldsByOp) {
+    for (const name of props.fieldOptions) {
+      if (name === state.draft.field) {
+        typicalFields.push(name);
+      } else if (fieldsTypicalForOp(state.draft.op, kindOf(name))) {
+        typicalFields.push(name);
+      } else {
+        atypicalFields.push(name);
+      }
+    }
+  }
+  // Auto-relax: if the rehydrated/selected field is atypical for the
+  // current op, surface it by forcing the flat list on next render. We
+  // use a ref-like effect to flip the toggle exactly once per mismatch.
+  useEffect(() => {
+    if (!splitFieldsByOp) return;
+    if (!state.draft.field) return;
+    const k = kindOf(state.draft.field);
+    if (!fieldsTypicalForOp(state.draft.op, k)) setShowAllFields(true);
+    // intentionally narrow deps — only react to draft.field/op transitions
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.draft.field, state.draft.op]);
+
+  // Field-first partition for the op picker. Grouping only — every op
+  // always stays in the DOM (no escape-hatch toggle needed; A6/A7).
+  const fieldKindForOpPicker: FieldKind = state.draft.field ? kindOf(state.draft.field) : 'unknown';
+  const splitOpsByField = state.draft.field !== '';
+  const typicalOpsSet = splitOpsByField
+    ? new Set(opsTypicalForKind(fieldKindForOpPicker))
+    : null;
+  // Stable display order — keep the canonical 11-op order; flag typical-vs-other.
+  const opGroups: Array<{ label: string; ops: ClauseOp[] }> = (() => {
+    const all: ClauseOp[] = ['=', '!=', '>', '<', '>=', '<=', 'selected', 'selected-not', 'not', 'ref', 'today'];
+    if (!splitOpsByField || !typicalOpsSet) {
+      return [{ label: 'all operators', ops: all }];
+    }
+    const typical = all.filter((o) => typicalOpsSet.has(o));
+    const other = all.filter((o) => !typicalOpsSet.has(o));
+    return [
+      { label: 'Common operators', ops: typical },
+      ...(other.length ? [{ label: 'Other operators', ops: other }] : []),
+    ];
+  })();
 
   // "Stacked" iff the FLAT chain has reached the chip threshold. Plan §4:
   // "the stacked-clause/chip UI only appears once a second clause exists."
@@ -1522,12 +1644,51 @@ function UnifiedConditionBuilder(props: {
         disabled={state.rawFallback !== null || !needsField}
       >
         <option value="">— field —</option>
-        {props.fieldOptions.map((n) => (
-          <option key={n} value={n}>
-            {n}
-          </option>
-        ))}
+        {splitFieldsByOp ? (
+          <>
+            <optgroup label="Typical for this check">
+              {typicalFields.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </optgroup>
+            {atypicalFields.length > 0 && (
+              <optgroup label="Other fields">
+                {atypicalFields.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </>
+        ) : (
+          props.fieldOptions.map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))
+        )}
       </select>
+      {/* "Show all fields" — persistent escape hatch (plan v0.3 §3). Only
+          rendered when the op-first filter is actually active; otherwise
+          it would be a confusing no-op. Local UI state, never persisted. */}
+      {fieldHasOpHint && (
+        <label
+          className="muted"
+          style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          title="Show every field, including those less common for this check"
+        >
+          <input
+            type="checkbox"
+            checked={showAllFields}
+            onChange={(e) => setShowAllFields(e.target.checked)}
+            disabled={state.rawFallback !== null}
+          />
+          Show all fields
+        </label>
+      )}
       <select
         className="ref-chip-select"
         value={state.draft.op}
@@ -1535,25 +1696,15 @@ function UnifiedConditionBuilder(props: {
         title="Pick what to add"
         disabled={state.rawFallback !== null}
       >
-        <optgroup label="comparison">
-          <option value="=">= value</option>
-          <option value="!=">≠ value</option>
-          <option value=">">&gt; value</option>
-          <option value="<">&lt; value</option>
-          <option value=">=">≥ value</option>
-          <option value="<=">≤ value</option>
-        </optgroup>
-        <optgroup label="select_multiple">
-          <option value="selected">includes value</option>
-          <option value="selected-not">does not include value</option>
-        </optgroup>
-        <optgroup label="logic">
-          <option value="not">not(field)</option>
-        </optgroup>
-        <optgroup label="reference">
-          <option value="ref">just ${'${field}'}</option>
-          <option value="today">today()</option>
-        </optgroup>
+        {opGroups.map((g) => (
+          <optgroup key={g.label} label={g.label}>
+            {g.ops.map((op) => (
+              <option key={op} value={op}>
+                {OPERATOR_LABELS[op]}
+              </option>
+            ))}
+          </optgroup>
+        ))}
       </select>
       {choices && choices.length > 0 ? (
         <select

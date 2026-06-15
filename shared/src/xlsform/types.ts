@@ -100,6 +100,13 @@ export interface ChoicesHeaderInfo {
   labelLocales: string[];
 }
 
+/**
+ * Recognizes a `select_one X` / `select_multiple X` row's type cell and
+ * captures the list-name in group 2. Single source of truth — the condition
+ * builder's `buildFieldChoices` re-uses this so there is no duplicate regex.
+ */
+export const SELECT_TYPE_RE = /^(select_one|select_multiple)\s+(\S+)/i;
+
 /** Question types we treat as "real" (vs grouping/structural rows). */
 export const QUESTION_TYPES = [
   'text',
@@ -221,4 +228,52 @@ export function computeSimpleHiddenRowIds(survey: SurveyRow[]): Set<string> {
     }
   }
   return hidden;
+}
+
+/**
+ * Coarse-grained kind a `SurveyRow.type` belongs to, used by the condition
+ * builder to soft-filter the field and operator dropdowns. `unknown` is a
+ * first-class always-pass bucket: contact-injected fields (no type metadata),
+ * `calculate` rows (no inherent type), unrecognized/compound types, image /
+ * audio / video, and structural rows all collapse to it so they are never
+ * silently de-emphasized.
+ */
+export type FieldKind = 'text' | 'numeric' | 'date' | 'choice' | 'geo' | 'unknown';
+
+/**
+ * Classify a `SurveyRow.type` string (the raw cell, possibly carrying a
+ * list-name suffix for selects) into a {@link FieldKind}. Exhaustive over
+ * {@link QUESTION_TYPES}; everything else — empty, custom, structural —
+ * falls through to `unknown` deliberately (Lorena's "no wrong bucket"
+ * gate). Display-only signal; never feeds the parser/serializer.
+ */
+export function inferFieldKind(type: string): FieldKind {
+  const t = type.trim().toLowerCase();
+  if (t === '') return 'unknown';
+  if (SELECT_TYPE_RE.test(type)) return 'choice';
+  if (t === 'select_one' || t === 'select_multiple') return 'choice';
+  switch (t) {
+    case 'text':
+    case 'string':
+    case 'barcode':
+    case 'note':
+    case 'hidden':
+      return 'text';
+    case 'integer':
+    case 'decimal':
+      return 'numeric';
+    case 'date':
+    case 'time':
+    case 'datetime':
+      return 'date';
+    case 'geopoint':
+      return 'geo';
+    case 'calculate':
+    case 'image':
+    case 'audio':
+    case 'video':
+      return 'unknown';
+    default:
+      return 'unknown';
+  }
 }

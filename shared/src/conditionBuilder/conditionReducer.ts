@@ -38,6 +38,7 @@ import {
   type ParsedExpression,
   type Rule,
 } from '../xlsform/relevantParser.js';
+import type { FieldKind } from '../xlsform/types.js';
 
 /** Operators the visual builder offers. `and`/`or` are NOT here — those
  *  live between clauses (intra-subgroup) and between subgroups
@@ -598,4 +599,71 @@ function hydrateColumn(
         : [],
     lockedConnector: clauses.length > 1 ? parsed.combinator : null,
   };
+}
+
+/* ---------------------- type-aware soft filter (v0.3) -------------------- */
+
+/**
+ * Single source of truth for type-aware operator filtering (plan v0.3 §2).
+ * Keyed by the **real** 11-value `ClauseOp` union — `Record<ClauseOp, …>`
+ * makes adding a future op a compile error until it has a kind list. Each
+ * entry lists the {@link FieldKind} values the operator is "typical" for;
+ * `unknown` is OMITTED here and injected at filter time as universally
+ * compatible. Any kind absent from an op's list is treated identically to
+ * `unknown` (always-pass) — that's the never-de-emphasize contract for
+ * future `FieldKind` enum growth.
+ *
+ * `not` and `ref` are deliberately broad and identical: the answered /
+ * negation check applies to any answerable field. `today` is field-
+ * independent (the field `<select>` is disabled by `COND_OPS_NEED_FIELD`
+ * in the client), so its list is harmless but kept exhaustive.
+ */
+export const OP_FIELD_KINDS: Record<ClauseOp, FieldKind[]> = {
+  '=': ['text', 'numeric', 'date', 'choice'],
+  '!=': ['text', 'numeric', 'date', 'choice'],
+  '>': ['numeric', 'date'],
+  '<': ['numeric', 'date'],
+  '>=': ['numeric', 'date'],
+  '<=': ['numeric', 'date'],
+  selected: ['choice'],
+  'selected-not': ['choice'],
+  not: ['text', 'numeric', 'date', 'choice', 'geo'],
+  ref: ['text', 'numeric', 'date', 'choice', 'geo'],
+  today: ['text', 'numeric', 'date', 'choice', 'geo'],
+};
+
+/**
+ * Union of every kind that appears in any `OP_FIELD_KINDS` entry. Used by
+ * {@link fieldsTypicalForOp} to give a graceful "always-pass" verdict to
+ * any future `FieldKind` value the map hasn't been updated for — protecting
+ * the never-de-emphasize contract against enum growth (plan v0.3 §2).
+ */
+const LISTED_KINDS: Set<FieldKind> = new Set(
+  (Object.values(OP_FIELD_KINDS) as FieldKind[][]).flat(),
+);
+
+/**
+ * Predicate: is `kind` "typical" for `op`? Returns `true` for `'unknown'`
+ * and for any kind that hasn't been enumerated anywhere in `OP_FIELD_KINDS`
+ * (graceful fall-through). Only enumerated kinds that are explicitly absent
+ * from an op's list count as atypical.
+ *
+ * Pure selector — never mutates draft state, never reaches a serializer.
+ */
+export function fieldsTypicalForOp(op: ClauseOp, kind: FieldKind): boolean {
+  if (kind === 'unknown') return true;
+  if (!LISTED_KINDS.has(kind)) return true;
+  return OP_FIELD_KINDS[op].includes(kind);
+}
+
+/**
+ * The set of ops "typical" for a given `kind`, in `ClauseOp` declaration
+ * order. `'unknown'` (and any future unlisted kind) → all 11 ops, so the
+ * op picker stays maximally permissive when the field can't be classified.
+ */
+const ALL_OPS: ClauseOp[] = Object.keys(OP_FIELD_KINDS) as ClauseOp[];
+
+export function opsTypicalForKind(kind: FieldKind): ClauseOp[] {
+  if (kind === 'unknown' || !LISTED_KINDS.has(kind)) return [...ALL_OPS];
+  return ALL_OPS.filter((op) => OP_FIELD_KINDS[op].includes(kind));
 }
