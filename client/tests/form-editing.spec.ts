@@ -345,16 +345,15 @@ test('§A1+§A6 — adding a Group via the picker emits a balanced begin/end pai
     // Modal closes after commit.
     await expect(picker).not.toBeVisible();
 
-    // §A1 — both a `begin group` and an `end group` row appear with the
-    // typed name. The pre-fix code only produced the begin row.
-    const beginRow = rowByType(page, /^begin group$/).filter({
-      has: page.locator('input.name-input[value="triage"]'),
+    // §A1+§A2 — the new group renders as a `.survey-group-accordion` with
+    // the typed name in the header. (Begin/end rows are folded into the
+    // accordion; they are NOT rendered as standalone `.survey-row` cards
+    // post-A2, so the older begin-row-as-survey-row assertion no longer
+    // applies.)
+    const triageGroup = page.locator('.survey-group-accordion').filter({
+      has: page.locator('.survey-group-header code', { hasText: 'triage' }),
     });
-    const endRow = rowByType(page, /^end group$/).filter({
-      has: page.locator('input.name-input[value="triage"]'),
-    });
-    await expect(beginRow).toHaveCount(1);
-    await expect(endRow).toHaveCount(1);
+    await expect(triageGroup).toHaveCount(1);
 
     // §A6 — no danger banner; save proceeds without the structural guard
     // tripping. Click the page-header Save and walk through the diff modal.
@@ -367,6 +366,20 @@ test('§A1+§A6 — adding a Group via the picker emits a balanced begin/end pai
     await expect(
       page.locator('.page-header').getByRole('button', { name: 'Saved', exact: true }),
     ).toBeVisible();
+
+    // §A1 on-disk proof — the persisted form.survey carries BOTH a `begin
+    // group` and an `end group` row with name "triage". The pre-fix code
+    // produced an unbalanced survey that pyxform would reject.
+    const formRes = await request.get('http://127.0.0.1:5174/api/forms/app:pregnancy');
+    expect(formRes.ok()).toBeTruthy();
+    const formBody = (await formRes.json()) as {
+      form: { survey: Array<{ name: string; type: string }> };
+    };
+    const triageRows = formBody.form.survey.filter((r) => r.name === 'triage');
+    const triageBegin = triageRows.find((r) => r.type.trim().toLowerCase() === 'begin group');
+    const triageEnd = triageRows.find((r) => r.type.trim().toLowerCase() === 'end group');
+    expect(triageBegin, 'saved survey must carry a `begin group` named "triage"').toBeTruthy();
+    expect(triageEnd, 'saved survey must carry a matching `end group` named "triage"').toBeTruthy();
   } finally {
     await fs.rm(tmpProject, { recursive: true, force: true });
   }

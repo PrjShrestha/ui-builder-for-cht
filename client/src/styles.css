@@ -1131,9 +1131,23 @@ code {
 }
 .survey-group-header:hover { background: var(--border); }
 .survey-group-header .caret { color: var(--text-muted); width: 12px; }
-.survey-group-accordion .survey-row {
-  margin-left: 24px;
+/* Cumulative indent: each .survey-group-children adds 12px of left padding,
+ * so a depth-N group's leaves are indented N×12px. Replaces the old
+ * one-off `.survey-group-accordion .survey-row` rule that only worked for
+ * the single `inputs` accordion. */
+.survey-group-children {
+  padding-left: 12px;
   border-left: 2px solid var(--border-strong);
+  margin-left: 12px;
+  margin-bottom: 6px;
+}
+/* `begin repeat` blocks are styled with a slightly different border accent
+ * to make repeats vs plain groups visually distinguishable at a glance. */
+.survey-group-accordion[data-structural-type="repeat"] {
+  border-color: #c7d2fe;
+}
+.survey-group-accordion[data-structural-type="repeat"] > .survey-group-header {
+  background: #eef2ff;
 }
 
 /* ---- Question-type tile picker (Kobo-style) ---- */

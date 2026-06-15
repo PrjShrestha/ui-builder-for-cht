@@ -12,7 +12,7 @@
  *  - relevant / calculation / constraint expressions (read-only, displayed but not edited)
  *  - properties.json (saved verbatim if loaded; UI editor lands in P1B)
  */
-import { Fragment, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useReducer, useRef, useState, type ReactElement } from 'react';
 import {
   DndContext,
   KeyboardSensor,
@@ -345,10 +345,15 @@ function SurveyTab(props: {
   const { form, patch, violationsByRow } = props;
   const undo = props.undo;
   const [mode, setMode] = useState<'simple' | 'full'>('simple');
-  // Names of `begin group` rows that are currently collapsed into one accordion.
-  // The `inputs` group at the top of every CHT form starts collapsed because
-  // it's the deep contact/parent lineage tree — almost never edited.
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set(['inputs']));
+  // Begin-row IDs the user has explicitly TOGGLED via the group header.
+  // The set stores "flip from default" intent — a group whose name is in
+  // DEFAULT_COLLAPSED_GROUP_NAMES (`inputs`) is collapsed by default and
+  // toggling it ADDS its id to flip to expanded; a plain group is expanded
+  // by default and toggling it ADDS its id to flip to collapsed. See the
+  // `collapsed: …` computation in walkChildren. Keying by begin rowId
+  // (not name) lets multiple nested groups share a name without sharing
+  // collapse state.
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set());
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -396,10 +401,11 @@ function SurveyTab(props: {
     () => (mode === 'simple' ? computeSimpleHiddenRowIds(form.survey) : new Set<string>()),
     [form.survey, mode],
   );
-  const displayItems = buildDisplayItems(form.survey, mode, collapsedGroups, simpleHiddenIds);
-  const visibleRowIds = displayItems.flatMap((it) =>
-    it.kind === 'group' && it.collapsed ? [] : it.kind === 'group' ? it.rows.map((r) => r.rowId) : [it.row.rowId],
-  );
+  const displayItems = buildDisplayItems(form.survey, mode, collapsedGroupIds, simpleHiddenIds);
+  // Flatten the recursive tree into the list of row IDs currently
+  // visible (expanded). Collapsed groups contribute zero rows (the entire
+  // begin..end subtree is hidden from the DndContext).
+  const visibleRowIds = useMemo(() => flattenVisibleRowIds(displayItems), [displayItems]);
   const hiddenSimpleCount = simpleHiddenIds.size;
 
   function onDragEnd(e: DragEndEvent) {
@@ -568,13 +574,91 @@ function SurveyTab(props: {
     patch({ ...form, survey: arrayMove(form.survey, idx, newIndex) });
   }
 
-  function toggleGroup(name: string) {
-    setCollapsedGroups((prev) => {
+  function toggleGroup(beginRowId: string) {
+    setCollapsedGroupIds((prev) => {
       const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
+      // Stored as a "flip from default" intent — see DEFAULT_COLLAPSED_GROUP_NAMES.
+      if (next.has(beginRowId)) next.delete(beginRowId);
+      else next.add(beginRowId);
       return next;
     });
+  }
+
+  /**
+   * Render a `DisplayItem` — a flat row card, or a (potentially nested)
+   * group container that recursively renders its children. Pulled out so
+   * the rendering walk can mirror the recursive `buildDisplayItems` walk
+   * verbatim and so a group's children can themselves include groups
+   * (plan §A2).
+   */
+  function renderItem(item: DisplayItem): ReactElement {
+    if (item.kind === 'row') {
+      const row = item.row;
+      const idx = form.survey.findIndex((r) => r.rowId === row.rowId);
+      const earlierFields = form.survey
+        .slice(0, idx)
+        .filter((r) => !isStructural(r) && r.name)
+        .map((r) => r.name);
+      return (
+        <SurveyRowCard
+          key={row.rowId}
+          row={row}
+          locales={form.surveyHeaders.labelLocales}
+          violations={violationsByRow.get(row.rowId) ?? []}
+          fieldOptions={earlierFields}
+          fieldChoices={fieldChoices}
+          fieldKinds={fieldKinds}
+          inputContactFields={props.inputContactFields}
+          contextKeys={props.contextKeys}
+          form={form}
+          patch={patch}
+          update={(u) => updateRow(row.rowId, u)}
+          remove={() => removeRow(row.rowId)}
+          moveUp={() => moveRow(row.rowId, -1)}
+          moveDown={() => moveRow(row.rowId, 1)}
+          onChangeType={() => openTypePickerFor(row.rowId)}
+        />
+      );
+    }
+    // Group container — recursive. The begin/end rows are NOT rendered as
+    // independent cards; their content (name + structural kind) is folded
+    // into the header. Each nesting level indents its children by the CSS
+    // padding-left on `.survey-group-children` (cumulative through the
+    // DOM, so a depth-3 group is indented 3×).
+    const isCollapsed = item.collapsed;
+    const kindLabel = item.structuralType === 'repeat' ? 'begin repeat → end repeat' : 'begin group → end group';
+    return (
+      <div
+        key={item.beginRowId}
+        className={`survey-group-accordion depth-${item.depth}`}
+        data-structural-type={item.structuralType}
+      >
+        <button
+          type="button"
+          className="survey-group-header"
+          onClick={() => toggleGroup(item.beginRowId)}
+          aria-expanded={!isCollapsed}
+          aria-controls={`group-children-${item.beginRowId}`}
+          title={isCollapsed ? 'Expand group' : 'Collapse group'}
+        >
+          <span className="caret" aria-hidden="true">
+            {isCollapsed ? '▸' : '▾'}
+          </span>
+          <code>{item.name || '(unnamed)'}</code>
+          <span className="muted small">
+            {item.innerRowCount} row{item.innerRowCount === 1 ? '' : 's'} inside ({kindLabel})
+          </span>
+        </button>
+        {!isCollapsed && (
+          <div
+            id={`group-children-${item.beginRowId}`}
+            className="survey-group-children"
+          >
+            {item.children.map(renderItem)}
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -609,82 +693,7 @@ function SurveyTab(props: {
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
         <SortableContext items={visibleRowIds} strategy={verticalListSortingStrategy}>
-          <div className="survey-list">
-            {displayItems.map((item) => {
-              if (item.kind === 'group') {
-                const isCollapsed = item.collapsed;
-                return (
-                  <div key={item.startRowId} className="survey-group-accordion">
-                    <button
-                      className="survey-group-header"
-                      onClick={() => toggleGroup(item.name)}
-                      title={isCollapsed ? 'Expand group' : 'Collapse group'}
-                    >
-                      <span className="caret">{isCollapsed ? '▸' : '▾'}</span>
-                      <code>{item.name}</code>
-                      <span className="muted small">
-                        {item.rows.length - 2} row{item.rows.length - 2 === 1 ? '' : 's'} inside (begin group → end group)
-                      </span>
-                    </button>
-                    {!isCollapsed &&
-                      item.rows.map((row) => {
-                        const idx = form.survey.findIndex((r) => r.rowId === row.rowId);
-                        const earlierFields = form.survey
-                          .slice(0, idx)
-                          .filter((r) => !isStructural(r) && r.name)
-                          .map((r) => r.name);
-                        return (
-                          <SurveyRowCard
-                            key={row.rowId}
-                            row={row}
-                            locales={form.surveyHeaders.labelLocales}
-                            violations={violationsByRow.get(row.rowId) ?? []}
-                            fieldOptions={earlierFields}
-                            fieldChoices={fieldChoices}
-                            fieldKinds={fieldKinds}
-                            inputContactFields={props.inputContactFields}
-                            contextKeys={props.contextKeys}
-                            form={form}
-                            patch={patch}
-                            update={(u) => updateRow(row.rowId, u)}
-                            remove={() => removeRow(row.rowId)}
-                            moveUp={() => moveRow(row.rowId, -1)}
-                            moveDown={() => moveRow(row.rowId, 1)}
-                            onChangeType={() => openTypePickerFor(row.rowId)}
-                          />
-                        );
-                      })}
-                  </div>
-                );
-              }
-              const row = item.row;
-              const idx = form.survey.findIndex((r) => r.rowId === row.rowId);
-              const earlierFields = form.survey
-                .slice(0, idx)
-                .filter((r) => !isStructural(r) && r.name)
-                .map((r) => r.name);
-              return (
-                <SurveyRowCard
-                  key={row.rowId}
-                  row={row}
-                  locales={form.surveyHeaders.labelLocales}
-                  violations={violationsByRow.get(row.rowId) ?? []}
-                  fieldOptions={earlierFields}
-                  fieldChoices={fieldChoices}
-                  fieldKinds={fieldKinds}
-                  inputContactFields={props.inputContactFields}
-                  contextKeys={props.contextKeys}
-                  form={form}
-                  patch={patch}
-                  update={(u) => updateRow(row.rowId, u)}
-                  remove={() => removeRow(row.rowId)}
-                  moveUp={() => moveRow(row.rowId, -1)}
-                  moveDown={() => moveRow(row.rowId, 1)}
-                  onChangeType={() => openTypePickerFor(row.rowId)}
-                />
-              );
-            })}
-          </div>
+          <div className="survey-list">{displayItems.map(renderItem)}</div>
         </SortableContext>
       </DndContext>
 
@@ -720,8 +729,14 @@ function SurveyTab(props: {
   );
 }
 
-/** Group names we offer to collapse into an accordion. For v1: `inputs`. */
-const COLLAPSIBLE_GROUP_NAMES = new Set(['inputs']);
+/**
+ * Group `name`s that start collapsed by default in Full mode. `inputs` is
+ * the CHT plumbing block (`contact.*`/`user.*`-driven calculates) every
+ * deployed form carries — almost never edited, so the editor tucks it away.
+ * Other groups start expanded; the user can collapse any of them via the
+ * group header.
+ */
+const DEFAULT_COLLAPSED_GROUP_NAMES = new Set(['inputs']);
 
 /** True for select_one / select_multiple / rank rows (list-bearing types). */
 function isSelectRow(row: SurveyRow): boolean {
@@ -741,51 +756,136 @@ function prettyTypeLabel(rawType: string, appearance: string): string {
   return tile?.label ?? rawType;
 }
 
+/**
+ * Recursive display item — what the renderer walks. A `'row'` is a flat
+ * survey row at the given `depth`; a `'group'` wraps its children
+ * recursively and exposes the begin/end rowIds so drag/insert affordances
+ * can find both bounds. Plan: docs/plans/survey-groups-and-scaffold.md §A2.
+ */
 type DisplayItem =
-  | { kind: 'row'; row: SurveyRow }
-  | { kind: 'group'; name: string; rows: SurveyRow[]; startRowId: string; collapsed: boolean };
+  | { kind: 'row'; row: SurveyRow; depth: number }
+  | {
+      kind: 'group';
+      /** Group `name` (lifted from the begin row). Empty when the begin row
+       *  has no name — still renders, just without a label chip. */
+      name: string;
+      /** `begin group` vs `begin repeat` — the renderer styles them
+       *  differently and the "+ add inside" wording stays the same. */
+      structuralType: 'group' | 'repeat';
+      depth: number;
+      /** Stable id of the begin row — used as the collapse-state key and
+       *  React list key. */
+      beginRowId: string;
+      /** Stable id of the matching end row — needed by §A3 positional
+       *  insert (place new rows at endRow's index) and §A4 group-as-unit
+       *  drag (the begin..end slice is the unit). */
+      endRowId: string;
+      /** Number of rows strictly inside the group (excludes begin + end).
+       *  Used by the collapsed-state header summary. */
+      innerRowCount: number;
+      children: DisplayItem[];
+      collapsed: boolean;
+    };
+
+/** Walk a `DisplayItem[]` tree and return every row ID currently
+ *  visible (expanded). Collapsed groups contribute zero rows — the entire
+ *  begin..end subtree is hidden from the DndContext + sortable. */
+function flattenVisibleRowIds(items: DisplayItem[]): string[] {
+  const out: string[] = [];
+  for (const it of items) {
+    if (it.kind === 'row') {
+      out.push(it.row.rowId);
+    } else if (!it.collapsed) {
+      out.push(it.beginRowId);
+      out.push(...flattenVisibleRowIds(it.children));
+      out.push(it.endRowId);
+    }
+    // Collapsed groups contribute nothing — neither the begin/end pair
+    // nor the children — so a sortable can't accidentally drop a row
+    // inside a hidden group.
+  }
+  return out;
+}
 
 function buildDisplayItems(
   survey: SurveyRow[],
   mode: 'simple' | 'full',
-  collapsedGroups: Set<string>,
+  collapsedGroupIds: Set<string>,
   simpleHiddenIds: Set<string>,
 ): DisplayItem[] {
   if (mode === 'simple') {
+    // Simple mode stays flat — structural rows are hidden via
+    // simpleHiddenIds, and the user-facing rows render at depth 0.
     return survey
       .filter((r) => !simpleHiddenIds.has(r.rowId))
-      .map((row): DisplayItem => ({ kind: 'row', row }));
+      .map((row): DisplayItem => ({ kind: 'row', row, depth: 0 }));
   }
-  // Full mode: any begin/end group with a known collapsible name renders as a
-  // group item with an expand/collapse toggle.
+  // Full mode — recursive depth-aware walk. Every balanced begin…end becomes
+  // a nestable container; unbalanced surveys still walk safely (a stray
+  // begin's children list keeps growing until the survey ends, and the
+  // §A4 validator surfaces the imbalance via the page-header banner).
+  const ctx = { survey, collapsedGroupIds, index: 0 };
+  return walkChildren(ctx, 0);
+}
+
+interface WalkCtx {
+  survey: SurveyRow[];
+  collapsedGroupIds: Set<string>;
+  index: number;
+}
+
+/** Walk forward from `ctx.index`, collecting display items at `depth`,
+ *  until we hit a matching `end` (or run out of rows). The caller advances
+ *  past the `end` row itself. */
+function walkChildren(ctx: WalkCtx, depth: number): DisplayItem[] {
   const items: DisplayItem[] = [];
-  let i = 0;
-  while (i < survey.length) {
-    const r = survey[i]!;
-    const t = r.type.trim().toLowerCase();
-    if (t === 'begin group' && r.name && COLLAPSIBLE_GROUP_NAMES.has(r.name)) {
-      let depth = 1;
-      let j = i + 1;
-      while (j < survey.length && depth > 0) {
-        const nt = survey[j]!.type.trim().toLowerCase();
-        if (nt === 'begin group' || nt === 'begin repeat') depth++;
-        else if (nt === 'end group' || nt === 'end repeat') depth--;
-        if (depth === 0) break;
-        j++;
+  while (ctx.index < ctx.survey.length) {
+    const row = ctx.survey[ctx.index]!;
+    const t = row.type.trim().toLowerCase();
+    if (t === 'end group' || t === 'end repeat') {
+      // Don't consume the end row — the caller (a recursive ascent or the
+      // top-level loop) advances past it after the recursive return.
+      return items;
+    }
+    if (t === 'begin group' || t === 'begin repeat') {
+      const beginRow = row;
+      const structuralType: 'group' | 'repeat' = t === 'begin group' ? 'group' : 'repeat';
+      ctx.index++; // consume the begin row
+      const children = walkChildren(ctx, depth + 1);
+      // Either we hit a matching end (at ctx.index) or fell off the survey
+      // (unbalanced). In the balanced case advance past the end row; in
+      // the unbalanced case `endRow` is the last row we touched and we
+      // leave it to the §A4 validator to surface.
+      const endRow: SurveyRow | undefined = ctx.survey[ctx.index];
+      if (endRow) {
+        const endT = endRow.type.trim().toLowerCase();
+        if (endT === 'end group' || endT === 'end repeat') ctx.index++;
       }
-      const rows = survey.slice(i, j + 1);
       items.push({
         kind: 'group',
-        name: r.name,
-        rows,
-        startRowId: r.rowId,
-        collapsed: collapsedGroups.has(r.name),
+        name: beginRow.name,
+        structuralType,
+        depth,
+        beginRowId: beginRow.rowId,
+        endRowId: endRow ? endRow.rowId : beginRow.rowId,
+        innerRowCount: children.length,
+        children,
+        // Collapse-state convention: a group is collapsed by default iff
+        // its `name` is in DEFAULT_COLLAPSED_GROUP_NAMES (the CHT `inputs`
+        // plumbing block). The user-toggled set FLIPS that default —
+        // toggling an `inputs` group EXPANDS it, toggling a plain group
+        // COLLAPSES it. Storing only the flip means a freshly-added
+        // group keeps the default behavior with no Set entry needed.
+        collapsed: (() => {
+          const defaultCollapsed = DEFAULT_COLLAPSED_GROUP_NAMES.has(beginRow.name);
+          const userToggled = ctx.collapsedGroupIds.has(beginRow.rowId);
+          return userToggled ? !defaultCollapsed : defaultCollapsed;
+        })(),
       });
-      i = j + 1;
-    } else {
-      items.push({ kind: 'row', row: r });
-      i++;
+      continue;
     }
+    items.push({ kind: 'row', row, depth });
+    ctx.index++;
   }
   return items;
 }
