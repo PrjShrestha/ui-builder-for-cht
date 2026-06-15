@@ -77,6 +77,18 @@ test('Bucket A — numeric literal classifies as single', () => {
   }
 });
 
+test('Bucket A — canonical Age-from-DOB template round-trips byte-stable as single', () => {
+  // The single template Tier 1 ships in the "Common calculation" gallery
+  // (plan v0.2 §3). The recipe is intentionally a `'single'`-shape
+  // expression so re-edit lands the user back in the Single-value panel.
+  // Bucket A pins byte-identity through the §3.1 self-check.
+  const src = 'floor( difference-in-months( ${dob}, today() ) div 12 )';
+  const parsed = parseCalculation(src);
+  assert.equal(parsed.shape, 'single');
+  assert.equal(parsed.otherwise, src);
+  assert.equal(serializeCalculation(parsed), src);
+});
+
 /* ============================== Bucket B ================================ */
 
 test('Bucket B — tight-spacing if-chain demotes to raw (fact 1: serializer canonicalizes spacing)', () => {

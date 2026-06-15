@@ -1082,7 +1082,7 @@ function ExpressionField(props: {
       )}
       {showCalcBuilder && props.fieldOptions && (
         <CalculationBuilder
-          title="Decision table — calculation"
+          title="Calculation builder"
           value={props.value}
           fieldOptions={props.fieldOptions}
           onCancel={() => setShowCalcBuilder(false)}
