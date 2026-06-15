@@ -6,7 +6,7 @@ Planner-locked, developer-ready. Supersedes docs/proposals/condition-builder.md.
 
 # Plan: Survey condition builder — broader choices + chainable + grouped expressions
 
-**Version:** v0.2 — 2026-06-09
+**Version:** v0.3 — 2026-06-09
 **Status:** PLANNER-LOCKED. Ready to hand to a developer session.
 **Supersedes:** `docs/proposals/condition-builder.md` (drafted 2026-06-09, "not yet planner-locked") and plan v0.1 (2026-06-09). This plan corrects the proposal's factual defects AND the empirically-verified round-trip defects the adversarial reviewers found in v0.1 (serializer whitespace normalization, the `parseRelevant` short-circuit on mixed combinators, `setExtra` delete-on-empty, the n===1 op-dropdown contradiction, the `selected()` prose gap, and line-anchor errors). Where this plan and the proposal/v0.1 disagree, **this plan wins**.
 
@@ -411,3 +411,201 @@ pnpm --filter @cht-ui/client test:e2e        # happy + cancel-safety + group + n
 5. One Playwright test: `sex` value cell is a populated dropdown.
 
 Validate Slice 1 with the §7 Slice 1 commands (fresh-clone runnable). Only after Slice 1 is green (and contains zero parser changes) begin Slice 2, sequencing: parser self-check + `parseRelevantGrouped`/`serializeAnyParsed` + round-trip tests → flat chaining (with legacy path deleted) → group affordance.
+
+---
+
+## Addendum v0.3 (2026-06-09) - type-aware field/op filtering + natural-language operator labels
+
+> **Status:** PLANNER-LOCKED, developer-ready. Appends to plan v0.2. Both features are **UI-only**, land in **Slice 2**, and touch **zero** XLSForm bytes and **zero** parser/serializer signatures. They are pure render/affordance changes plus one new client-side-consumed pure utility.
+>
+> **Anchor correction (read first):** the v0.2 line numbers in §4 are stale — the Slice 2 builder has since been implemented, so the current tree differs. The REAL anchors used by this addendum, verified against the working tree:
+> - `buildFieldChoices` — `client/src/ui/FormEditor.tsx:1077-1100` (regex `select_one|select_multiple` at **line 1094**).
+> - `earlierFields` computation (drops type via `.map(r => r.name)`) — `client/src/ui/FormEditor.tsx:520-523` and `547-550`.
+> - `SurveyRowCard` props incl. `fieldOptions: string[]` / `fieldChoices` — `FormEditor.tsx:679`, with the `<UnifiedConditionBuilder>` JSX invocation at **`FormEditor.tsx:789-794`** (`fieldOptions` at `790`, `fieldChoices` at `791`). (NOTE: the `1034-1050` range is the `RelevantRuleBuilder`/`CalculationBuilder` invocation inside `ExpressionField`, NOT `UnifiedConditionBuilder` — the v0.2-era attribution was wrong and is corrected here.)
+> - `UnifiedConditionBuilder` props `fieldOptions`/`fieldChoices` — `FormEditor.tsx:1178-1179`.
+> - Field `<select>` render — `FormEditor.tsx:1331-1335`.
+> - Op `<select>` render (raw symbol/XPath labels) — `FormEditor.tsx:1337-1363` (option labels at `1344-1362`).
+> - Value-cell ternary (dropdown vs `<input>`) — `FormEditor.tsx:1364-1387`.
+> - `CONNECTOR_LABELS` — `FormEditor.tsx:1125`; `COMPARISON_PROSE` — `1132-1139`; `clauseToProse` — `1141-1150`.
+> - `ClauseOp` union (the closed op set, **exactly 11 values**) — `shared/src/conditionBuilder/conditionReducer.ts:44-55`.
+> - `QUESTION_TYPES` / `STRUCTURAL_TYPES` / `isStructural` — `shared/src/xlsform/types.ts:104-134`. `SurveyRow.type` is a bare `string` (`types.ts:21`).
+> - Contact scan stores choice values ONLY (`Record<string,string[]>`, no type) — `server/src/routes/project.ts` scan (no change in this addendum).
+
+### 1. Design decisions (locked — do not re-decide)
+
+| # | Question | Decision | Rationale |
+|---|----------|----------|-----------|
+| A1 | Soft-filter vs hard-hide? | **SOFT only.** Type-incompatible fields stay in the DOM and remain selectable; they are visually de-emphasized + carry a "less common for this check" marker. A persistent **"Show all fields"** toggle is always rendered while filtering is active. The currently-selected field and any rehydrated saved field/op pairing always render intact. | Bhishan + Lal + Lorena + Developer unanimous dealbreaker: hard-hide is the cold-start abandonment trigger and strands mis-classified, `calculate`, contact-injected, and `${other_field}` fields. A wrong heuristic must never remove a real field with no recovery. |
+| A2 | Contact-injected & untypeable fields | **Bucket = `unknown` → always-pass.** No server scan change. Contact fields (no type metadata), `calculate` (no inherent type), `${other_field}` reference values, and any unrecognized/compound type fall into `unknown`, which is compatible with **every** operator and is never de-emphasized. | Server scan captures choice values only; guessing a contact field's type is a Developer/Lorena reject. `unknown` is a first-class always-pass bucket — graceful degradation by construction. Contact `select` fields are still detectable as `choice` via the presence of `fieldChoices[name]` (the existing Slice 1 signal); see §5 for the explicit choice-upgrade rule — `selected`/`selected-not` then narrow to them. |
+| A3 | Single source of truth for op↔type | **One exported `const OP_FIELD_KINDS: Record<ClauseOp, FieldKind[]>`** keyed by the real `ClauseOp` union (`conditionReducer.ts:44-55`). Field-first narrowing is **DERIVED** from this same const (`opsTypicalForKind(kind)` filters `OP_FIELD_KINDS`), never a parallel table. `Record<ClauseOp,...>` makes adding a future op a compile error until mapped. | Developer dealbreaker: two copies drift. TS `Record` over the closed union is the proof gate. |
+| A4 | Field-kind classifier | **One exported pure fn `inferFieldKind(type: string): FieldKind`** in `shared/src/xlsform/types.ts` (beside `isStructural`). It reuses the **existing** `select_one\|select_multiple` suffix regex (factored out of `buildFieldChoices:1094`) — no third copy. Co-domain is a closed enum `'text'\|'numeric'\|'date'\|'choice'\|'geo'\|'unknown'`. | Developer dealbreaker: no third regex copy; classifier domain pinned to the bare `SurveyRow.type` string, co-domain pinned to a closed enum, single-sourced. |
+| A5 | Label changes = display-only? | **Yes — render layer only.** Op-dropdown option **labels** become natural language; the option **`value`** stays the canonical `ClauseOp` (one of exactly 11 values). Connector/comparison microcopy reuses the EXISTING `COMPARISON_PROSE`/`CONNECTOR_LABELS` consts (no fourth microcopy source). `clauseToRule`/`serializeAnyParsed` never see a label string. | Grounding bundle 4 proves zero serialization path touches labels; `Clause.op` is the 11-value union. Pure rename, no round-trip risk. |
+| A6 | Marker = color alone? | **No. Labeled affordance, delivered via `<optgroup label="…">` section headings.** Because native `<option>` cannot reliably host rich a11y markup (`title`/`aria-label` on a bare `<option>` are not surfaced by screen readers, and a `<span>` badge cannot nest inside an `<option>`), the accessible affordance IS the `<optgroup>` section-heading text ("Typical for this check" vs "Other fields"). It is text-only, greyscale-legible, and never color-only. Two states only ("typical" vs "show-all-anyway"). Per-row `title`/`aria-label` badges are NOT used unless a custom listbox is adopted (deferred, P2). Severity-graded markers deferred (P2). | Lal dealbreaker: color alone fails a11y; the `<optgroup>` text heading satisfies the greyscale/non-color requirement and is actually deliverable with the chosen native-`<select>` approach. |
+| A7 | Filtering mutates draft state? | **Never.** Filtering changes the option **list ordering / grouping / styling only**. It must not mutate `state.draft.field` or `state.draft.op`, must not auto-clear a chosen field when the op changes class (or vice versa), and rehydration from `parseRelevantGrouped` bypasses the filter entirely. | Developer dealbreaker: silent rewrite of user intent / desync from a rehydrated saved expression. |
+
+### 2. Operator → compatible field-kind map (FULL taxonomy)
+
+`FieldKind` co-domain: `text | numeric | date | choice | geo | unknown`. `unknown` is compatible with EVERY op (always-pass) and is therefore **omitted from the per-op lists below** — it is injected at filter time as universally compatible. **Crucially, the de-emphasis predicate treats ANY `FieldKind` value that is absent from an op's list exactly like `unknown` (always-pass).** This means a future 7th `FieldKind` (e.g. `media`) not listed in any `OP_FIELD_KINDS` entry will be always-pass, never silently de-emphasized — the never-de-emphasize contract is keyed to "absent from the op's list ⇒ pass", not to the literal string `'unknown'`. The map is the single source of truth (`OP_FIELD_KINDS: Record<ClauseOp, FieldKind[]>`).
+
+**`OP_FIELD_KINDS` (op → kinds the op is "typical" for):**
+
+| `ClauseOp` value | Dropdown label (§4) | Typical field kinds |
+|---|---|---|
+| `=` | `equals` | text, numeric, date, choice |
+| `!=` | `is not` | text, numeric, date, choice |
+| `>` | `is more than` | numeric, date |
+| `<` | `is less than` | numeric, date |
+| `>=` | `is at least` | numeric, date |
+| `<=` | `is at most` | numeric, date |
+| `selected` | `includes` | choice |
+| `selected-not` | `does not include` | choice |
+| `not` | `is not selected` | text, numeric, date, choice, geo |
+| `ref` | `has an answer` | text, numeric, date, choice, geo |
+| `today` | `today` | *(field-independent — see note)* |
+
+`not` and `ref` are deliberately **broad and identical** — the answered/negation check applies to ANY answerable field (text, numeric, date, choice, geo). (`not` was previously mis-listed as `choice, text, unknown`, which wrongly de-emphasized real numeric/date/geo fields; it is now corrected to the full answerable set, matching the `ref` contract and §6's broadness test.) `today` takes no field operand, so when `op==='today'` the field `<select>` is `disabled` (already the case via `COND_OPS_NEED_FIELD` at `FormEditor.tsx:1112-1114`, which excludes `today`); no filtering applies.
+
+**`inferFieldKind(type: string)` → kind, EXHAUSTIVE over `QUESTION_TYPES` (`types.ts:104-122`) + `STRUCTURAL_TYPES` + compound + unknown:**
+
+| `SurveyRow.type` | `FieldKind` |
+|---|---|
+| `text`, `string`, `barcode`, `note`, `hidden` | `text` |
+| `integer`, `decimal` | `numeric` |
+| `date`, `time`, `dateTime` | `date` |
+| `select_one`, `select_multiple`, **`select_one X`**, **`select_multiple X`** (suffix regex, reuse `:1094`) | `choice` |
+| `geopoint` | `geo` |
+| `calculate` | `unknown` (no inherent type — always-pass; choice-upgraded by `fieldChoices`, see §5) |
+| `image`, `audio`, `video` | `unknown` (no comparison semantics — always-pass, not de-emphasized) |
+| `begin group`/`end group`/`begin repeat`/`end repeat` | never reach the builder (`isStructural` filter at `:522`/`:549`); classifier returns `unknown` defensively |
+| any unrecognized / contact-injected (no type) / empty | `unknown` (explicit fall-through — Lorena's "no wrong bucket" gate) |
+
+A new `QUESTION_TYPES` entry that the switch doesn't handle falls through to `unknown` (safe) AND must be caught by the exhaustiveness test (§6).
+
+### 3. Behavior spec
+
+**Two-way soft narrowing (both derive from `OP_FIELD_KINDS`):**
+
+- **Op-first (op narrows fields):** when `state.draft.op` is set, compute `typicalKinds = OP_FIELD_KINDS[op]`. For each field in `props.fieldOptions`, look up `kind = fieldKinds[name]` (see plumbing in §5; `unknown` if absent). A field is **typical** iff `kind === 'unknown'` OR `!typicalKinds.includes(kind)` is false — i.e. typical iff `kind === 'unknown'` OR `typicalKinds.includes(kind)`. Any kind absent from `typicalKinds` and not equal to `'unknown'` is the only "atypical" case; any kind that is simply not enumerated anywhere (future enum growth) is treated as `unknown` and passes. Typical fields render in the "Typical for this check" `<optgroup>` first; non-typical fields render in the "Other fields" `<optgroup>` below, still selectable. The selected/rehydrated field always renders. `choice` fields are detected via `kind==='choice'` (covers contact-injected selects through the §5 `fieldChoices` upgrade).
+- **Field-first (field narrows operators):** when `state.draft.field` is set and `state.draft.op` is empty/being chosen, compute `kind = fieldKinds[field]`. Ops where `OP_FIELD_KINDS[op].includes(kind) || kind==='unknown'` (or `kind` absent from every list) are "typical" and grouped first in the op `<select>` via `<optgroup>`; the rest stay reachable in an "Other operators" `<optgroup>`. `unknown`/`${ref}` fields surface ALL ops.
+- Both directions are **reversible and non-trapping by construction.** The op-list narrowing is **ORDERING/grouping-only via `<optgroup>`** — all 11 ops are ALWAYS in the DOM and selectable, so it needs no escape-hatch toggle; **a custom listbox for the op picker is explicitly forbidden** (it could hide options). The field list gets the explicit "Show all fields" toggle. Picking a field the current op would de-emphasize auto-relaxes the field list to show-all so an existing selection is never stranded.
+
+**"Show all fields" toggle:** a persistent, discoverable control rendered adjacent to the field `<select>` whenever filtering is active (not hover-only, not in a menu). Local UI state (`const [showAllFields, setShowAllFields] = useState(false)`), NOT reducer state — it must never enter `BuilderState` or any serialization path. When on, no grouping/de-emphasis is applied (flat list). If the rehydrated/selected field is non-typical for the current op, the toggle defaults to **on** so the saved field is visible immediately. (There is intentionally NO `showAllOps` toggle: the op list is `<optgroup>`-grouped only and never hides an op.)
+
+**Accessible compatibility marker:** delivered as the `<optgroup label="…">` section heading on both the field and op pickers ("Typical for this check" / "Other fields"; "Common operators" / "Other operators"). The heading text carries the meaning, is greyscale-legible, and is never color-only. No per-`<option>` `title`/`aria-label` badge is claimed for the native-`<select>` path (those are not reliably surfaced and cannot nest markup); the `<optgroup>` heading is the affordance.
+
+**Contact-injected fields (no type):** classified `unknown` → always-pass under every op, never de-emphasized, never hidden. **Choice-upgrade (single signal):** if `fieldChoices[name]` is non-empty (Slice 1 signal), the field's kind is upgraded to `choice` regardless of `inferFieldKind(row.type)` (see §5), so `selected`/`selected-not` keep it typical and the value cell renders the dropdown; otherwise it falls back to the existing free-text `<input>` (`:1364-1387`) unchanged. **Scope note:** this addendum's contact-field handling applies to contact fields that ALSO appear as survey rows — the real-world CHT `inputs/contact/*` injection pattern, which the fixture models (`sex` is a survey `calculate` row fed from `../inputs/contact/sex`). Contact fields that exist ONLY in `fieldChoices` with no corresponding survey row are NOT in `fieldOptions` (`earlierFields` is built from `form.survey` only at `:520-523`/`:547-550`) and therefore are not selectable in the field `<select>` — that is existing pre-addendum behavior, left unchanged to honor the no-signature-break gate, and documented as a known limitation (§7). Documented known limitation: contact text/integer/date fields stay `unknown` (free-text, all ops) this release — no server `contactFieldTypes` scan (deferred, §7).
+
+**Raw / self-check consistency (Lorena gate):** the visual builder only ever writes a canonical `ClauseOp`; the raw-text editor still accepts any hand-typed op. If a user hand-edits raw text using an op the filter would de-emphasize, the existing §3.1 parse→reserialize self-check routes anything outside the grammar to `isRawFallback` — so the filter (a view) never causes a silent op mismatch. Filtering adds NO new save behavior.
+
+### 4. Natural-language label table (DISPLAY-ONLY — serialized XPath unchanged)
+
+Replace the raw symbol / XPath-leaking option labels at `FormEditor.tsx:1344-1362`. The `<option value=…>` (the canonical `ClauseOp`) is **unchanged**; only the visible text changes. Where an op also has a `COMPARISON_PROSE` entry, the dropdown MUST read from that same const so the dropdown and the `This row shows when:` preview never drift (single microcopy source — Lal/Developer must-have).
+
+| `ClauseOp` value (unchanged) | Current label (`:1345-1361`) | New friendly label | Source const |
+|---|---|---|---|
+| `=` | `= value` | **`equals value`** (`is` in preview) | `COMPARISON_PROSE['=']` = `is` |
+| `!=` | `≠ value` | **`is not value`** | `COMPARISON_PROSE['!=']` = `is not` |
+| `>` | `> value` | **`is more than value`** | `COMPARISON_PROSE['>']` |
+| `<` | `< value` | **`is less than value`** | `COMPARISON_PROSE['<']` |
+| `>=` | `≥ value` | **`is at least value`** | `COMPARISON_PROSE['>=']` |
+| `<=` | `≤ value` | **`is at most value`** | `COMPARISON_PROSE['<=']` |
+| `selected` | `includes value` | **`includes value`** (keep) | matches `clauseToProse` `includes` |
+| `selected-not` | `does not include value` | **`does not include value`** (keep) | matches `clauseToProse` |
+| `not` | `not(field)` ← XPath leak | **`is not selected`** | new entry (see note) |
+| `ref` | `just ${field}` ← XPath leak | **`has an answer`** | new entry |
+| `today` | `today()` ← XPath leak | **`today`** | new entry |
+
+Implementation: extend with `OPERATOR_LABELS: Record<ClauseOp, string>` derived from `COMPARISON_PROSE` for the six comparisons plus the five non-comparison entries, OR keep the comparison labels reading `COMPARISON_PROSE` directly and add literal strings for `selected`/`selected-not`/`not`/`ref`/`today`. Either way ONE shared vocabulary. The optgroup category labels (`comparison`/`select_multiple`/`logic`/`reference`) may stay or be relabeled to plain language (`Compare a value`/`Multi-select`/`Other`); category labels are cosmetic and serialization-irrelevant. **No XPath token (`selected(`, `not(`, `today()`, `${field}`, `div`, `floor`) may appear in any option the user picks.** `today()` may remain a code chip in the PREVIEW per v0.2 §9, but the DROPDOWN option is `today`.
+
+Serialization invariant (proven, not asserted): `clauseToRule`/`serializeAnyParsed` read `Clause.op` (the option `value`), never the label text. Changing any label cannot move a byte of XPath. Guarded by the §6 relabel test.
+
+### 5. File-by-file deltas (REAL anchors)
+
+**`shared/src/xlsform/types.ts`** (modify) — add the classifier next to `isStructural` (`:131-134`).
+- Factor the suffix regex into an exported helper, e.g. `export const SELECT_TYPE_RE = /^(select_one|select_multiple)\s+(\S+)/i;` (then `buildFieldChoices:1094` imports it instead of re-declaring — kills the duplicate).
+- `export type FieldKind = 'text' | 'numeric' | 'date' | 'choice' | 'geo' | 'unknown';`
+- `export function inferFieldKind(type: string): FieldKind` per the §2 table (trim+lowercase like `isStructural`; check `SELECT_TYPE_RE` and bare `select_one`/`select_multiple` → `choice`; explicit `default: unknown`). **~25 LOC.** Re-exported automatically via `shared/src/index.ts`. NOTE: lands in `shared` but is consumed only client-side; it touches NO parser/serializer — needs its own `node --test` case (§6).
+
+**`shared/src/conditionBuilder/conditionReducer.ts`** (modify — ADD const only, no logic change) — beside `ClauseOp` (`:44-55`).
+- `export const OP_FIELD_KINDS: Record<ClauseOp, FieldKind[]> = { … }` per §2 (with `not` and `ref` both = `['text','numeric','date','choice','geo']`). Import `FieldKind` from `../xlsform/types.js`.
+- Add derived helpers as PURE selectors (`unknown` short-circuits; **a kind absent from the op's list is treated as always-pass**, identical to `unknown`):
+  - `export function fieldsTypicalForOp(op: ClauseOp, kind: FieldKind): boolean` → `kind === 'unknown' || OP_FIELD_KINDS[op].includes(kind)` returns `true`; for a kind not in the list AND not `'unknown'`, returns `false` only if the kind is one of the enumerated atypical kinds — implemented as: typical iff `kind === 'unknown' || OP_FIELD_KINDS[op].includes(kind) || !ALL_LISTED_KINDS.has(kind)` where `ALL_LISTED_KINDS` is the union of every kind appearing in any `OP_FIELD_KINDS` value. This guarantees a future unlisted kind passes.
+  - `export function opsTypicalForKind(kind: FieldKind): ClauseOp[]` (reads `OP_FIELD_KINDS`; `unknown` / unlisted kind → all 11 ops).
+- **DO NOT** wire these into `clauseToRule`/`serializeBuilderState`/`serializeAnyParsed` — they are pure selectors for the UI. **~40 LOC.**
+
+**`client/src/ui/FormEditor.tsx`** (modify).
+- **Build a `fieldKinds` map** mirroring `fieldChoices`. In the `useMemo` that builds `fieldChoices` (the `buildFieldChoices` consumer), also build `fieldKinds: Record<string,FieldKind>` from `form.survey` rows with the choice-upgrade rule: `fieldKinds[name] = (fieldChoices[name]?.length ? 'choice' : inferFieldKind(row.type))`. This makes contact-injected `select`s (e.g. `sex`, a `calculate` row that carries `fieldChoices['sex']`) classify as `choice`, satisfying the §3/§6 "select narrows to choice incl. sex" gate; without the upgrade `sex` would be `unknown` and the e2e would fail. Also seed `choice` entries for any name present in `fieldChoices` but absent from `form.survey` (defensive; such names are not in `fieldOptions` so they won't render, but the map stays consistent). Names absent from both → treated `unknown` at lookup (always-pass). This avoids any change to the `fieldOptions: string[]` signature or the `earlierFields.map(r=>r.name)` plumbing at `:520-523`/`:547-550` — Lorena's "no signature break across consumers" gate. Pass `fieldKinds` down through `SurveyRowCard` props (`:679`) → the `<UnifiedConditionBuilder>` invocation (`:789-794`) → `UnifiedConditionBuilder` props (`:1178-1179`), exactly parallel to `fieldChoices`.
+- **Op-dropdown labels** (`:1344-1362`): replace the option text per §4, reading `COMPARISON_PROSE`/`OPERATOR_LABELS`. Option `value`s unchanged. Keep all 11 ops in the DOM; group via `<optgroup>` only — no custom listbox.
+- **Field `<select>`** (`:1331-1335`): replace the flat `props.fieldOptions.map` with a typical/atypical split using `fieldsTypicalForOp(state.draft.op, fieldKinds[n] ?? 'unknown')`. Render via two `<optgroup>`s ("Typical for this check" / "Other fields") when an op is set and `!showAllFields`; flat when `showAllFields` or no op chosen. The selected field always renders regardless of bucket. Add the "Show all fields" toggle adjacent.
+- **Op `<select>`** field-first ordering (`:1337-1363`): when `state.draft.field` set, group ops via `opsTypicalForKind(fieldKinds[field] ?? 'unknown')` into "Common operators" / "Other operators" `<optgroup>`s; all 11 ops stay in the DOM and reachable. No `showAllOps` toggle needed (grouping-only).
+- Local `useState` for `showAllFields` (NOT reducer state). No change to `setDraft`, `serializeBuilderState`, or any write path. **~70 LOC.**
+
+**`client/src/state/store.ts`** — **NO change** (no new payload field; `fieldKinds` is derived client-side from `form.survey` + `fieldChoices`, both already in the store).
+
+**`server/src/routes/project.ts`** — **NO change.** The `contactFieldTypes` EXTENDED scan is explicitly **deferred** (§7); the MINIMAL `unknown`→always-pass + `fieldChoices` choice-upgrade path needs no server work. (All four personas accept deferral.)
+
+### 6. Test additions
+
+**Unit — `shared/src/xlsform/types.test.ts`** (new or extend) for `inferFieldKind`:
+- **EXHAUSTIVE over `QUESTION_TYPES`:** iterate `QUESTION_TYPES` (`types.ts:104-122`) and assert `inferFieldKind(t)` returns a `FieldKind` that is one of the SIX enum members (`text|numeric|date|choice|geo|unknown`) — never `undefined` and never an out-of-enum value. Pin the co-domain: assert the returned value is a member of a literal `['text','numeric','date','choice','geo','unknown']` set, so adding a 7th `FieldKind` without updating the classifier+map fails here. Assert each `QUESTION_TYPES` member maps to its §2 bucket explicitly.
+- Compound: `inferFieldKind('select_one sex') === 'choice'`, `'select_multiple symptoms' === 'choice'`.
+- Fall-through: `inferFieldKind('weird_custom_type') === 'unknown'`, `inferFieldKind('') === 'unknown'`, `inferFieldKind('calculate') === 'unknown'`.
+- Structural strings → `unknown` (defensive). **~45 LOC.**
+
+**Unit — `shared/src/conditionBuilder/conditionReducer.test.ts`** (extend) for the map:
+- **`OP_FIELD_KINDS` completeness pinned to exactly 11:** iterate a literal list of the 11 `ClauseOp` values (`['=','!=','>','<','>=','<=','selected','selected-not','not','ref','today']`); assert the list length is `11` and that each has a defined array entry — guards the `Record<ClauseOp,...>` completeness AND fails if a future op is added (or the count drifts).
+- `fieldsTypicalForOp(op, 'unknown') === true` for ALL 11 ops (always-pass contract).
+- **Always-pass-for-unlisted-kind contract:** for EVERY `FieldKind` value NOT listed in ANY `OP_FIELD_KINDS` entry (compute the complement of the union of all listed kinds; today this is empty besides `unknown`, but the test must also pass a synthetic/cast unlisted kind), assert `fieldsTypicalForOp(op, kind) === true` for all ops. This protects the never-de-emphasize contract against future `FieldKind` enum growth, not just future `QUESTION_TYPES` growth.
+- `selected`/`selected-not` typical only for `choice` (and `unknown`); not for `text`/`numeric`/`date`/`geo`.
+- `>`/`<`/`>=`/`<=` typical for `numeric`/`date`/`unknown`, not `text`/`choice`/`geo`.
+- **`not` and `ref` broadness:** assert `fieldsTypicalForOp('not', k)` AND `fieldsTypicalForOp('ref', k)` are `true` for `k` in `numeric`, `date`, `geo`, `text`, `choice` (mirrors the §2 broad contract; catches the old `not`-too-narrow bug).
+- `opsTypicalForKind('date')` includes the comparison ops; `opsTypicalForKind('unknown')` returns all 11. **~55 LOC.**
+
+**Unit — relabel round-trip guard** (extend `conditionReducer.test.ts`): build a `BuilderState` with each op, run `serializeBuilderState`/`serializeAnyParsed`, assert the produced XPath uses canonical tokens (`=`, `selected(`, `not(`, `${…}`, `today()`) and is **identical regardless of label const values** — i.e. assert `Clause.op` is one of the 11 canonical values and that no label string appears in the serialized output. The existing `relevantParser.chain.roundtrip.test.ts` and `conditionReducer.test.ts` MUST stay green untouched (they make no label assumptions).
+
+**Fixture extension** (`client/tests/fixtures/mini-config`): the committed `forms/app/pregnancy.xlsx` already carries a `date` field (`lmp_date`), the contact-injected `sex` (a `calculate` row fed from `../inputs/contact/sex`, upgraded to `choice` via `fieldChoices`), and a `select_multiple danger_signs`. **Add at least one `integer`/`text` field** alongside these so the date-/numeric-check e2e has a clearly-atypical field to push to "Other fields". Regenerate via `client/tests/fixtures/build-mini-config.mjs` (already modified per git status) — add the row there so it stays reproducible on a fresh clone.
+
+**e2e — `client/tests/condition-builder.spec.ts`** (extend; mini-config fixture, no env export):
+- **Op-first date filtering:** pick the `is more than` op → assert a date/numeric field appears in the "Typical for this check" group and a text/name field appears under "Other fields", and that the text field is STILL selectable (selecting it succeeds).
+- **Field-first narrowing:** pick the `lmp_date` date field → assert comparison ops are grouped under "Common operators"; assert all 11 ops remain in the DOM.
+- **Show-all escape hatch (field list only):** with a filter active, click "Show all fields" → assert previously-deprioritized fields render in the flat list. (No op-list toggle is expected; op grouping is non-hiding.)
+- **select op narrows to choice:** pick `includes` → field list "Typical" group contains the `choice` fields incl. contact-injected `sex` (verifying the §5 choice-upgrade) and `danger_signs`; non-choice fields still reachable under "Other fields".
+- **Unknown always-pass:** a `calculate` field with NO choices (e.g. `_id`) stays selectable under a numeric-only op like `>` (assert present in the field list, in either group).
+- **Relabeled ops, byte-identical save:** build `${sex} = 'female' and ${lmp_date} != ''`-style expression via the relabeled dropdown (`equals`, etc.), save, read `row.extras['relevant']` via API → assert canonical XPath identical to the v0.2 happy-path expectation (no label leakage). **~95 LOC.**
+
+**Gates:** all existing shared + e2e suites stay green (the shared suite is run via `pnpm --filter @cht-ui/shared test`; cite the live total from that run rather than a hard-coded count — the prior "85/104" figures were stale, the tree currently has ~131 `test()` calls across 11 `*.test.ts` files); `pnpm typecheck` clean on all `ParsedExpression` consumers (proves nothing leaked into the parser); smoke `Round-trip stable: YES` on the fixture; no new lint warnings on changed files.
+
+### 7. Persona acceptance gates
+
+**Bhishan (PO/PM):**
+- Soft-filter only: every field in `fieldOptions` stays selectable; "Show all fields" always one click away; a field he knows exists is findable in seconds.
+- No XPath in any dropdown he touches (`not(`, `today()`, `${field}`, `div` all gone → `is not selected`, `today`, `has an answer`).
+- Prose preview reflects the relabeled/filtered picks live as sentences (comparisons + `selected()`/`not()`), unchanged from v0.2 §9.
+- Filtering never changes what gets saved.
+
+**Lal (Designer):**
+- SOFT-filter + persistent discoverable "Show all fields" escape hatch (field list) + auto-relax when a selection would be hidden; op list is grouping-only and never hides an op; never hard-hide.
+- Marker is the `<optgroup>` section-heading text (greyscale-legible, never color-only); single binary state; no undeliverable per-`<option>` badge claim.
+- Dropdown labels are plain language from the SAME microcopy source as the preview (`COMPARISON_PROSE`) — zero drift; no cute labels; no XPath in the selectable option.
+- Two-way narrowing reversible/non-trapping: field list via toggle, op list via non-hiding `<optgroup>`.
+- `${other_field}` + untypeable contact fields = `unknown` = fully permissive.
+
+**Lorena (QA):**
+- `inferFieldKind` + `OP_FIELD_KINDS` are single-sourced pure exports with EXHAUSTIVE unit tests over `QUESTION_TYPES` (+ compound + unknown fall-through) and co-domain pinning; a new unmapped type/kind fails the test, never silently mis-buckets.
+- `unknown`/compound/contact bucket → show-all, asserted explicitly; unlisted-`FieldKind` always-pass asserted.
+- `not`/`ref` broadness over all answerable kinds asserted (catches the old `not` mis-bucket).
+- Soft-filter e2e proves the field escape hatch reveals deprioritized fields; both narrowing directions tested; `selected`-narrows-to-choice (incl. contact `sex`) tested via the `fieldChoices` choice-upgrade.
+- Relabel guard test proves byte-identical serialized XPath; existing shared + e2e suites stay green (live count cited from `pnpm --filter @cht-ui/shared test`, not a stale hard number); typecheck clean on all consumers.
+- Contact-field typing GUESSED nowhere (no server scan); `choice` comes only from the existing `fieldChoices` signal; documented `unknown`→show-all limitation + contact-only-not-injected fields out of `fieldOptions` by existing design.
+- Fixture carries a date + text/integer field; e2e fresh-clone runnable, no `W:\` dependency, no env export.
+
+**Developer (correctness owner):**
+- One `OP_FIELD_KINDS: Record<ClauseOp, FieldKind[]>` keyed by the real 11-value union; field-first DERIVED from it (no parallel table); `not`/`ref` broad and consistent with their prose.
+- One `inferFieldKind` reusing the factored-out `SELECT_TYPE_RE` (no third regex copy); `unknown` AND any unlisted kind are first-class always-pass (de-emphasis predicate keyed to "absent from op's list", not the literal `'unknown'`).
+- Filtering mutates the option LIST/grouping only — never `state.draft.field`/`op`; rehydration bypasses the filter; selected field always renders; op picker is native `<select>` + `<optgroup>` (no hiding listbox).
+- `fieldKinds` derived client-side from `form.survey` + `fieldChoices` (choice-upgrade), no `fieldOptions`/`earlierFields` signature change.
+- Zero change to `parseRelevant`/`serializeRelevant`/`parseRelevantGrouped`/`serializeAnyParsed` signatures or `ClauseOp` semantics; labels never enter `clauseToRule`. `inferFieldKind` lives in `shared/types.ts` (own `node --test`) but touches no parser; `OP_FIELD_KINDS` + selectors in the reducer module as pure UI helpers.
+
+### Version bump
+
+**v0.2 → v0.3.** Adds two UI-only Slice-2 features: (1) type-aware **soft** field/op filtering driven by a single shared `inferFieldKind` + `OP_FIELD_KINDS` map (always-pass `unknown` AND any unlisted-kind bucket, `fieldChoices` choice-upgrade for contact selects, persistent "Show all fields" escape hatch on the field list, non-hiding `<optgroup>` grouping on the op list, accessible `<optgroup>`-heading marker, never hard-hide, never mutates draft or save); (2) natural-language operator-dropdown labels sourced from the existing `COMPARISON_PROSE`/`CONNECTOR_LABELS` consts (display-only, serialized XPath byte-unchanged). No parser/serializer/server changes; `contactFieldTypes` server scan and date-op/numeric-vs-string sub-typing explicitly deferred. Anchors corrected to the post-Slice-2 tree (incl. `<UnifiedConditionBuilder>` at `:789-794`, not the `1034-1050` `RelevantRuleBuilder` range).
