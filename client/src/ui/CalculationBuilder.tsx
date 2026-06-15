@@ -28,7 +28,12 @@ import {
   serializeCalculation,
   parseRelevant,
   serializeRelevant,
+  recognizeReference,
+  emitContactInput,
+  emitContactSummary,
+  emitFieldRef,
   type CalculationRule,
+  type ContextWrapper,
   type ParsedCalculation,
   type ParsedExpression,
 } from '@cht-ui/shared';
@@ -37,6 +42,16 @@ import { RelevantRuleBuilder } from './RelevantRuleBuilder.js';
 interface Props {
   value: string;
   fieldOptions: string[];
+  /** Contact-form field names available for the "Contact input field" kind
+   *  (Tier 1.5). UNION of the project's parsed contact forms with a
+   *  known-minimal fallback set (_id, name, patient_id, …). May be empty;
+   *  the picker still allows free-type via the datalist. */
+  inputContactFields?: string[];
+  /** Contact-summary `context` keys available for the "Contact-summary
+   *  value" kind (Tier 1.5). Sourced from
+   *  parseContactSummary(src).contextOrder via useContactSummaryContextKeys.
+   *  May be empty; the picker still allows free-type. */
+  contextKeys?: string[];
   onSave: (v: string) => void;
   onCancel: () => void;
   title?: string;
@@ -110,14 +125,46 @@ const TEMPLATES: ReadonlyArray<CalcTemplate> = [AGE_FROM_DOB];
  * affordance can show the right control + auto-quote indicator. This is
  * purely a UI hint — the underlying string is what gets serialized.
  */
-type OutputKind = 'literal' | 'number' | 'field-ref' | 'expression';
+/**
+ * The kind of value a single-value calculation cell carries. Drives the
+ * SingleValuePanel's radiogroup. Three new kinds in Tier 1.5:
+ *   - `contact-input` — the patient-link pattern (`../inputs/contact/X`).
+ *   - `contact-summary` — `instance('contact-summary')/context/<key>` with
+ *     an optional `none` / fallback-to-current / read-once wrapper.
+ *   - the other four (`literal`, `number`, `field-ref`, `expression`) are
+ *     unchanged from Tier 1.
+ */
+type OutputKind =
+  | 'literal'
+  | 'number'
+  | 'field-ref'
+  | 'contact-input'
+  | 'contact-summary'
+  | 'expression';
+
+/** Subset the table-cell TypedOutputInput renders radios for. Unchanged
+ *  from Tier 1 — adding contact-input/contact-summary to the decision-table
+ *  output is explicitly out of scope (plan §95). */
+const TYPED_OUTPUT_KINDS: ReadonlyArray<'literal' | 'number' | 'field-ref'> = [
+  'literal',
+  'number',
+  'field-ref',
+];
 
 function inferOutputKind(raw: string): OutputKind {
   const v = raw.trim();
   if (v === '') return 'literal';
+  // Tier 1.5 — try the reference recognizer FIRST so the picker re-hydrates
+  // contact-input / contact-summary / field-ref cells into their own radio
+  // (independent of whatever parseCalculation labels the shape).
+  const ref = recognizeReference(v);
+  if (ref) {
+    if (ref.kind === 'contact-input') return 'contact-input';
+    if (ref.kind === 'contact-summary') return 'contact-summary';
+    if (ref.kind === 'field-ref') return 'field-ref';
+  }
   if (/^'[^']*'$/.test(v) || /^"[^"]*"$/.test(v)) return 'literal';
   if (/^-?\d+(\.\d+)?$/.test(v)) return 'number';
-  if (/^\$\{[^}]+\}$/.test(v)) return 'field-ref';
   return 'expression';
 }
 
@@ -135,11 +182,6 @@ function unquoteLiteral(raw: string): string {
  *  output slot. */
 function autoQuoteLiteral(raw: string): string {
   return `'${raw.replace(/'/g, "\\'")}'`;
-}
-
-/** Wrap a chosen field name as `${name}` — the XLSForm reference form. */
-function quoteFieldRef(name: string): string {
-  return `\${${name}}`;
 }
 
 /* ============================ main component ============================= */
@@ -275,6 +317,8 @@ export function CalculationBuilder(props: Props) {
             value={singleValue}
             onChange={setSingleValue}
             fieldOptions={props.fieldOptions}
+            inputContactFields={props.inputContactFields ?? []}
+            contextKeys={props.contextKeys ?? []}
           />
         )}
 
@@ -340,35 +384,97 @@ export function CalculationBuilder(props: Props) {
 
 /* =========================== single-value panel ========================== */
 
+const VALUE_KINDS: ReadonlyArray<OutputKind> = [
+  'literal',
+  'number',
+  'field-ref',
+  'contact-input',
+  'contact-summary',
+  'expression',
+];
+
+/** Known-minimal fallback contact-input fields when the project's contact
+ *  forms surface nothing usable (plan §3 — diabetes_referral's inputs group
+ *  is collapsed). Free-type via the datalist always remains available. */
+const FALLBACK_CONTACT_FIELDS: ReadonlyArray<string> = [
+  '_id',
+  'name',
+  'patient_id',
+  'date_of_birth',
+  'sex',
+  'parent/_id',
+  'phone',
+];
+
+const CONTEXT_WRAPPER_LABELS: Record<ContextWrapper, string> = {
+  none: 'Just the value',
+  'fallback-to-current': 'Use my current answer if empty',
+  'read-once': 'Read once',
+};
+
 function SingleValuePanel(props: {
   value: string;
   onChange: (v: string) => void;
   fieldOptions: string[];
+  inputContactFields: string[];
+  contextKeys: string[];
 }) {
-  const kind = inferOutputKind(props.value);
-  const [activeKind, setActiveKind] = useState<OutputKind>(kind);
+  const detectedKind = inferOutputKind(props.value);
+  const detectedRef = recognizeReference(props.value);
+  const [activeKind, setActiveKind] = useState<OutputKind>(detectedKind);
+  // Resync when the underlying value changes from outside (template insert,
+  // mode switch). Cheap effect — `detectedKind` is a pure string check.
+  useEffect(() => setActiveKind(detectedKind), [detectedKind]);
 
-  // The displayed input is bound to the OUTPUT shape (literal stripped of
-  // quotes for typing; field-ref shown as the name; number raw). The
-  // on-change handlers re-serialize into canonical XLSForm form.
+  // Contact-summary wrapper state. Initialized from the recognizer; reset
+  // when the user explicitly picks the contact-summary kind from scratch.
+  const [contextWrapper, setContextWrapper] = useState<ContextWrapper>(
+    detectedRef?.kind === 'contact-summary' ? detectedRef.wrapper : 'none',
+  );
+  useEffect(() => {
+    if (detectedRef?.kind === 'contact-summary') setContextWrapper(detectedRef.wrapper);
+  }, [detectedRef]);
+
+  // Union of project-discovered contact fields + the known-minimal
+  // fallback; free-type is always honored via the datalist.
+  const contactInputFieldList = useMemo(() => {
+    const merged = new Set<string>([...FALLBACK_CONTACT_FIELDS, ...props.inputContactFields]);
+    return Array.from(merged).sort();
+  }, [props.inputContactFields]);
+
+  // Per-kind argument values pulled from the recognizer when applicable;
+  // otherwise empty so the picker shows a "pick a…" prompt.
+  const contactInputField =
+    detectedRef?.kind === 'contact-input' ? detectedRef.argument : '';
+  const contactSummaryKey =
+    detectedRef?.kind === 'contact-summary' ? detectedRef.argument : '';
+
+  function pickContactInput(field: string): void {
+    props.onChange(field ? emitContactInput(field) : '');
+  }
+  function pickContactSummary(key: string, wrapper: ContextWrapper): void {
+    setContextWrapper(wrapper);
+    props.onChange(key ? emitContactSummary(key, wrapper) : '');
+  }
+
   return (
-    <div className="single-value-panel">
-      <p className="muted">
+    <fieldset className="single-value-panel">
+      <legend className="muted">
         The cell evaluates to a single value. Pick what kind of value you want
         and the builder writes the right XLSForm syntax for you.
-      </p>
-      <div role="radiogroup" aria-label="Value kind" className="row gap">
-        {(['literal', 'number', 'field-ref', 'expression'] as OutputKind[]).map((k) => (
-          <button
-            key={k}
-            type="button"
-            role="radio"
-            aria-checked={activeKind === k}
-            className={activeKind === k ? 'active' : 'link'}
-            onClick={() => setActiveKind(k)}
-          >
-            {kindLabel(k)}
-          </button>
+      </legend>
+      <div className="row gap value-kind-radios">
+        {VALUE_KINDS.map((k) => (
+          <label key={k} className="kind-radio">
+            <input
+              type="radio"
+              name="single-value-kind"
+              value={k}
+              checked={activeKind === k}
+              onChange={() => setActiveKind(k)}
+            />
+            <span>{kindLabel(k)}</span>
+          </label>
         ))}
       </div>
 
@@ -406,7 +512,7 @@ function SingleValuePanel(props: {
           <select
             value={extractFieldName(props.value)}
             onChange={(e) =>
-              props.onChange(e.target.value ? quoteFieldRef(e.target.value) : '')
+              props.onChange(e.target.value ? emitFieldRef(e.target.value) : '')
             }
             aria-label="Field reference"
           >
@@ -419,6 +525,68 @@ function SingleValuePanel(props: {
           </select>
           <code className="muted">saved as <strong>{props.value || '${field}'}</strong></code>
         </label>
+      )}
+
+      {activeKind === 'contact-input' && (
+        <div className="row gap" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+          <label className="row gap" style={{ alignItems: 'center' }}>
+            <span className="muted">Contact field:</span>
+            <input
+              list="cb-contact-input-fields"
+              value={contactInputField}
+              onChange={(e) => pickContactInput(e.target.value.trim())}
+              placeholder="e.g. _id or patient_name"
+              aria-label="Contact input field"
+            />
+            <datalist id="cb-contact-input-fields">
+              {contactInputFieldList.map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
+          </label>
+          <code className="muted">
+            saved as <strong>{props.value || '../inputs/contact/field'}</strong>
+          </code>
+        </div>
+      )}
+
+      {activeKind === 'contact-summary' && (
+        <div className="row gap" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
+          <label className="row gap" style={{ alignItems: 'center' }}>
+            <span className="muted">Context key:</span>
+            <input
+              list="cb-context-keys"
+              value={contactSummaryKey}
+              onChange={(e) => pickContactSummary(e.target.value.trim(), contextWrapper)}
+              placeholder={props.contextKeys[0] ?? 'e.g. glucometer_ctx'}
+              aria-label="Contact-summary context key"
+            />
+            <datalist id="cb-context-keys">
+              {props.contextKeys.map((k) => (
+                <option key={k} value={k} />
+              ))}
+            </datalist>
+          </label>
+          <label className="row gap" style={{ alignItems: 'center' }}>
+            <span className="muted">Wrapper:</span>
+            <select
+              value={contextWrapper}
+              onChange={(e) =>
+                pickContactSummary(contactSummaryKey, e.target.value as ContextWrapper)
+              }
+              aria-label="Contact-summary wrapper"
+            >
+              <option value="none">{CONTEXT_WRAPPER_LABELS.none}</option>
+              <option value="fallback-to-current">
+                {CONTEXT_WRAPPER_LABELS['fallback-to-current']}
+              </option>
+              <option value="read-once">{CONTEXT_WRAPPER_LABELS['read-once']}</option>
+            </select>
+          </label>
+          <code className="muted">
+            saved as <strong>{props.value || "instance('contact-summary')/context/key"}</strong>
+          </code>
+        </div>
       )}
 
       {activeKind === 'expression' && (
@@ -434,7 +602,7 @@ function SingleValuePanel(props: {
           />
         </label>
       )}
-    </div>
+    </fieldset>
   );
 }
 
@@ -446,6 +614,10 @@ function kindLabel(k: OutputKind): string {
       return 'Number';
     case 'field-ref':
       return 'Field value';
+    case 'contact-input':
+      return 'Contact input field';
+    case 'contact-summary':
+      return 'Contact-summary value';
     case 'expression':
       return 'Custom expression';
   }
@@ -557,25 +729,41 @@ function TypedOutputInput(props: {
   onChange: (v: string) => void;
 }) {
   const detected = inferOutputKind(props.value);
-  const [kind, setKind] = useState<OutputKind>(detected);
-  // Re-sync the active kind tab when the underlying value changes shape
+  // Clamp the broader detected kind down to the three TypedOutputInput
+  // renders. References/expressions all collapse to 'literal' as a safe
+  // default — the table-cell output kinds stay narrow per plan §95.
+  const initialKind: 'literal' | 'number' | 'field-ref' = TYPED_OUTPUT_KINDS.includes(
+    detected as 'literal' | 'number' | 'field-ref',
+  )
+    ? (detected as 'literal' | 'number' | 'field-ref')
+    : 'literal';
+  const [kind, setKind] = useState<'literal' | 'number' | 'field-ref'>(initialKind);
+  // Re-sync the active kind radio when the underlying value changes shape
   // (e.g. the user picked a template that swapped the cell to a field-ref).
-  useEffect(() => setKind(detected), [detected]);
+  useEffect(() => setKind(initialKind), [initialKind]);
+
+  // Tier-1.5 A2 — native <fieldset>/<input type=radio> for free keyboard
+  // nav. Stable group name per-row keeps multiple table cells independent.
+  const groupName = useMemo(
+    () => `typed-output-${Math.random().toString(36).slice(2, 9)}`,
+    [],
+  );
 
   return (
-    <div className="typed-output">
-      <div role="radiogroup" aria-label="Output kind" className="row gap typed-output-kinds">
-        {(['literal', 'number', 'field-ref'] as OutputKind[]).map((k) => (
-          <button
-            key={k}
-            type="button"
-            role="radio"
-            aria-checked={kind === k}
-            className={kind === k ? 'active' : 'link'}
-            onClick={() => setKind(k)}
-          >
-            {kindLabel(k)}
-          </button>
+    <fieldset className="typed-output">
+      <legend className="visually-hidden">Output kind</legend>
+      <div className="row gap typed-output-kinds">
+        {TYPED_OUTPUT_KINDS.map((k) => (
+          <label key={k} className="kind-radio">
+            <input
+              type="radio"
+              name={groupName}
+              value={k}
+              checked={kind === k}
+              onChange={() => setKind(k)}
+            />
+            <span>{kindLabel(k)}</span>
+          </label>
         ))}
       </div>
       {kind === 'literal' && (
@@ -604,7 +792,7 @@ function TypedOutputInput(props: {
         <select
           value={extractFieldName(props.value)}
           onChange={(e) =>
-            props.onChange(e.target.value ? quoteFieldRef(e.target.value) : '')
+            props.onChange(e.target.value ? emitFieldRef(e.target.value) : '')
           }
           aria-label="Field reference"
         >
@@ -616,7 +804,7 @@ function TypedOutputInput(props: {
           ))}
         </select>
       )}
-    </div>
+    </fieldset>
   );
 }
 

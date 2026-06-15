@@ -1,0 +1,42 @@
+[
+  {
+    "name": "patient_uuid",
+    "calc": "../inputs/contact/_id"
+  },
+  {
+    "name": "patient_name",
+    "calc": "../inputs/contact/name"
+  },
+  {
+    "name": "patient_id",
+    "calc": "../inputs/contact/_id"
+  },
+  {
+    "name": "previous_bmi",
+    "calc": "once(instance('contact-summary')/context/previous_bmi_ctx)"
+  },
+  {
+    "name": "avg_result_ctx",
+    "calc": "if(instance('contact-summary')/context/avg_result, instance('contact-summary')/context/avg_result_ctx, .)"
+  },
+  {
+    "name": "glucometer_ctx",
+    "calc": "if(instance('contact-summary')/context/glucometer_ctx, instance('contact-summary')/context/glucometer_ctx, .)"
+  },
+  {
+    "name": "dt_pps_rbs_ctx",
+    "calc": "if(instance('contact-summary')/context/dt_pps_rbs_ctx, instance('contact-summary')/context/dt_pps_rbs_ctx, .)"
+  },
+  {
+    "name": "dt_fbs_ctx",
+    "calc": "if(instance('contact-summary')/context/dt_fbs_ctx, instance('contact-summary')/context/dt_fbs_ctx, .)"
+  },
+  {
+    "name": "fbs_reading",
+    "calc": "if(${glucometer_ctx} <= 99, \"सामन्य /नर्मल\", if (${glucometer_ctx} >= 100 and ${glucometer_ctx} <= 125, \"मधुमेहको जोखिम\", \"मधुमेह\"))"
+  },
+  {
+    "name": "pps_rbs_reading",
+    "calc": "if(${glucometer_ctx} <= 139, \"सामन्य /नर्मल\", if (${glucometer_ctx} >= 140 and ${glucometer_ctx} <= 199, \"मधुमेहको जोखिम\", \"मधुमेह\"))"
+  }
+]

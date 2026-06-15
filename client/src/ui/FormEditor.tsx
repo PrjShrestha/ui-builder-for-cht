@@ -67,6 +67,7 @@ import { AppearancePicker } from './AppearancePicker.js';
 import { CalculationBuilder } from './CalculationBuilder.js';
 import { PropertiesEditor, type FormProperties } from './PropertiesEditor.js';
 import { useContactFormFields } from './useContactFormFields.js';
+import { useContactSummaryContextKeys } from './useContactSummaryContextKeys.js';
 import { FormPreview } from './FormPreview.js';
 import { SaveDiffModal } from './SaveDiffModal.js';
 import { QuestionTypePicker } from './QuestionTypePicker.js';
@@ -94,6 +95,17 @@ export function FormEditor({ formId }: { formId: string }) {
   const [showPreview, setShowPreview] = useState(false);
   const [pendingSaveDiff, setPendingSaveDiff] = useState<XLSFormDiff | null>(null);
   const contactForms = useContactFormFields();
+  // Tier 1.5 — flatten the contact-form field lists into a single deduped
+  // name list for the calc builder's "Contact input field" reference kind.
+  // Mirrors the FALLBACK_CONTACT_FIELDS union the builder does internally;
+  // exposing the project-discovered list keeps the picker fresh while the
+  // fallback covers projects whose contact forms collapse their inputs.
+  const inputContactFields = useMemo(() => {
+    const set = new Set<string>();
+    for (const f of contactForms) for (const n of f.fields) set.add(n);
+    return Array.from(set).sort();
+  }, [contactForms]);
+  const contextKeys = useContactSummaryContextKeys();
 
   // Load form on mount or when id changes.
   useEffect(() => {
@@ -249,6 +261,8 @@ export function FormEditor({ formId }: { formId: string }) {
             getSnapshotId={() => formHistory.currentSnapshotId}
             jumpTo={formHistory.jumpTo}
             violationsByRow={violationsByRow}
+            inputContactFields={inputContactFields}
+            contextKeys={contextKeys}
           />
           {showPreview && (
             <div className="preview-pane">
@@ -294,6 +308,11 @@ function SurveyTab(props: {
   getSnapshotId: () => number;
   jumpTo: (id: number) => void;
   violationsByRow: Map<string, OrderingViolation[]>;
+  /** Tier 1.5 — pre-derived contact-input field list + contact-summary
+   *  context keys, threaded down to each SurveyRowCard for the calc
+   *  builder's reference kinds. */
+  inputContactFields: string[];
+  contextKeys: string[];
 }) {
   const { form, patch, violationsByRow } = props;
   const undo = props.undo;
@@ -560,6 +579,8 @@ function SurveyTab(props: {
                             fieldOptions={earlierFields}
                             fieldChoices={fieldChoices}
                             fieldKinds={fieldKinds}
+                            inputContactFields={props.inputContactFields}
+                            contextKeys={props.contextKeys}
                             form={form}
                             patch={patch}
                             update={(u) => updateRow(row.rowId, u)}
@@ -588,6 +609,8 @@ function SurveyTab(props: {
                   fieldOptions={earlierFields}
                   fieldChoices={fieldChoices}
                   fieldKinds={fieldKinds}
+                  inputContactFields={props.inputContactFields}
+                  contextKeys={props.contextKeys}
                   form={form}
                   patch={patch}
                   update={(u) => updateRow(row.rowId, u)}
@@ -714,6 +737,11 @@ function SurveyRowCard(props: {
    *  (plan v0.3). Names absent from this map are treated as 'unknown' at
    *  the picker (always-pass) — never silently mis-bucketed. */
   fieldKinds: Record<string, FieldKind>;
+  /** Tier 1.5 — contact input field list and contact-summary context keys.
+   *  Forwarded only to the calculation ExpressionField; the boolean
+   *  builders ignore them. */
+  inputContactFields: string[];
+  contextKeys: string[];
   /** Whole form + patch, so the inline choices editor can mutate form.choices. */
   form: XLSForm;
   patch: (next: XLSForm) => void;
@@ -846,6 +874,8 @@ function SurveyRowCard(props: {
               value={row.extras['calculation'] ?? ''}
               onChange={(v) => setExtra('calculation', v)}
               fieldOptions={props.fieldOptions}
+              inputContactFields={props.inputContactFields}
+              contextKeys={props.contextKeys}
             />
             <ExpressionField
               label="constraint"
@@ -1025,6 +1055,12 @@ function ExpressionField(props: {
   onChange: (v: string) => void;
   /** When set, shows a "Build" button that opens the visual rule builder. */
   fieldOptions?: string[];
+  /** Tier 1.5 — contact input field list for the calc builder's
+   *  "Contact input field" reference kind. Forwarded to CalculationBuilder. */
+  inputContactFields?: string[];
+  /** Tier 1.5 — contact-summary context keys for the calc builder's
+   *  "Contact-summary value" reference kind. Forwarded to CalculationBuilder. */
+  contextKeys?: string[];
 }) {
   const [showBuilder, setShowBuilder] = useState(false);
   const [showCalcBuilder, setShowCalcBuilder] = useState(false);
@@ -1085,6 +1121,8 @@ function ExpressionField(props: {
           title="Calculation builder"
           value={props.value}
           fieldOptions={props.fieldOptions}
+          inputContactFields={props.inputContactFields}
+          contextKeys={props.contextKeys}
           onCancel={() => setShowCalcBuilder(false)}
           onSave={(v) => {
             props.onChange(v);
