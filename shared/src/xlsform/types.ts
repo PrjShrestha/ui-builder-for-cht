@@ -169,7 +169,12 @@ const SIMPLE_MODE_VISIBLE_TYPES = new Set<string>([
 export function isHiddenInSimpleMode(row: SurveyRow): boolean {
   const t = row.type.trim().toLowerCase();
   if ((STRUCTURAL_TYPES as readonly string[]).includes(t)) return true;
-  return !SIMPLE_MODE_VISIBLE_TYPES.has(t);
+  // select_one / select_multiple carry a list name in the type cell
+  // (e.g. "select_one sex_options"), so match the visible-type set on the
+  // base token — otherwise every select question is wrongly hidden in
+  // Simple mode. Single-token types (text, integer, note…) are unaffected.
+  const baseType = t.split(/\s+/)[0] ?? t;
+  return !SIMPLE_MODE_VISIBLE_TYPES.has(baseType);
 }
 
 /** CHT context-injection group name. Calculates inside it are plumbing
