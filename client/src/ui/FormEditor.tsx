@@ -1221,11 +1221,18 @@ const COMPARISON_PROSE: Record<'=' | '!=' | '>' | '<' | '>=' | '<=', string> = {
  * v0.3-punchlist B1). The option `value`s remain the canonical `ClauseOp`
  * tokens — labels NEVER reach `clauseToRule`/`serializeAnyParsed`.
  *
- * **B1 fix (2026-06-15):** comparison labels are now `COMPARISON_PROSE`
- * verbatim (`equals` / `is not` / `is more than` …), dropping the trailing
- * "value" that read as a broken sentence and diverged from the
- * `This row shows when:` prose preview. Dropdown and readback now share
- * one microcopy source.
+ * **B1 fix (2026-06-15):** drop the trailing "value" from every comparison
+ * label so the dropdown reads as a complete phrase, not a fragment.
+ *
+ * **User override (2026-06-15):** the four ordering operators (`>`, `<`,
+ * `>=`, `<=`) stay as mathematical glyphs, NOT the verbose
+ * `is more than` / `is at least` prose — they're universally readable and
+ * leaning into NLP for them looked overdone. Equality/inequality keep
+ * their plain-language form (`equals` / `is not`) since `=` / `!=` are
+ * less obvious in isolation. The prose preview (`This row shows when:`)
+ * still uses `COMPARISON_PROSE` verbatim for natural reading; dropdown
+ * and preview differ only on the four ordering rows. Tracked so the
+ * planner can revisit if the divergence proves confusing in usability.
  *
  * Banned tokens: `not(`, `today()`, `${field}`, `selected(`, `div`, `floor`.
  * None must appear in any label the user picks.
@@ -1233,10 +1240,10 @@ const COMPARISON_PROSE: Record<'=' | '!=' | '>' | '<' | '>=' | '<=', string> = {
 const OPERATOR_LABELS: Record<ClauseOp, string> = {
   '=': 'equals',
   '!=': COMPARISON_PROSE['!='],
-  '>': COMPARISON_PROSE['>'],
-  '<': COMPARISON_PROSE['<'],
-  '>=': COMPARISON_PROSE['>='],
-  '<=': COMPARISON_PROSE['<='],
+  '>': '>',
+  '<': '<',
+  '>=': '≥',
+  '<=': '≤',
   selected: 'includes',
   'selected-not': 'does not include',
   not: 'is not selected',
