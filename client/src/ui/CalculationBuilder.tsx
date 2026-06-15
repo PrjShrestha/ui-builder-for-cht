@@ -40,6 +40,13 @@ export function CalculationBuilder(props: Props) {
     if (p.shape === 'raw') setShowRaw(true);
   }, [props.value]);
 
+  // `'single'` is the Tier-0-introduced bucket for non-if cells (bare
+  // `${field}` refs, xpath paths, literals, function calls). Tier 0 keeps
+  // the existing UI rendering single cells as a degenerate decision table
+  // — empty rules + the value in `otherwise` — exactly the same shape the
+  // old `rules:0` cells rendered as. Tier 1 will introduce a dedicated
+  // single-value editor; until then, treat single as table-compatible.
+  const buildable = parsed.shape === 'decision_table' || parsed.shape === 'single';
   function patch(next: ParsedCalculation) {
     setParsed(next);
   }
@@ -48,10 +55,14 @@ export function CalculationBuilder(props: Props) {
     patch({ ...parsed, rules: parsed.rules.map((r, i) => (i === idx ? updater(r) : r)) });
   }
   function addRule() {
-    if (parsed.shape !== 'decision_table') return;
+    // Adding a rule upgrades a single-value cell to a decision table —
+    // the user is opting into the structured shape.
+    if (!buildable) return;
     patch({
-      ...parsed,
+      shape: 'decision_table',
       rules: [...parsed.rules, { condition: parseRelevant(''), output: "''" }],
+      otherwise: parsed.otherwise,
+      raw: parsed.raw,
     });
   }
   function removeRule(idx: number) {
@@ -84,7 +95,7 @@ export function CalculationBuilder(props: Props) {
           </button>
         </div>
 
-        {!showRaw && parsed.shape === 'decision_table' && (
+        {!showRaw && buildable && (
           <>
             <p className="muted">
               First matching rule wins. If no rule matches, the &quot;otherwise&quot; value is used.
@@ -163,7 +174,7 @@ export function CalculationBuilder(props: Props) {
           <button className="link" onClick={props.onCancel}>cancel</button>
         </footer>
 
-        {editingCondIdx !== null && parsed.shape === 'decision_table' && parsed.rules[editingCondIdx] && (
+        {editingCondIdx !== null && buildable && parsed.rules[editingCondIdx] && (
           <RelevantRuleBuilder
             column={`rule #${editingCondIdx + 1} condition`}
             value={serializeRelevantStub(parsed.rules[editingCondIdx]!.condition)}

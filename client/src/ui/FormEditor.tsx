@@ -1151,9 +1151,12 @@ const COND_OPS_NEED_FIELD: CondOp[] = [
 ];
 const COND_OPS_NEED_VALUE: CondOp[] = ['=', '!=', '>', '<', '>=', '<=', 'selected', 'selected-not'];
 
+// `calculation` is intentionally NOT in this list. It produces a VALUE,
+// not a boolean, and is edited via the dedicated CalculationBuilder
+// (mounted by ExpressionField when `supportsCalculation` holds). See
+// docs/plans/calculation-builder.md v0.2 §3.6 — "double-door" fix.
 const COLUMN_OPTIONS = [
   { value: 'relevant', label: 'Show when… (relevant)' },
-  { value: 'calculation', label: 'Compute as… (calculation)' },
   { value: 'constraint', label: 'Accept only if… (constraint)' },
   { value: 'choice_filter', label: 'Filter choices when… (choice_filter)' },
 ] as const;

@@ -66,11 +66,25 @@ export interface Clause {
 
 export type Connector = 'and' | 'or';
 
-export type ConditionColumn =
-  | 'relevant'
-  | 'calculation'
-  | 'constraint'
-  | 'choice_filter';
+/**
+ * Columns whose value is a BOOLEAN expression — the only columns this
+ * builder owns. `calculation` is deliberately absent (plan
+ * docs/plans/calculation-builder.md v0.2 §3.6 — the "double-door" fix):
+ * a `calculation` cell produces a VALUE, not a yes/no, and routing it
+ * through `parseRelevantGrouped` silently corrupted things like
+ * `if(${a}=1, 2, 3)`. The dedicated `CalculationBuilder` editor handles
+ * `calculation` instead, gated by `supportsCalculation` in FormEditor.
+ */
+export type ConditionColumn = 'relevant' | 'constraint' | 'choice_filter';
+
+/** Runtime allow-list mirroring `ConditionColumn` — used by
+ *  `hydrateColumn` as defensive insurance against a forced caller that
+ *  bypasses the type narrowing (e.g. a persisted older state). */
+const BOOLEAN_COLUMNS: ReadonlySet<string> = new Set<ConditionColumn>([
+  'relevant',
+  'constraint',
+  'choice_filter',
+]);
 
 /**
  * One subgroup of a grouped expression. The intra-subgroup `connector`
@@ -519,6 +533,13 @@ function hydrateColumn(
   column: ConditionColumn,
   existingValue: string,
 ): ConditionBuilderState {
+  // Defensive insurance against a forced caller (an older persisted state
+  // or non-type-safe consumer) that hands us a non-boolean column like
+  // `calculation`. Without this, parseRelevantGrouped would silently
+  // corrupt a value-producing cell (plan v0.2 §3.6).
+  if (!BOOLEAN_COLUMNS.has(column)) {
+    return { ...initialConditionBuilderState, column };
+  }
   const parsed: AnyParsed = parseRelevantGrouped(existingValue);
 
   // Raw fallback — keep the text editable in the UI, disable chaining.

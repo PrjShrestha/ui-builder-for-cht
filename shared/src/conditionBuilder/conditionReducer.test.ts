@@ -30,7 +30,7 @@ import {
 import { parseRelevant, parseRelevantGrouped } from '../xlsform/relevantParser.js';
 import type { FieldKind } from '../xlsform/types.js';
 
-function withColumn(column: 'relevant' | 'calculation' | 'constraint' | 'choice_filter'): ConditionBuilderState {
+function withColumn(column: 'relevant' | 'constraint' | 'choice_filter'): ConditionBuilderState {
   return conditionBuilderReducer(initialConditionBuilderState, {
     kind: 'set-column',
     column,
