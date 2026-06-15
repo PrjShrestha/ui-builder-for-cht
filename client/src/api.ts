@@ -158,10 +158,14 @@ export const api = {
       body: JSON.stringify({ form, properties }),
     }),
 
-  createForm: (category: 'app' | 'contact', basename: string) =>
+  createForm: (
+    category: 'app' | 'contact',
+    basename: string,
+    scaffold: 'default' | 'blank' = 'default',
+  ) =>
     jsonFetch<{ ok: true; id: string }>('/api/forms/create', {
       method: 'POST',
-      body: JSON.stringify({ category, basename }),
+      body: JSON.stringify({ category, basename, scaffold }),
     }),
 
   deleteForm: (id: string) =>

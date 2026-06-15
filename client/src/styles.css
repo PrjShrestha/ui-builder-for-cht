@@ -1155,6 +1155,23 @@ code {
   color: var(--text-muted);
 }
 .group-ungroup:hover { color: var(--text); }
+
+/* §B3 — scaffold choice in the new-form card. */
+.create-form-scaffold {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.create-form-scaffold legend {
+  padding: 0 6px;
+}
+.create-form-scaffold label {
+  cursor: pointer;
+}
 .survey-group-header .caret { color: var(--text-muted); width: 12px; }
 /* Cumulative indent: each .survey-group-children adds 12px of left padding,
  * so a depth-N group's leaves are indented N×12px. Replaces the old

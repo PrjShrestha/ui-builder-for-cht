@@ -5,7 +5,14 @@ import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getProjectPath, resolveInsideProject } from '../state.js';
-import { parseXlsForm, serializeXlsForm, type XLSForm } from '@cht-ui/shared';
+import {
+  parseXlsForm,
+  serializeXlsForm,
+  buildAppFormScaffold,
+  buildBlankFormScaffold,
+  buildContactFormScaffold,
+  type XLSForm,
+} from '@cht-ui/shared';
 
 /** Form categories the UI surfaces. */
 type FormCategory = 'app' | 'contact';
@@ -204,15 +211,21 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  app.post<{ Body: { category: FormCategory; basename: string } }>(
+  app.post<{
+    Body: { category: FormCategory; basename: string; scaffold?: 'default' | 'blank' };
+  }>(
     '/api/forms/create',
     async (req, reply) => {
       const { category, basename } = req.body;
+      const scaffoldKind = req.body.scaffold ?? 'default';
       if (category !== 'app' && category !== 'contact') {
         return reply.code(400).send({ error: 'category must be "app" or "contact"' });
       }
       if (!/^[a-zA-Z0-9_-]+$/.test(basename)) {
         return reply.code(400).send({ error: 'basename must be alphanumeric + _ -' });
+      }
+      if (scaffoldKind !== 'default' && scaffoldKind !== 'blank') {
+        return reply.code(400).send({ error: 'scaffold must be "default" or "blank"' });
       }
       const dir = await resolveInsideProject(path.join('forms', category));
       await fs.mkdir(dir, { recursive: true });
@@ -220,25 +233,20 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
       if (await fileExists(paths.xlsx)) {
         return reply.code(409).send({ error: `Form ${basename} already exists` });
       }
-      // Create a minimal XLSForm scaffold.
-      const scaffold: XLSForm = {
-        locales: ['en'],
-        surveyHeaders: {
-          ordered: ['type', 'name', 'label::en', 'required', 'relevant', 'calculation'],
-          labelLocales: ['en'],
-        },
-        choicesHeaders: { ordered: ['list_name', 'name', 'label::en'], labelLocales: ['en'] },
-        survey: [],
-        choices: [],
-        settings: {
-          form_title: basename,
-          form_id: basename,
-          version: new Date().toISOString().slice(0, 10),
-          default_language: 'en',
-          extras: { style: 'pages' },
-        },
-        extraSheets: [],
-      };
+      // Per plan docs/plans/survey-groups-and-scaffold.md Part B: pick
+      // the scaffold by category + user choice. Default scaffolds carry
+      // the canonical inputs/contact-type plumbing the user otherwise has
+      // to hand-type; `blank` is the escape hatch (§B3).
+      const scaffold: XLSForm =
+        scaffoldKind === 'blank'
+          ? buildBlankFormScaffold({ basename, category })
+          : category === 'app'
+            ? buildAppFormScaffold({ basename })
+            : buildContactFormScaffold({ basename });
+      // The shared scaffold leaves `version` empty so the helper stays
+      // deterministic (no Date.now() leak). The route stamps the
+      // creation date here.
+      scaffold.settings.version = new Date().toISOString().slice(0, 10);
       const buf = await serializeXlsForm(scaffold);
       await fs.writeFile(paths.xlsx, buf);
       if (category === 'app') {

@@ -8,9 +8,13 @@ export function FormsIndex() {
   const setView = useApp((s) => s.setView);
   const setError = useApp((s) => s.setError);
   const [loading, setLoading] = useState(false);
-  const [creating, setCreating] = useState<{ category: 'app' | 'contact'; basename: string } | null>(
-    null,
-  );
+  const [creating, setCreating] = useState<{
+    category: 'app' | 'contact';
+    basename: string;
+    /** §B3 — `'default'` seeds the inputs scaffold; `'blank'` is the
+     *  escape hatch for a power user starting from scratch. */
+    scaffold: 'default' | 'blank';
+  } | null>(null);
 
   async function reload() {
     setLoading(true);
@@ -36,7 +40,7 @@ export function FormsIndex() {
       return;
     }
     try {
-      const res = await api.createForm(creating.category, creating.basename);
+      const res = await api.createForm(creating.category, creating.basename, creating.scaffold);
       setCreating(null);
       await reload();
       setView({ kind: 'form', id: res.id });
@@ -64,8 +68,8 @@ export function FormsIndex() {
       <header className="page-header">
         <h1>Forms</h1>
         <div className="row gap">
-          <button onClick={() => setCreating({ category: 'app', basename: '' })}>+ App form</button>
-          <button onClick={() => setCreating({ category: 'contact', basename: '' })}>
+          <button onClick={() => setCreating({ category: 'app', basename: '', scaffold: 'default' })}>+ App form</button>
+          <button onClick={() => setCreating({ category: 'contact', basename: '', scaffold: 'default' })}>
             + Contact form
           </button>
           <button className="link" onClick={() => void reload()} disabled={loading}>
@@ -97,6 +101,47 @@ export function FormsIndex() {
               cancel
             </button>
           </div>
+          {/* §B3 — scaffold choice. Default seeds the canonical inputs
+              plumbing (B1) for app forms or the contact-type group (B2)
+              for contact forms; "Blank" is the escape hatch for a power
+              user starting from scratch. */}
+          <fieldset className="create-form-scaffold">
+            <legend className="muted small">Start from</legend>
+            <label className="row gap" style={{ alignItems: 'center' }}>
+              <input
+                type="radio"
+                name="scaffold"
+                value="default"
+                checked={creating.scaffold === 'default'}
+                onChange={() =>
+                  setCreating(creating ? { ...creating, scaffold: 'default' } : null)
+                }
+              />
+              <span>
+                <strong>Default scaffold</strong>{' '}
+                <span className="muted small">
+                  {creating.category === 'app'
+                    ? '— inputs/user/contact plumbing + patient linking calculates'
+                    : '— person contact-type group with parent + contact_type plumbing'}
+                </span>
+              </span>
+            </label>
+            <label className="row gap" style={{ alignItems: 'center' }}>
+              <input
+                type="radio"
+                name="scaffold"
+                value="blank"
+                checked={creating.scaffold === 'blank'}
+                onChange={() =>
+                  setCreating(creating ? { ...creating, scaffold: 'blank' } : null)
+                }
+              />
+              <span>
+                <strong>Blank form</strong>{' '}
+                <span className="muted small">— empty survey, no rows</span>
+              </span>
+            </label>
+          </fieldset>
         </div>
       )}
 
