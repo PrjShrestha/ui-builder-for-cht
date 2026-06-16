@@ -31,6 +31,7 @@ import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
+  applyStarterPack,
   encodeChoiceKey,
   encodeQuestionKey,
   parseFhirMapping,
@@ -38,6 +39,7 @@ import {
   serializeFhirMapping,
   type FhirMapping,
 } from '@cht-ui/shared';
+import { loadStarterPack } from '@cht-ui/shared/dist/fhir/loadStarterPack.js';
 import { resolveInsideProject } from '../state.js';
 import { parseXlsForm } from '@cht-ui/shared';
 
@@ -151,8 +153,35 @@ export async function registerFhirMappingRoutes(app: FastifyInstance): Promise<v
     // `orphans[]` losslessly. Pure (no I/O); the route doesn't write
     // the reconciled state on GET — it returns it for the workbench to
     // edit and PUT back.
-    const reconciled = reconcileFhirMapping(stored, liveKeys);
+    let reconciled = reconcileFhirMapping(stored, liveKeys);
+    // V1 PR2 — auto-apply the bundled cht-mch-v1 pack as `suggested`
+    // pre-fills (plan §C3). `applyStarterPack` is idempotent: it
+    // skips any key the user has already touched, so re-running on
+    // every GET is safe. The auto-applied state is returned to the
+    // client but NOT written to disk — the user saves on Accept.
+    // The `appliedAt` timestamp comes from the caller (route) per the
+    // MVP non-determinism contract; the pack module never reads the
+    // wall clock itself.
+    try {
+      const pack = loadStarterPack('cht-mch-v1');
+      reconciled = applyStarterPack(reconciled, pack, new Date().toISOString());
+    } catch {
+      // Pack absent / load failure is non-fatal — the workbench still
+      // works, just without pre-fills.
+    }
     return { mapping: reconciled };
+  });
+
+  /** PR2 helper — return the loaded starter pack so the client can
+   *  surface the available dictionaries / concept list without
+   *  having to import the Node-only loader. */
+  app.get('/api/fhir-mapping/pack', async (_req, reply) => {
+    try {
+      const pack = loadStarterPack('cht-mch-v1');
+      return { pack };
+    } catch (e) {
+      return reply.code(500).send({ error: (e as Error).message });
+    }
   });
 
   app.put<{ Body: { mapping: FhirMapping } }>(

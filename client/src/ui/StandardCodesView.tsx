@@ -1,40 +1,76 @@
 /**
  * Standard Codes — V1 mapping workbench (docs/plans/fhir-v1-workbench.md).
  *
- * The single place codes are assigned to questions and choices across
- * every app form in the project. PR1 ships the SHELL: route wiring,
- * loading/empty/error states, and the inline "no app forms" + "no
- * sidecar yet" affordances. PR2 lands the workbench core (form picker
- * → mappable-columns table → two-step dictionary→code picker); PR3 the
- * choice-level expansion + multi-dictionary pack readiness.
+ * PR1 shipped the SHELL (route + view wiring). PR2 (this file) adds the
+ * workbench CORE: form picker → mappable-columns table → two-step
+ * dictionary→code picker with starter-pack auto-applied pre-fills.
+ * PR3 will add choice-level mapping + ICD-10/CIEL pack expansion.
  *
  * The reconciled mapping comes from `GET /api/fhir-mapping`; the route
- * reconciles the on-disk sidecar against the project's live keys so
- * renamed/deleted questions show up under `orphans[]` losslessly
- * (never silently dropped). Opening + leaving this view on a balanced
- * project is a byte-identical no-op on disk (the route's compare-
- * before-write enforces this).
+ * also auto-applies the bundled `cht-mch-v1` pack as `'suggested'`
+ * pre-fills so the screen never opens cold. Suggested entries show as
+ * dashed chips with Accept/Change/Skip actions; confirmed entries are
+ * solid chips. The save call writes only on confirmed user action —
+ * opening + leaving the view on a balanced project is a byte-identical
+ * no-op (the route's compare-before-write enforces this).
+ *
+ * No free-text code/path entry in the default flow (Designer
+ * dealbreaker §D). The "Custom code…" escape hatch is intentionally
+ * present but secondary.
  */
-import { useEffect, useState } from 'react';
-import type { FhirMapping } from '@cht-ui/shared';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  encodeQuestionKey,
+  mappableQuestions,
+  formCoverage,
+  type FhirMapping,
+  type QuestionMapping,
+  type StarterPack,
+  type XLSForm,
+} from '@cht-ui/shared';
 import { api } from '../api.js';
 import { useApp } from '../state/store.js';
 
+interface FormSummary {
+  id: string;
+  filename: string;
+  category: 'app' | 'contact';
+}
+
 type LoadState =
   | { kind: 'loading' }
-  | { kind: 'ok'; mapping: FhirMapping }
+  | {
+      kind: 'ok';
+      mapping: FhirMapping;
+      pack: StarterPack | null;
+      forms: FormSummary[];
+    }
   | { kind: 'error'; message: string };
 
 export function StandardCodesView() {
   const project = useApp((s) => s.project);
+  const setError = useApp((s) => s.setError);
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
 
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const res = await api.getFhirMapping();
-        if (alive) setState({ kind: 'ok', mapping: res.mapping });
+        const [mappingRes, packRes, formsRes] = await Promise.all([
+          api.getFhirMapping(),
+          // Pack endpoint can fail (no bundled pack) — treat as null.
+          api.getFhirPack().catch(() => null),
+          api.listForms(),
+        ]);
+        if (!alive) return;
+        // PR1 shell scope: app forms only. PR3 broadens to contact forms.
+        const forms = formsRes.forms.filter((f) => f.category === 'app');
+        setState({
+          kind: 'ok',
+          mapping: mappingRes.mapping,
+          pack: packRes?.pack ?? null,
+          forms,
+        });
       } catch (e) {
         if (alive) setState({ kind: 'error', message: (e as Error).message });
       }
@@ -42,8 +78,17 @@ export function StandardCodesView() {
     return () => {
       alive = false;
     };
-    // Reload whenever the project changes — the sidecar is project-local.
   }, [project?.path]);
+
+  async function save(next: FhirMapping): Promise<void> {
+    if (state.kind !== 'ok') return;
+    setState({ ...state, mapping: next });
+    try {
+      await api.saveFhirMapping(next);
+    } catch (e) {
+      setError(`Couldn't save mapping: ${(e as Error).message}`);
+    }
+  }
 
   return (
     <div className="standard-codes-view">
@@ -51,8 +96,7 @@ export function StandardCodesView() {
         <h1>Standard codes</h1>
         <p className="muted">
           Map each question to a clinical code so reports and dashboards
-          can compare results across deployments. (FHIR-style codes from
-          LOINC, ICD-10, ICD-11, and CIEL.)
+          can compare results across deployments.
         </p>
       </header>
 
@@ -73,13 +117,17 @@ export function StandardCodesView() {
           </button>
         </div>
       ) : (
-        <WorkbenchShell mapping={state.mapping} />
+        <Workbench
+          forms={state.forms}
+          mapping={state.mapping}
+          pack={state.pack}
+          onSave={save}
+        />
       )}
     </div>
   );
 }
 
-/** Empty state for projects with no `app:*` forms — nothing to map. */
 function EmptyNoAppForms() {
   return (
     <div className="card">
@@ -91,67 +139,445 @@ function EmptyNoAppForms() {
   );
 }
 
-/** Workbench shell rendered when the mapping is loaded. PR1 stops here
- *  with a summary card; PR2 fills in the form picker + mappable-columns
- *  table + two-step picker. */
-function WorkbenchShell(props: { mapping: FhirMapping }) {
-  const { mapping } = props;
-  const questionCount = Object.keys(mapping.questionMappings).length;
-  const orphanCount = mapping.orphans.length;
-  const confirmedCount = Object.values(mapping.questionMappings).filter(
-    (m) => m.status === 'confirmed',
-  ).length;
-  const suggestedCount = Object.values(mapping.questionMappings).filter(
-    (m) => m.status === 'suggested',
-  ).length;
-  const skippedCount = Object.values(mapping.questionMappings).filter(
-    (m) => m.status === 'skipped',
-  ).length;
+/* ============================ workbench core ============================ */
+
+function Workbench(props: {
+  forms: FormSummary[];
+  mapping: FhirMapping;
+  pack: StarterPack | null;
+  onSave: (next: FhirMapping) => void;
+}) {
+  const [activeFormId, setActiveFormId] = useState<string>(
+    props.forms[0]?.id ?? '',
+  );
+  const [survey, setSurvey] = useState<XLSForm | null>(null);
+  const [loadingForm, setLoadingForm] = useState(false);
+
+  useEffect(() => {
+    if (!activeFormId) return;
+    let alive = true;
+    setLoadingForm(true);
+    api
+      .getForm(activeFormId)
+      .then((res) => {
+        if (alive) setSurvey(res.form);
+      })
+      .catch(() => {
+        if (alive) setSurvey(null);
+      })
+      .finally(() => {
+        if (alive) setLoadingForm(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [activeFormId]);
 
   return (
     <>
-      <section className="card">
-        <h2>Mapping summary</h2>
-        {questionCount === 0 ? (
-          <p className="muted">
-            No mappings yet. The workbench will land in the next slice —
-            it'll suggest the standard codes from the bundled MCH starter
-            pack and let you Accept, Change, or Skip each one.
-          </p>
-        ) : (
-          <ul className="standard-codes-summary">
-            <li>
-              <strong>{confirmedCount}</strong> confirmed
-            </li>
-            <li>
-              <strong>{suggestedCount}</strong> suggested (awaiting your review)
-            </li>
-            <li>
-              <strong>{skippedCount}</strong> skipped (no code applies)
-            </li>
-            {orphanCount > 0 && (
-              <li className="orphan-line">
-                <strong>{orphanCount}</strong> orphaned — saved mappings whose
-                questions no longer exist in the surveys. Lossless; review and
-                re-attach in the next slice.
-              </li>
-            )}
-          </ul>
-        )}
-      </section>
+      <FormPicker
+        forms={props.forms}
+        activeId={activeFormId}
+        mapping={props.mapping}
+        onPick={setActiveFormId}
+      />
 
-      {/* Placeholder for the form picker + columns table. PR2 replaces
-          this section with the real workbench. Surfacing the shape now
-          gives reviewers something to click against and confirms the
-          route wiring works end-to-end. */}
-      <section className="card placeholder">
-        <h3>Form picker + mappable columns</h3>
-        <p className="muted">
-          Coming in PR2 — pick an app form, see its mappable rows, and
-          assign a dictionary + code per row. The bundled starter pack
-          pre-fills suggestions so the screen never opens cold.
-        </p>
-      </section>
+      {loadingForm ? (
+        <p className="muted">Loading {activeFormId}…</p>
+      ) : !survey ? (
+        <p className="muted">Couldn't load form.</p>
+      ) : (
+        <MappableColumnsTable
+          formId={activeFormId}
+          survey={survey}
+          mapping={props.mapping}
+          pack={props.pack}
+          onSave={props.onSave}
+        />
+      )}
     </>
   );
+}
+
+/* ============================ form picker ============================ */
+
+function FormPicker(props: {
+  forms: FormSummary[];
+  activeId: string;
+  mapping: FhirMapping;
+  onPick: (id: string) => void;
+}) {
+  return (
+    <section className="card form-picker">
+      <label>
+        <strong>Pick a report:</strong>{' '}
+        <select
+          value={props.activeId}
+          onChange={(e) => props.onPick(e.target.value)}
+        >
+          {props.forms.map((f) => {
+            // Coverage in the dropdown label needs a per-form survey to
+            // compute. For PR2 we approximate using a key-prefix count
+            // — sound, since codec keys start with `<formId>/`. PR3
+            // upgrades to a coverage map computed once per form.
+            const prefix = `${f.id}/`;
+            const total = Object.keys(props.mapping.questionMappings).filter(
+              (k) => k.startsWith(prefix),
+            ).length;
+            const confirmed = Object.entries(props.mapping.questionMappings)
+              .filter(([k]) => k.startsWith(prefix))
+              .filter(([, m]) => m.status === 'confirmed').length;
+            return (
+              <option key={f.id} value={f.id}>
+                {f.filename} ({confirmed}/{total} confirmed)
+              </option>
+            );
+          })}
+        </select>
+      </label>
+    </section>
+  );
+}
+
+/* ============================ columns table ============================ */
+
+function MappableColumnsTable(props: {
+  formId: string;
+  survey: XLSForm;
+  mapping: FhirMapping;
+  pack: StarterPack | null;
+  onSave: (next: FhirMapping) => void;
+}) {
+  const rows = useMemo(() => mappableQuestions(props.survey.survey), [props.survey]);
+  const coverage = useMemo(() => {
+    return formCoverage(rows, (name) => {
+      const key = encodeQuestionKey(props.formId, name);
+      return props.mapping.questionMappings[key];
+    });
+  }, [rows, props.mapping, props.formId]);
+
+  function updateMapping(
+    rowName: string,
+    next: QuestionMapping | null,
+  ): void {
+    const key = encodeQuestionKey(props.formId, rowName);
+    const nextMappings: Record<string, QuestionMapping> = {
+      ...props.mapping.questionMappings,
+    };
+    if (next === null) {
+      delete nextMappings[key];
+    } else {
+      nextMappings[key] = next;
+    }
+    props.onSave({
+      ...props.mapping,
+      questionMappings: nextMappings,
+    });
+  }
+
+  return (
+    <section className="card columns-table">
+      <header className="coverage-summary">
+        <strong>Coverage:</strong>{' '}
+        <span className="confirmed">{coverage.confirmed} confirmed</span>
+        {' · '}
+        <span className="suggested">{coverage.suggested} suggested</span>
+        {' · '}
+        <span className="skipped">{coverage.skipped} skipped</span>
+        {' · '}
+        <span className="unmapped">{coverage.unmapped} unmapped</span>
+        {' / '}
+        <strong>{coverage.total}</strong> mappable
+      </header>
+
+      {rows.length === 0 ? (
+        <p className="muted">
+          No mappable questions in this form. (Plumbing rows — structural,
+          inputs/, hidden, calculate — aren't shown here, matching Simple mode.)
+        </p>
+      ) : (
+        <table className="codes-table">
+          <thead>
+            <tr>
+              <th>Question</th>
+              <th>Code</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const key = encodeQuestionKey(props.formId, row.name);
+              const m = props.mapping.questionMappings[key];
+              return (
+                <MappableRow
+                  key={row.rowId}
+                  rowName={row.name}
+                  rowLabel={row.labels['en'] || row.name}
+                  mapping={m}
+                  pack={props.pack}
+                  onChange={(next) => updateMapping(row.name, next)}
+                />
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+/* ============================ per-row UI ============================ */
+
+function MappableRow(props: {
+  rowName: string;
+  rowLabel: string;
+  mapping: QuestionMapping | undefined;
+  pack: StarterPack | null;
+  onChange: (next: QuestionMapping | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const m = props.mapping;
+  const status: 'confirmed' | 'suggested' | 'skipped' | 'unmapped' = m
+    ? (m.status as 'confirmed' | 'suggested' | 'skipped' | 'orphaned') ===
+      'orphaned'
+      ? 'unmapped' // shouldn't surface in the columns table
+      : (m.status as 'confirmed' | 'suggested' | 'skipped')
+    : 'unmapped';
+
+  function accept(): void {
+    if (!m) return;
+    props.onChange({
+      ...m,
+      status: 'confirmed',
+      confirmedBy: 'workbench-user',
+      confirmedAt: new Date().toISOString(),
+    });
+  }
+
+  function skip(): void {
+    props.onChange({
+      code: m?.code ?? '',
+      system: m?.system ?? '',
+      display: m?.display ?? '',
+      dictionaryVersion: m?.dictionaryVersion ?? '',
+      source: m?.source ?? 'manual',
+      status: 'skipped',
+      confirmedBy: 'workbench-user',
+      confirmedAt: new Date().toISOString(),
+      extras: m?.extras ?? {},
+    });
+  }
+
+  function pick(picked: { code: string; system: string; display: string; dictionaryVersion: string }): void {
+    props.onChange({
+      code: picked.code,
+      system: picked.system,
+      display: picked.display,
+      dictionaryVersion: picked.dictionaryVersion,
+      source: 'manual',
+      status: 'confirmed',
+      confirmedBy: 'workbench-user',
+      confirmedAt: new Date().toISOString(),
+      extras: m?.extras ?? {},
+    });
+    setEditing(false);
+  }
+
+  return (
+    <>
+      <tr className={`row-status-${status}`}>
+        <td>
+          <strong>{props.rowLabel}</strong>
+          <br />
+          <code className="muted small">{props.rowName}</code>
+        </td>
+        <td>
+          {m && (m.status === 'confirmed' || m.status === 'suggested') ? (
+            <span className={`code-chip ${m.status}`}>
+              <code>{m.code}</code>
+              <span className="muted small"> ({systemLabel(m.system)})</span>
+              <br />
+              <span className="muted small">{m.display}</span>
+            </span>
+          ) : m && m.status === 'skipped' ? (
+            <span className="muted">— skipped —</span>
+          ) : (
+            <span className="muted">— no code yet —</span>
+          )}
+        </td>
+        <td>
+          <span className={`status-chip status-${status}`}>{statusLabel(status)}</span>
+        </td>
+        <td>
+          {status === 'suggested' && (
+            <>
+              <button type="button" className="primary" onClick={accept}>
+                Accept
+              </button>{' '}
+              <button type="button" onClick={() => setEditing(true)}>
+                Change
+              </button>{' '}
+              <button type="button" className="link" onClick={skip}>
+                Skip
+              </button>
+            </>
+          )}
+          {status === 'confirmed' && (
+            <>
+              <button type="button" onClick={() => setEditing(true)}>
+                Change
+              </button>{' '}
+              <button type="button" className="link" onClick={skip}>
+                Skip
+              </button>
+            </>
+          )}
+          {status === 'skipped' && (
+            <button type="button" onClick={() => setEditing(true)}>
+              Map instead
+            </button>
+          )}
+          {status === 'unmapped' && (
+            <button type="button" onClick={() => setEditing(true)}>
+              Pick a code…
+            </button>
+          )}
+        </td>
+      </tr>
+      {editing && props.pack && (
+        <tr className="picker-row">
+          <td colSpan={4}>
+            <TwoStepPicker
+              pack={props.pack}
+              onPick={pick}
+              onCancel={() => setEditing(false)}
+            />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+/* ============================ two-step picker ============================ */
+
+function TwoStepPicker(props: {
+  pack: StarterPack;
+  onPick: (picked: { code: string; system: string; display: string; dictionaryVersion: string }) => void;
+  onCancel: () => void;
+}) {
+  // Enumerate dictionaries from the pack — every distinct `system` URL.
+  // The plan's locked set is LOINC + ICD-10 + ICD-11 + CIEL; today the
+  // pack carries LOINC + ICD-11. PR3 backfills the other two.
+  const dictionaries = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const c of props.pack.concepts) {
+      if (!seen.has(c.system)) seen.set(c.system, systemLabel(c.system));
+    }
+    return Array.from(seen.entries()).map(([url, label]) => ({ url, label }));
+  }, [props.pack]);
+
+  const [activeDict, setActiveDict] = useState<string>(dictionaries[0]?.url ?? '');
+  const [search, setSearch] = useState('');
+
+  const matches = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return props.pack.concepts.filter((c) => {
+      if (c.system !== activeDict) return false;
+      if (!q) return true;
+      return (
+        c.display.toLowerCase().includes(q) ||
+        c.code.toLowerCase().includes(q) ||
+        c.aliases.some((a) => a.toLowerCase().includes(q))
+      );
+    });
+  }, [props.pack, activeDict, search]);
+
+  return (
+    <div className="two-step-picker">
+      <div className="picker-step">
+        <strong>1. Dictionary:</strong>
+        <div className="row gap dict-buttons">
+          {dictionaries.map((d) => (
+            <button
+              key={d.url}
+              type="button"
+              className={activeDict === d.url ? 'active' : 'link'}
+              onClick={() => setActiveDict(d.url)}
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="picker-step">
+        <strong>2. Pick a code:</strong>
+        <input
+          type="search"
+          className="picker-search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by clinical name (e.g. systolic, fundal height, LMP)"
+          autoFocus
+        />
+        <ul className="picker-results">
+          {matches.length === 0 ? (
+            <li className="muted">No matches in this dictionary.</li>
+          ) : (
+            matches.map((c) => (
+              <li key={`${c.system}-${c.code}`}>
+                <button
+                  type="button"
+                  className="picker-result"
+                  onClick={() =>
+                    props.onPick({
+                      code: c.code,
+                      system: c.system,
+                      display: c.display,
+                      dictionaryVersion: c.dictionaryVersion,
+                    })
+                  }
+                >
+                  <code>{c.code}</code> — {c.display}
+                  {c.aliases.length > 0 && (
+                    <span className="muted small"> (also: {c.aliases.slice(0, 3).join(', ')})</span>
+                  )}
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      </div>
+      <div className="picker-actions">
+        <button type="button" className="link" onClick={props.onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================ helpers ============================ */
+
+function statusLabel(s: 'confirmed' | 'suggested' | 'skipped' | 'unmapped'): string {
+  switch (s) {
+    case 'confirmed':
+      return 'Confirmed';
+    case 'suggested':
+      return 'Suggested (review)';
+    case 'skipped':
+      return 'Skipped';
+    case 'unmapped':
+      return 'Not mapped';
+  }
+}
+
+/** Friendly label for a system URL. Falls back to the URL when unknown. */
+function systemLabel(system: string): string {
+  if (system === 'http://loinc.org') return 'LOINC';
+  if (system.startsWith('http://id.who.int/icd/release/10')) return 'ICD-10';
+  if (system.startsWith('http://id.who.int/icd/release/11')) return 'ICD-11';
+  if (system.startsWith('https://app.openconceptlab.org')) return 'CIEL';
+  return system;
 }

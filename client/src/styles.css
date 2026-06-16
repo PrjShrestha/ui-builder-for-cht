@@ -349,6 +349,86 @@ code {
   border-style: dashed;
   background: #fafafa;
 }
+/* PR2 — workbench core */
+.standard-codes-view .form-picker {
+  background: #f9fafb;
+}
+.standard-codes-view .coverage-summary {
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.standard-codes-view .coverage-summary .confirmed { color: #047857; font-weight: 600; }
+.standard-codes-view .coverage-summary .suggested { color: #b45309; }
+.standard-codes-view .coverage-summary .skipped   { color: #6b7280; }
+.standard-codes-view .coverage-summary .unmapped  { color: #991b1b; }
+.codes-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.codes-table th,
+.codes-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+  vertical-align: top;
+}
+.codes-table th { background: #f3f4f6; font-weight: 600; }
+.code-chip {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.code-chip.confirmed {
+  background: #d1fae5;
+  border: 1px solid #6ee7b7;
+}
+.code-chip.suggested {
+  background: #fef3c7;
+  border: 1px dashed #d97706;
+}
+.status-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+.status-chip.status-confirmed { background: #d1fae5; color: #047857; }
+.status-chip.status-suggested { background: #fef3c7; color: #b45309; }
+.status-chip.status-skipped { background: #e5e7eb; color: #6b7280; }
+.status-chip.status-unmapped { background: #fee2e2; color: #991b1b; }
+.picker-row td { background: #f9fafb; padding: 12px; }
+.two-step-picker { display: flex; flex-direction: column; gap: 10px; }
+.picker-step { display: flex; flex-direction: column; gap: 6px; }
+.dict-buttons button.active {
+  background: #6366f1;
+  color: white;
+  font-weight: 600;
+}
+.picker-search { padding: 6px 8px; font-size: 14px; }
+.picker-results {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  background: white;
+}
+.picker-results li { border-bottom: 1px solid #f3f4f6; }
+.picker-results li:last-child { border-bottom: 0; }
+.picker-result {
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 13px;
+}
+.picker-result:hover { background: #eef2ff; }
+.picker-actions { text-align: right; }
 
 /* ---- Overview cards ---- */
 .overview-grid {

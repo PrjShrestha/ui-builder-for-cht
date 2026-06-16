@@ -30,9 +30,19 @@ const FIXTURE_DIR = path.resolve(here, 'fixtures', 'mini-config');
 
 const SIDECAR = 'fhir-mapping.json';
 
-test('GET /api/fhir-mapping on an absent sidecar returns an empty mapping (200)', async ({
+test('GET /api/fhir-mapping on an absent sidecar returns 200 + (PR2) auto-applied starter-pack suggestions', async ({
   request,
 }) => {
+  // PR2 added auto-apply of `cht-mch-v1` on GET when a row exists in the
+  // surveyed forms. The mini-config fixture's `app:pregnancy` survey
+  // overlaps the pack on `lmp_date`, `danger_signs`, and `gravidity`,
+  // so the GET returns those 3 as `'suggested'`. Other pack concepts
+  // whose `questionName` doesn't exist in the survey are NOT applied
+  // (they'd false-orphan immediately on the next reconcile pass).
+  //
+  // PR1's "empty mapping" assertion is replaced by the (a) sidecar-
+  // still-absent check (GET stays read-only) and (b) the pre-fill
+  // shape: confirmedBy=null, status='suggested', source='starter-pack'.
   const tmpProject = await fs.mkdtemp(path.join(os.tmpdir(), 'cht-ui-e2e-fhir-'));
   try {
     await fs.cp(FIXTURE_DIR, tmpProject, { recursive: true });
@@ -40,11 +50,23 @@ test('GET /api/fhir-mapping on an absent sidecar returns an empty mapping (200)'
 
     const res = await request.get('http://127.0.0.1:5174/api/fhir-mapping');
     expect(res.ok()).toBeTruthy();
-    const body = (await res.json()) as { mapping: { questionMappings: Record<string, unknown>; orphans: unknown[] } };
-    expect(body.mapping.questionMappings).toEqual({});
+    const body = (await res.json()) as {
+      mapping: {
+        questionMappings: Record<string, { status: string; source: string; confirmedBy: string | null }>;
+        orphans: unknown[];
+      };
+    };
     expect(body.mapping.orphans).toEqual([]);
+    // Auto-applied for the 3 fixture-overlap rows.
+    const lmp = body.mapping.questionMappings['app:pregnancy/lmp_date'];
+    expect(lmp, 'auto-apply must pre-fill lmp_date').toBeTruthy();
+    expect(lmp!.status).toBe('suggested');
+    expect(lmp!.source).toBe('starter-pack');
+    expect(lmp!.confirmedBy).toBe(null);
 
-    // Sidecar must NOT exist on disk — GET is read-only.
+    // Sidecar must STILL not exist on disk — GET is read-only even with
+    // auto-apply. The suggestions exist in-memory only until the user
+    // saves on Accept.
     let stat: import('node:fs').Stats | null = null;
     try {
       stat = await fs.stat(path.join(tmpProject, SIDECAR));
@@ -222,6 +244,58 @@ test('GET reconciles renamed/deleted bindings into orphans[] losslessly', async 
     const orphan = body.mapping.orphans.find((o) => o.originalKey === 'app:pregnancy/renamed_field');
     expect(orphan, 'renamed binding must be relocated to orphans[] losslessly').toBeTruthy();
     expect(orphan!.reason).toBe('renamed-or-deleted');
+  } finally {
+    await fs.rm(tmpProject, { recursive: true, force: true });
+  }
+});
+
+/* ====================== PR2 — workbench UI e2e ====================== */
+/*
+ * Plan §B/§C/§D: the workbench opens on a project with app forms,
+ * pre-fills starter-pack suggestions as dashed `Suggested (review)`
+ * chips, and offers Accept / Change / Skip per row. Clicking Accept
+ * persists `status: 'confirmed'` via PUT — proven here by re-reading
+ * the sidecar after the click.
+ *
+ * The two-step picker (dictionary → search → pick) is exercised by
+ * the Change flow, which opens the picker inline and updates the row
+ * on click.
+ */
+test('PR2 workbench — Accept a suggested mapping persists status:confirmed on disk', async ({
+  page,
+  request,
+}) => {
+  const tmpProject = await fs.mkdtemp(path.join(os.tmpdir(), 'cht-ui-e2e-fhir-ui-'));
+  try {
+    await fs.cp(FIXTURE_DIR, tmpProject, { recursive: true });
+    await request.post('http://127.0.0.1:5174/api/project/open', { data: { path: tmpProject } });
+
+    await page.goto('/');
+    await expect(page.getByText(path.basename(tmpProject)).first()).toBeVisible();
+    await page.locator('.nav-item', { hasText: 'Standard codes' }).click();
+    await expect(page.getByRole('heading', { name: 'Standard codes', level: 1 })).toBeVisible();
+
+    // Workbench mounts; the auto-applied lmp_date suggestion renders as
+    // a "Suggested (review)" status chip with an Accept button.
+    const lmpRow = page
+      .locator('tr')
+      .filter({ has: page.locator('code', { hasText: 'lmp_date' }) });
+    await expect(lmpRow).toBeVisible();
+    await expect(lmpRow.locator('.status-chip.status-suggested')).toBeVisible();
+
+    // Accept the suggestion — saves to disk + flips the chip.
+    await lmpRow.getByRole('button', { name: 'Accept', exact: true }).click();
+    await expect(lmpRow.locator('.status-chip.status-confirmed')).toBeVisible();
+
+    // Re-read the sidecar via API — status MUST be 'confirmed' on disk.
+    const res = await request.get('http://127.0.0.1:5174/api/fhir-mapping');
+    const body = (await res.json()) as {
+      mapping: { questionMappings: Record<string, { status: string; confirmedBy: string | null }> };
+    };
+    const persisted = body.mapping.questionMappings['app:pregnancy/lmp_date'];
+    expect(persisted).toBeTruthy();
+    expect(persisted!.status).toBe('confirmed');
+    expect(persisted!.confirmedBy).toBeTruthy();
   } finally {
     await fs.rm(tmpProject, { recursive: true, force: true });
   }

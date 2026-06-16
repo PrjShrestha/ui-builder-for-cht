@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./dist/fhir/loadStarterPack.js": {
+      "types": "./dist/fhir/loadStarterPack.d.ts",
+      "default": "./dist/fhir/loadStarterPack.js"
     }
   },
   "scripts": {

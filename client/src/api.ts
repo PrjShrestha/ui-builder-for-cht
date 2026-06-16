@@ -225,4 +225,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ mapping }),
     }),
+
+  /** Fetch the bundled cht-mch-v1 starter pack — used by the workbench
+   *  to enumerate dictionaries + render dictionary-filtered code
+   *  suggestions in the two-step picker. */
+  getFhirPack: () =>
+    jsonFetch<{ pack: import('@cht-ui/shared').StarterPack }>('/api/fhir-mapping/pack'),
 };
