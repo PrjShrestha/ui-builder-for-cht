@@ -36,9 +36,10 @@ export interface StructuralViolation {
    *  a matching `end` — the violation is reported on the `begin` row). */
   marker: StructuralMarker | null;
   kind:
-    | 'unmatched-begin' // `begin group`/`begin repeat` with no matching `end`
-    | 'unmatched-end'   // `end group`/`end repeat` with no matching `begin`
-    | 'mismatched-end'; // `begin group` closed by `end repeat` (or vice versa)
+    | 'unmatched-begin'  // `begin group`/`begin repeat` with no matching `end`
+    | 'unmatched-end'    // `end group`/`end repeat` with no matching `begin`
+    | 'mismatched-end'   // `begin group` closed by `end repeat` (or vice versa)
+    | 'mismatched-name'; // `begin group A` closed by `end group B` (§H2 hardening)
   message: string;
 }
 
@@ -103,6 +104,27 @@ export function findStructuralViolations(survey: SurveyRow[]): StructuralViolati
       });
       // The `begin` is "consumed" by the mismatched `end` — don't double-count
       // it as unmatched. This mirrors how a real parser recovers.
+      continue;
+    }
+    // §H2 — name agreement. pyxform pairs by NAME, not just kind, so a
+    // sequence like `[begin group A][begin group B][end group A][end group B]`
+    // is structurally balanced by kind but rejected by pyxform on deploy.
+    // Today's mutation set (group-as-unit drag, ungroup) keeps names
+    // aligned by construction, but any future "insert raw row," paste, or
+    // import-merge path could slip past A6. Enforce name agreement here
+    // as cheap hardening. Empty `end` names are tolerated (some templates
+    // omit the name on `end` rows; both forms round-trip).
+    if (row.name && last.name && row.name !== last.name) {
+      violations.push({
+        rowId: row.rowId,
+        index: i,
+        marker,
+        kind: 'mismatched-name',
+        message:
+          `${row.type.trim()} "${row.name}" at row ${i + 1} closes a ` +
+          `${last.marker === 'begin-group' ? 'begin group' : 'begin repeat'}` +
+          ` named "${last.name}" (row ${last.index + 1}).`,
+      });
     }
   }
 

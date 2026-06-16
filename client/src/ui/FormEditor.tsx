@@ -206,12 +206,7 @@ export function FormEditor({ formId }: { formId: string }) {
         </div>
         <div className="row gap">
           {structuralViolations.length > 0 && (
-            <span
-              className="badge danger"
-              title={structuralViolations.map((v) => v.message).join('\n')}
-            >
-              {structuralViolations.length} structural issue(s) — save blocked
-            </span>
+            <StructuralIssuesBadge violations={structuralViolations} />
           )}
           {violations.length > 0 && (
             <span className="badge warn">{violations.length} ordering issue(s)</span>
@@ -329,6 +324,101 @@ export function FormEditor({ formId }: { formId: string }) {
 }
 
 /* ------------------------------ Survey tab ------------------------------ */
+
+/**
+ * Page-header badge surfacing the §A4/§A6 structural-balance violations.
+ *
+ * Pre-fix (punch-list §H3): a non-interactive `<span>` whose detail
+ * lived only in `title=` — unreachable by keyboard / touch / screen
+ * reader, and only the FIRST of N issues ever reached the error banner
+ * via the save guard. Now: a real `<button>` that toggles a focusable
+ * popover listing EVERY violation, each naming the implicated row by
+ * index and showing the full diagnostic message. Closes via Escape or
+ * outside-click; the trigger announces both the count and a screen-
+ * reader-friendly aria-expanded.
+ */
+function StructuralIssuesBadge(props: { violations: StructuralViolation[] }) {
+  const [open, setOpen] = useState(false);
+  // eslint-disable-next-line no-undef
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // eslint-disable-next-line no-undef
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Close on Escape or outside-click — minimal popover pattern, no
+  // dependency on a UI library. The popover stays anchored to the
+  // page-header position via CSS (position: absolute).
+  useEffect(() => {
+    if (!open) return;
+    // eslint-disable-next-line no-undef
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    }
+    // eslint-disable-next-line no-undef
+    function onClick(e: MouseEvent) {
+      // eslint-disable-next-line no-undef
+      const t = e.target as Node | null;
+      if (
+        popoverRef.current &&
+        t &&
+        !popoverRef.current.contains(t) &&
+        !triggerRef.current?.contains(t)
+      ) {
+        setOpen(false);
+      }
+    }
+    // eslint-disable-next-line no-undef
+    window.addEventListener('keydown', onKey);
+    // eslint-disable-next-line no-undef
+    window.addEventListener('mousedown', onClick);
+    return () => {
+      // eslint-disable-next-line no-undef
+      window.removeEventListener('keydown', onKey);
+      // eslint-disable-next-line no-undef
+      window.removeEventListener('mousedown', onClick);
+    };
+  }, [open]);
+
+  const n = props.violations.length;
+  return (
+    <div className="structural-issues-wrap">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="badge danger structural-issues-trigger"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-label={`${n} structural issue${n === 1 ? '' : 's'} — click for details, save blocked`}
+        onClick={() => setOpen((s) => !s)}
+      >
+        {n} structural issue{n === 1 ? '' : 's'} — save blocked
+      </button>
+      {open && (
+        <div
+          ref={popoverRef}
+          role="dialog"
+          aria-label="Structural issues"
+          className="structural-issues-popover"
+        >
+          <h4>Structural issues — fix before saving</h4>
+          <ol>
+            {props.violations.map((v) => (
+              <li key={`${v.index}-${v.rowId}-${v.kind}`}>
+                <strong>Row {v.index + 1}:</strong> {v.message}
+              </li>
+            ))}
+          </ol>
+          <p className="muted small">
+            Save is blocked until the form is structurally balanced. Use Full mode to inspect
+            the rows.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function SurveyTab(props: {
   form: XLSForm;
@@ -738,7 +828,10 @@ function SurveyTab(props: {
           </span>
         )}
         {mode === 'full' && (
-          <span className="muted small">Drag rows to reorder. Reorder is blocked if it would break dependencies.</span>
+          <span className="muted small">
+            Drag rows to reorder. Group drag handles move the whole group as one unit.
+            Reorder is blocked if it would break dependencies or unbalance the form.
+          </span>
         )}
       </div>
 
@@ -1046,7 +1139,8 @@ function SurveyGroupAccordion(props: {
         <button
           type="button"
           className="drag-handle group-drag-handle"
-          aria-label={`drag group ${item.name || '(unnamed)'}`}
+          aria-label={`Drag group "${item.name || '(unnamed)'}" — moves the whole group as one unit`}
+          title="Drag to move the whole group as one unit"
           {...attributes}
           {...listeners}
         >

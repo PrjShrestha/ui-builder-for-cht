@@ -243,3 +243,30 @@ test('Bucket C — emitter accepts a free-typed key not in any project contextOr
   assert.equal(parsed.shape, 'single');
   assert.equal(serializeCalculation(parsed), s);
 });
+
+/* ============== §H1 — widened once() whitespace tolerance ============== */
+/*
+ * docs/plans/shipped-batch-triad-punchlist.md §H1: the original
+ * `CONTACT_SUMMARY_ONCE_RE` only matched the canonical no-spaces form
+ * `once(<ref>)`, so spaced variants like `once( ref )` fell through to
+ * the `expression` kind and re-opened in Custom-expression instead of
+ * the Reference sub-mode. Tolerate internal whitespace inside the
+ * parens — the inner reference itself stays canonical (no spaces
+ * around `instance` or the slashes).
+ */
+test('§H1 — once() recognizer tolerates internal whitespace', () => {
+  const variants = [
+    "once(instance('contact-summary')/context/glucometer_ctx)",
+    "once( instance('contact-summary')/context/glucometer_ctx )",
+    "once(  instance('contact-summary')/context/glucometer_ctx  )",
+    "once(\tinstance('contact-summary')/context/glucometer_ctx\t)",
+    "once(\ninstance('contact-summary')/context/glucometer_ctx\n)",
+  ];
+  for (const s of variants) {
+    const r = recognizeReference(s);
+    assert.ok(r, `expected to recognize: ${JSON.stringify(s)}`);
+    assert.equal(r!.kind, 'contact-summary');
+    assert.equal(r!.argument, 'glucometer_ctx');
+    assert.equal(r!.wrapper, 'read-once');
+  }
+});

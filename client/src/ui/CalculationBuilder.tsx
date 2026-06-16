@@ -68,10 +68,24 @@ const MODE_LABELS: Record<Mode, string> = {
   raw: 'Raw',
 };
 
-/** Derive the initial mode from the parsed shape. Empty cells default to
- *  the templates gallery — plan §3 "templates gallery FIRST on an empty
- *  cell". Non-empty cells route to the mode that fits their shape. */
+/** Derive the initial mode from the raw cell value. Empty cells default
+ *  to the templates gallery (plan §3 "templates gallery FIRST on an
+ *  empty cell"); recognizable references open in Single regardless of
+ *  what `parseCalculation` thinks of the shape; everything else routes
+ *  by parsed shape.
+ *
+ *  Punch-list §H1: pre-fix this only consulted `parsed.shape`, which
+ *  meant a wrapped reference like `if(ref, ref, .)` (parses as
+ *  decision_table) opened in the If-then table panel and `once( ref )`
+ *  (parses as single but the recognizer didn't tolerate whitespace) fell
+ *  through to Custom expression. Both now route to Single → Reference
+ *  via `recognizeReference` BEFORE consulting the parsed shape. */
 function initialModeFor(parsed: ParsedCalculation): Mode {
+  const trimmed = parsed.raw.trim();
+  // §H1 — recognizer FIRST. A recognized reference always opens in
+  // Single mode (the SingleValuePanel renders the right sub-picker),
+  // independent of the parser's shape verdict.
+  if (trimmed !== '' && recognizeReference(trimmed)) return 'single';
   if (parsed.shape === 'raw') return 'raw';
   if (parsed.shape === 'decision_table') return 'if-then';
   // shape === 'single'. Empty otherwise (genuinely-empty source) → show
@@ -412,6 +426,17 @@ const CONTEXT_WRAPPER_LABELS: Record<ContextWrapper, string> = {
   'read-once': 'Read once',
 };
 
+/** §H4 — plain-language help text for each wrapper option, surfaced as a
+ *  one-line description under the wrapper select. Bhishan couldn't tell
+ *  what "Read once" meant; these read for a non-coder. */
+const CONTEXT_WRAPPER_HELP: Record<ContextWrapper, string> = {
+  none: 'Read the value from the contact summary every time the form is opened.',
+  'fallback-to-current':
+    "If the contact summary has a value, use it; otherwise keep whatever the user has typed here. Example: `if(ctx, ctx, .)`.",
+  'read-once':
+    "Read the value the first time the form is opened; the user can then edit it without it being overwritten. Example: `once(ctx)`.",
+};
+
 function SingleValuePanel(props: {
   value: string;
   onChange: (v: string) => void;
@@ -465,18 +490,25 @@ function SingleValuePanel(props: {
       </legend>
       <div className="row gap value-kind-radios">
         {VALUE_KINDS.map((k) => (
-          <label key={k} className="kind-radio">
+          <label key={k} className="kind-radio" title={kindHelp(k)}>
             <input
               type="radio"
               name="single-value-kind"
               value={k}
               checked={activeKind === k}
               onChange={() => setActiveKind(k)}
+              aria-describedby={`kind-help-${k}`}
             />
             <span>{kindLabel(k)}</span>
           </label>
         ))}
       </div>
+      {/* §H4 — surface the chosen kind's helper text immediately under the
+          radiogroup so the user knows what the kind PRODUCES without
+          hovering. The id matches `aria-describedby` on each radio. */}
+      <p id={`kind-help-${activeKind}`} className="muted small kind-help">
+        {kindHelp(activeKind)}
+      </p>
 
       {activeKind === 'literal' && (
         <label className="row gap" style={{ alignItems: 'center' }}>
@@ -551,41 +583,57 @@ function SingleValuePanel(props: {
       )}
 
       {activeKind === 'contact-summary' && (
-        <div className="row gap" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
-          <label className="row gap" style={{ alignItems: 'center' }}>
-            <span className="muted">Context key:</span>
-            <input
-              list="cb-context-keys"
-              value={contactSummaryKey}
-              onChange={(e) => pickContactSummary(e.target.value.trim(), contextWrapper)}
-              placeholder={props.contextKeys[0] ?? 'e.g. glucometer_ctx'}
-              aria-label="Contact-summary context key"
-            />
-            <datalist id="cb-context-keys">
-              {props.contextKeys.map((k) => (
-                <option key={k} value={k} />
-              ))}
-            </datalist>
-          </label>
-          <label className="row gap" style={{ alignItems: 'center' }}>
-            <span className="muted">Wrapper:</span>
-            <select
-              value={contextWrapper}
-              onChange={(e) =>
-                pickContactSummary(contactSummaryKey, e.target.value as ContextWrapper)
-              }
-              aria-label="Contact-summary wrapper"
-            >
-              <option value="none">{CONTEXT_WRAPPER_LABELS.none}</option>
-              <option value="fallback-to-current">
-                {CONTEXT_WRAPPER_LABELS['fallback-to-current']}
-              </option>
-              <option value="read-once">{CONTEXT_WRAPPER_LABELS['read-once']}</option>
-            </select>
-          </label>
-          <code className="muted">
-            saved as <strong>{props.value || "instance('contact-summary')/context/key"}</strong>
-          </code>
+        <div className="contact-summary-picker">
+          <div className="row gap" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
+            <label className="row gap" style={{ alignItems: 'center' }}>
+              <span className="muted">Context key:</span>
+              <input
+                list="cb-context-keys"
+                value={contactSummaryKey}
+                onChange={(e) => pickContactSummary(e.target.value.trim(), contextWrapper)}
+                placeholder={props.contextKeys[0] ?? 'e.g. glucometer_ctx'}
+                aria-label="Contact-summary context key"
+              />
+              <datalist id="cb-context-keys">
+                {props.contextKeys.map((k) => (
+                  <option key={k} value={k} />
+                ))}
+              </datalist>
+            </label>
+            <label className="row gap" style={{ alignItems: 'center' }}>
+              <span className="muted">Wrapper:</span>
+              <select
+                value={contextWrapper}
+                onChange={(e) =>
+                  pickContactSummary(contactSummaryKey, e.target.value as ContextWrapper)
+                }
+                aria-label="Contact-summary wrapper"
+                aria-describedby="cs-wrapper-help"
+              >
+                <option value="none" title={CONTEXT_WRAPPER_HELP.none}>
+                  {CONTEXT_WRAPPER_LABELS.none}
+                </option>
+                <option
+                  value="fallback-to-current"
+                  title={CONTEXT_WRAPPER_HELP['fallback-to-current']}
+                >
+                  {CONTEXT_WRAPPER_LABELS['fallback-to-current']}
+                </option>
+                <option value="read-once" title={CONTEXT_WRAPPER_HELP['read-once']}>
+                  {CONTEXT_WRAPPER_LABELS['read-once']}
+                </option>
+              </select>
+            </label>
+            <code className="muted">
+              saved as <strong>{props.value || "instance('contact-summary')/context/key"}</strong>
+            </code>
+          </div>
+          {/* §H4 — surface the chosen wrapper's help text. Bhishan
+              couldn't tell what "Read once" meant from the dropdown
+              alone; the helper makes the semantics legible. */}
+          <p id="cs-wrapper-help" className="muted small wrapper-help">
+            {CONTEXT_WRAPPER_HELP[contextWrapper]}
+          </p>
         </div>
       )}
 
@@ -613,13 +661,34 @@ function kindLabel(k: OutputKind): string {
     case 'number':
       return 'Number';
     case 'field-ref':
-      return 'Field value';
+      return 'Another field in this form';
     case 'contact-input':
-      return 'Contact input field';
+      return 'From the patient / household';
     case 'contact-summary':
-      return 'Contact-summary value';
+      return 'From the contact summary';
     case 'expression':
-      return 'Custom expression';
+      return 'Custom XPath';
+  }
+}
+
+/** §H4 — one-line helper text shown under each kind's radio so the
+ *  user knows what KIND of value the option produces. Mirrors the
+ *  ExpressionField friendly-label + raw-tag pattern: the label is
+ *  intent-focused, the helper points at the concrete artifact. */
+function kindHelp(k: OutputKind): string {
+  switch (k) {
+    case 'literal':
+      return 'A fixed piece of text. Auto-quoted as `\'text\'`.';
+    case 'number':
+      return 'A fixed number. Saved without quotes.';
+    case 'field-ref':
+      return 'Reuse another row\'s answer from this same form. Saved as `${field}`.';
+    case 'contact-input':
+      return 'Pull a value the form was launched with (patient ID, name, date of birth). Saved as `../inputs/contact/<field>`.';
+    case 'contact-summary':
+      return 'Pull a flag computed by the contact summary (gestational age, latest BP, …). Saved as `instance(\'contact-summary\')/context/<key>`.';
+    case 'expression':
+      return 'Hand-write any XPath. Use this only when none of the above fit.';
   }
 }
 

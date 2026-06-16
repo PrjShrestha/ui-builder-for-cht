@@ -65,9 +65,12 @@ const CONTACT_SUMMARY_BARE_RE =
   /^instance\('contact-summary'\)\/context\/([\w-]+)$/;
 
 /** `once(instance('contact-summary')/context/<key>)`. The `once()` wrapper
- *  is the canonical CHT read-once idiom. */
+ *  is the canonical CHT read-once idiom. Internal whitespace inside the
+ *  parens is tolerated (punch-list §H1) — `once( ref )`, `once(\n ref \n)`
+ *  etc. all re-hydrate the same. The bare reference itself is canonical
+ *  (no spaces around `instance` or the slashes). */
 const CONTACT_SUMMARY_ONCE_RE =
-  /^once\(instance\('contact-summary'\)\/context\/([\w-]+)\)$/;
+  /^once\(\s*instance\('contact-summary'\)\/context\/([\w-]+)\s*\)$/;
 
 /**
  * `if(<ref>, <ref>, .)` with MATCHING refs. The wrapper's whole purpose is

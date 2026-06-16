@@ -279,6 +279,45 @@ code {
   color: #991b1b;
   font-weight: 600;
 }
+/* §H3 — clickable structural-issues badge + popover. Replaces the
+   hover-only `title=` detail that was unreachable by keyboard / touch /
+   screen reader and only surfaced the FIRST of N issues. */
+.structural-issues-wrap { position: relative; display: inline-block; }
+.structural-issues-trigger {
+  border: none;
+  cursor: pointer;
+}
+.structural-issues-trigger:hover { filter: brightness(0.95); }
+.structural-issues-trigger:focus-visible {
+  outline: 2px solid #991b1b;
+  outline-offset: 2px;
+}
+.structural-issues-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 320px;
+  max-width: 480px;
+  background: #fff;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  padding: 12px 16px;
+  z-index: 1000;
+}
+.structural-issues-popover h4 {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  color: #991b1b;
+}
+.structural-issues-popover ol {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.structural-issues-popover li { margin-bottom: 4px; }
+.structural-issues-popover p { margin: 8px 0 0 0; }
 
 /* ---- Overview cards ---- */
 .overview-grid {
@@ -972,6 +1011,23 @@ code {
 .single-value-panel select {
   min-width: 200px;
 }
+/* §H4 — kind helper text shown under the value-kind radiogroup so the
+   user knows what the chosen kind produces without hovering. */
+.kind-help {
+  margin: 4px 0 0 0;
+  padding: 6px 10px;
+  background: #f3f4f6;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.contact-summary-picker { display: flex; flex-direction: column; gap: 6px; }
+.wrapper-help {
+  margin: 4px 0 0 0;
+  padding: 6px 10px;
+  background: #eef2ff;
+  border-left: 3px solid #6366f1;
+  font-size: 12px;
+}
 /* Tier 1.5 — native kind-picker radios (punch-list A2). The label is the
    click target; the visually-styled "chip" appearance comes from the
    label itself, not a fake button. */
@@ -1142,12 +1198,28 @@ code {
   align-items: center;
   padding: 0 8px;
   background: transparent;
-  border: none;
+  border: 1px dashed transparent;
   color: var(--text-muted);
   cursor: grab;
   font-family: ui-monospace, monospace;
 }
-.group-drag-handle:hover { color: var(--text); }
+/* §H3 — differentiate the group drag handle from a leaf row's `⋮⋮`.
+   The leaf handle moves one row; the group handle moves the whole
+   begin..end subtree as one unit. Without a visible difference the
+   user can't predict whether dragging will move 1 row or 12. */
+.group-drag-handle::after {
+  content: 'group';
+  font-size: 9px;
+  font-style: italic;
+  margin-left: 4px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.group-drag-handle:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
 .survey-group-header-row .survey-group-header { flex: 1; }
 .group-ungroup {
   font-size: 11px;

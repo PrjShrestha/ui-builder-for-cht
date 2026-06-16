@@ -202,3 +202,57 @@ test('multiple violations are surfaced in survey order', () => {
   assert.equal(vs[0]!.kind, 'unmatched-end');
   assert.equal(vs[1]!.kind, 'unmatched-begin');
 });
+
+/* =========== §H2 — name agreement on begin/end pairs ============== */
+
+test('§H2 — `begin group A` closed by `end group B` is flagged mismatched-name', () => {
+  // pyxform pairs by NAME, not just kind. A survey balanced by kind
+  // alone (group↔group) but with mismatched names is still pyxform-
+  // invalid and must be flagged.
+  const survey: SurveyRow[] = [
+    row({ type: 'begin group', name: 'A', rowId: 'gA' }),
+    row({ type: 'end group', name: 'B', rowId: 'eB' }),
+  ];
+  const vs = findStructuralViolations(survey);
+  assert.equal(vs.length, 1);
+  assert.equal(vs[0]!.kind, 'mismatched-name');
+  assert.equal(vs[0]!.rowId, 'eB');
+  assert.match(vs[0]!.message, /closes a begin group named "A"/);
+});
+
+test('§H2 — interleaved begin groups `[A][B][/A][/B]` is flagged (kind-balanced but name-crossed)', () => {
+  // Adversarial: kind-balanced by-construction (group↔group↔group↔group),
+  // pyxform-invalid because the inner pair closes the outer first.
+  const survey: SurveyRow[] = [
+    row({ type: 'begin group', name: 'A', rowId: 'gA' }),
+    row({ type: 'begin group', name: 'B', rowId: 'gB' }),
+    row({ type: 'end group', name: 'A', rowId: 'eA' }),
+    row({ type: 'end group', name: 'B', rowId: 'eB' }),
+  ];
+  const vs = findStructuralViolations(survey);
+  // Two mismatched-name violations — first `end group A` closes the
+  // most-recent open `begin group B`; then `end group B` closes the
+  // remaining `begin group A`.
+  assert.equal(vs.length, 2);
+  assert.equal(vs[0]!.kind, 'mismatched-name');
+  assert.equal(vs[1]!.kind, 'mismatched-name');
+});
+
+test('§H2 — `end` row with empty name is tolerated (some templates omit it)', () => {
+  // The cht-default templates sometimes write `end group` with no name
+  // cell, and the parser preserves both forms round-trip. Treat empty
+  // `end` names as "agrees with anything" rather than flagging them.
+  const survey: SurveyRow[] = [
+    row({ type: 'begin group', name: 'inputs', rowId: 'g1' }),
+    row({ type: 'end group', name: '', rowId: 'g1_end' }),
+  ];
+  assert.deepEqual(findStructuralViolations(survey), []);
+});
+
+test('§H2 — `begin` row with empty name is also tolerated (symmetric)', () => {
+  const survey: SurveyRow[] = [
+    row({ type: 'begin group', name: '', rowId: 'g1' }),
+    row({ type: 'end group', name: 'whatever', rowId: 'g1_end' }),
+  ];
+  assert.deepEqual(findStructuralViolations(survey), []);
+});
