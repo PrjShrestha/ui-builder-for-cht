@@ -301,6 +301,76 @@ test('PR2 workbench — Accept a suggested mapping persists status:confirmed on 
   }
 });
 
+/* ====================== PR3 — choice-level mapping ====================== */
+/*
+ * A `select_*` question expands to its options; each option gets its own
+ * dictionary + code picker, stored under `choiceMappings` keyed by the
+ * codec-built (formId, list_name, choice.name) triple. The mini-config
+ * fixture's `danger_signs` row is a select_multiple with 3 options
+ * (vaginal_bleeding, severe_headache, blurred_vision) — perfect anchor
+ * for the e2e.
+ */
+test('PR3 workbench — expand a select_* row, pick a code for one option, persist as choiceMapping', async ({
+  page,
+  request,
+}) => {
+  const tmpProject = await fs.mkdtemp(path.join(os.tmpdir(), 'cht-ui-e2e-fhir-choices-'));
+  try {
+    await fs.cp(FIXTURE_DIR, tmpProject, { recursive: true });
+    await request.post('http://127.0.0.1:5174/api/project/open', { data: { path: tmpProject } });
+
+    await page.goto('/');
+    await expect(page.getByText(path.basename(tmpProject)).first()).toBeVisible();
+    await page.locator('.nav-item', { hasText: 'Standard codes' }).click();
+    await expect(page.getByRole('heading', { name: 'Standard codes', level: 1 })).toBeVisible();
+
+    // Find the danger_signs row in the columns table.
+    const dangerRow = page
+      .locator('tr')
+      .filter({ has: page.locator('code', { hasText: 'danger_signs' }) });
+    await expect(dangerRow).toBeVisible();
+
+    // Expand the choice list — the button label reads "▸ map 3 options".
+    await dangerRow.getByRole('button', { name: /map 3 options/ }).click();
+
+    // The three options now render as sub-rows.
+    const vaginalBleedingRow = page
+      .locator('tr.choice-row')
+      .filter({ has: page.locator('code', { hasText: /^vaginal_bleeding$/ }) });
+    await expect(vaginalBleedingRow).toBeVisible();
+    await expect(vaginalBleedingRow.locator('.status-chip.status-unmapped')).toBeVisible();
+
+    // Open the two-step picker. Default dictionary is LOINC (first
+    // entry in the pack) — its entries appear immediately with an
+    // empty search. Pick the first one.
+    await vaginalBleedingRow.getByRole('button', { name: 'Pick a code…' }).click();
+    const picker = page.locator('.two-step-picker');
+    await expect(picker).toBeVisible();
+    await expect(picker.locator('.picker-result').first()).toBeVisible();
+    await picker.locator('.picker-result').first().click();
+
+    // After picking, the option's status flips to confirmed.
+    await expect(vaginalBleedingRow.locator('.status-chip.status-confirmed')).toBeVisible();
+
+    // Re-read the sidecar via API — the choice-level mapping is keyed by
+    // the codec-built (formId, list_name, choice.name). Confirm both
+    // structure and the confirmedBy stamp.
+    const res = await request.get('http://127.0.0.1:5174/api/fhir-mapping');
+    const body = (await res.json()) as {
+      mapping: {
+        choiceMappings: Record<string, { status: string; confirmedBy: string | null }>;
+      };
+    };
+    const choiceKey = 'app:pregnancy/danger_signs/vaginal_bleeding';
+    const persisted = body.mapping.choiceMappings[choiceKey];
+    expect(persisted, `expected choiceMappings[${choiceKey}] to be saved`).toBeTruthy();
+    expect(persisted!.status).toBe('confirmed');
+    expect(persisted!.confirmedBy).toBeTruthy();
+  } finally {
+    await fs.rm(tmpProject, { recursive: true, force: true });
+  }
+});
+
 /* ============================== helpers ============================== */
 
 async function snapshotProject(

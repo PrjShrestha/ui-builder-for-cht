@@ -65,6 +65,22 @@
       "display": "Maternal care for unspecified condition predominantly related to pregnancy",
       "dictionaryVersion": "ICD11-2024-01",
       "aliases": ["danger signs", "pregnancy complications", "maternal condition"]
+    },
+    {
+      "questionName": "anc_visit_outcome",
+      "code": "Z34.9",
+      "system": "http://hl7.org/fhir/sid/icd-10",
+      "display": "Encounter for supervision of normal pregnancy, unspecified",
+      "dictionaryVersion": "ICD10-2024",
+      "aliases": ["antenatal visit", "ANC visit", "pregnancy supervision"]
+    },
+    {
+      "questionName": "hiv_status",
+      "code": "138571",
+      "system": "https://app.openconceptlab.org/orgs/CIEL/sources/CIEL",
+      "display": "HIV test result",
+      "dictionaryVersion": "CIEL-2024.01",
+      "aliases": ["HIV result", "HIV status", "human immunodeficiency virus"]
     }
   ]
 }

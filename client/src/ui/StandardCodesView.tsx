@@ -20,9 +20,13 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
+  encodeChoiceKey,
   encodeQuestionKey,
   mappableQuestions,
   formCoverage,
+  SELECT_TYPE_RE,
+  type ChoiceMapping,
+  type ChoiceRow,
   type FhirMapping,
   type QuestionMapping,
   type StarterPack,
@@ -275,6 +279,30 @@ function MappableColumnsTable(props: {
     });
   }
 
+  /** PR3 — write a per-choice mapping. The key is built via the codec
+   *  (`encodeChoiceKey`) — NEVER string concat (MVP §3 item 6: a
+   *  `/`-bearing list_name or choice.name would false-orphan a live
+   *  binding on the next reconcile pass). */
+  function updateChoiceMapping(
+    listName: string,
+    choiceName: string,
+    next: ChoiceMapping | null,
+  ): void {
+    const key = encodeChoiceKey(props.formId, listName, choiceName);
+    const nextChoices: Record<string, ChoiceMapping> = {
+      ...props.mapping.choiceMappings,
+    };
+    if (next === null) {
+      delete nextChoices[key];
+    } else {
+      nextChoices[key] = next;
+    }
+    props.onSave({
+      ...props.mapping,
+      choiceMappings: nextChoices,
+    });
+  }
+
   return (
     <section className="card columns-table">
       <header className="coverage-summary">
@@ -309,14 +337,31 @@ function MappableColumnsTable(props: {
             {rows.map((row) => {
               const key = encodeQuestionKey(props.formId, row.name);
               const m = props.mapping.questionMappings[key];
+              // PR3 — if the row is a `select_one X` / `select_multiple X`,
+              // collect its choices so the row can expand to per-option
+              // mapping. The `SELECT_TYPE_RE` regex captures the
+              // list_name in group 2; we then look up matching choice
+              // rows in form.choices.
+              const selectMatch = row.type.trim().match(SELECT_TYPE_RE);
+              const listName = selectMatch ? selectMatch[2]! : null;
+              const choices = listName
+                ? props.survey.choices.filter((c) => c.list_name === listName)
+                : [];
               return (
                 <MappableRow
                   key={row.rowId}
+                  formId={props.formId}
                   rowName={row.name}
                   rowLabel={row.labels['en'] || row.name}
+                  listName={listName}
+                  choices={choices}
                   mapping={m}
+                  choiceMappings={props.mapping.choiceMappings}
                   pack={props.pack}
                   onChange={(next) => updateMapping(row.name, next)}
+                  onChoiceChange={(choiceName, nextChoice) =>
+                    updateChoiceMapping(listName!, choiceName, nextChoice)
+                  }
                 />
               );
             })}
@@ -330,13 +375,21 @@ function MappableColumnsTable(props: {
 /* ============================ per-row UI ============================ */
 
 function MappableRow(props: {
+  formId: string;
   rowName: string;
   rowLabel: string;
+  /** PR3 — when the row is a `select_*`, the list_name + choices feed
+   *  the choice-level expansion. `null`/empty = non-select row. */
+  listName: string | null;
+  choices: ChoiceRow[];
   mapping: QuestionMapping | undefined;
+  choiceMappings: Record<string, ChoiceMapping>;
   pack: StarterPack | null;
   onChange: (next: QuestionMapping | null) => void;
+  onChoiceChange: (choiceName: string, next: ChoiceMapping | null) => void;
 }) {
   const [editing, setEditing] = useState(false);
+  const [showChoices, setShowChoices] = useState(false);
   const m = props.mapping;
   const status: 'confirmed' | 'suggested' | 'skipped' | 'unmapped' = m
     ? (m.status as 'confirmed' | 'suggested' | 'skipped' | 'orphaned') ===
@@ -441,6 +494,158 @@ function MappableRow(props: {
           {status === 'unmapped' && (
             <button type="button" onClick={() => setEditing(true)}>
               Pick a code…
+            </button>
+          )}
+          {/* PR3 — `select_*` row gets an extra toggle to expand its
+              choices for per-option mapping. Only shown for rows with
+              ≥1 choice in the form's choice list. */}
+          {props.listName && props.choices.length > 0 && (
+            <>
+              {' '}
+              <button
+                type="button"
+                className="link expand-choices"
+                onClick={() => setShowChoices((s) => !s)}
+                aria-expanded={showChoices}
+              >
+                {showChoices ? '▾ hide options' : `▸ map ${props.choices.length} option${props.choices.length === 1 ? '' : 's'}`}
+              </button>
+            </>
+          )}
+        </td>
+      </tr>
+      {editing && props.pack && (
+        <tr className="picker-row">
+          <td colSpan={4}>
+            <TwoStepPicker
+              pack={props.pack}
+              onPick={pick}
+              onCancel={() => setEditing(false)}
+            />
+          </td>
+        </tr>
+      )}
+      {/* PR3 — choice-level mapping rows. Rendered as sub-rows under the
+          parent question; each carries its own (formId, list_name,
+          choice.name) key in choiceMappings. Key is codec-built so a
+          `/`-bearing choice name never false-orphans (MVP §3 item 6). */}
+      {showChoices &&
+        props.choices.map((choice) => (
+          <ChoiceMappingRow
+            key={choice.rowId}
+            choice={choice}
+            mapping={
+              props.choiceMappings[
+                encodeChoiceKey(props.formId, props.listName!, choice.name)
+              ]
+            }
+            pack={props.pack}
+            onChange={(next) => props.onChoiceChange(choice.name, next)}
+          />
+        ))}
+    </>
+  );
+}
+
+/* ============================ choice-level row ============================ */
+
+/**
+ * PR3 — per-option mapping row, rendered as a sub-row under a `select_*`
+ * question when the user expands "map N options". Same Accept/Change/Skip
+ * affordances as `MappableRow`, but writes into `mapping.choiceMappings`
+ * (keyed by codec-built `(formId, list_name, choice.name)` per MVP §3
+ * item 6). The starter pack today carries no choice-level concepts, so
+ * choices arrive `unmapped` until the user picks one via the two-step
+ * picker.
+ */
+function ChoiceMappingRow(props: {
+  choice: ChoiceRow;
+  mapping: ChoiceMapping | undefined;
+  pack: StarterPack | null;
+  onChange: (next: ChoiceMapping | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const m = props.mapping;
+  const status: 'confirmed' | 'suggested' | 'skipped' | 'unmapped' = m
+    ? (m.status as 'confirmed' | 'suggested' | 'skipped' | 'orphaned') === 'orphaned'
+      ? 'unmapped'
+      : (m.status as 'confirmed' | 'suggested' | 'skipped')
+    : 'unmapped';
+
+  function skip(): void {
+    props.onChange({
+      code: m?.code ?? '',
+      system: m?.system ?? '',
+      display: m?.display ?? '',
+      dictionaryVersion: m?.dictionaryVersion ?? '',
+      source: m?.source ?? 'manual',
+      status: 'skipped',
+      confirmedBy: 'workbench-user',
+      confirmedAt: new Date().toISOString(),
+      extras: m?.extras ?? {},
+    });
+  }
+
+  function pick(picked: { code: string; system: string; display: string; dictionaryVersion: string }): void {
+    props.onChange({
+      code: picked.code,
+      system: picked.system,
+      display: picked.display,
+      dictionaryVersion: picked.dictionaryVersion,
+      source: 'manual',
+      status: 'confirmed',
+      confirmedBy: 'workbench-user',
+      confirmedAt: new Date().toISOString(),
+      extras: m?.extras ?? {},
+    });
+    setEditing(false);
+  }
+
+  const label = props.choice.labels['en'] || props.choice.name;
+
+  return (
+    <>
+      <tr className={`choice-row row-status-${status}`}>
+        <td className="choice-cell">
+          ↳ <strong>{label}</strong>{' '}
+          <code className="muted small">{props.choice.name}</code>
+        </td>
+        <td>
+          {m && (m.status === 'confirmed' || m.status === 'suggested') ? (
+            <span className={`code-chip ${m.status}`}>
+              <code>{m.code}</code>
+              <span className="muted small"> ({systemLabel(m.system)})</span>
+              <br />
+              <span className="muted small">{m.display}</span>
+            </span>
+          ) : m && m.status === 'skipped' ? (
+            <span className="muted">— skipped —</span>
+          ) : (
+            <span className="muted">— no code yet —</span>
+          )}
+        </td>
+        <td>
+          <span className={`status-chip status-${status}`}>{statusLabel(status)}</span>
+        </td>
+        <td>
+          {status === 'unmapped' && (
+            <button type="button" onClick={() => setEditing(true)}>
+              Pick a code…
+            </button>
+          )}
+          {status === 'confirmed' && (
+            <>
+              <button type="button" onClick={() => setEditing(true)}>
+                Change
+              </button>{' '}
+              <button type="button" className="link" onClick={skip}>
+                Skip
+              </button>
+            </>
+          )}
+          {status === 'skipped' && (
+            <button type="button" onClick={() => setEditing(true)}>
+              Map instead
             </button>
           )}
         </td>

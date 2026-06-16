@@ -429,6 +429,10 @@ code {
 }
 .picker-result:hover { background: #eef2ff; }
 .picker-actions { text-align: right; }
+/* PR3 — choice-level sub-rows under a select_* question */
+.choice-row .choice-cell { padding-left: 32px; background: #fcfcfd; }
+.choice-row { font-size: 12.5px; }
+.expand-choices { font-size: 11px; color: #6366f1; }
 
 /* ---- Overview cards ---- */
 .overview-grid {
