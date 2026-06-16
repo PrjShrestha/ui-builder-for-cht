@@ -42,7 +42,8 @@ import {
   violationsByRowId,
   diffXlsForms,
   findStructuralViolations,
-  structuralMarker,
+  planSurveyMove,
+  planUngroup,
   type StructuralViolation,
   type FieldKind,
   type OrderingViolation,
@@ -415,44 +416,17 @@ function SurveyTab(props: {
   function onDragEnd(e: DragEndEvent) {
     const { active, over } = e;
     if (!over || active.id === over.id) return;
-    const oldIndex = form.survey.findIndex((r) => r.rowId === active.id);
-    const newIndex = form.survey.findIndex((r) => r.rowId === over.id);
-    if (oldIndex < 0 || newIndex < 0) return;
-
-    // §A4 group-as-unit drag — if the dragged row is a `begin group` /
-    // `begin repeat`, the move slices the ENTIRE begin..end block as one
-    // unit. The leaf-drag path is unchanged for plain rows.
-    const activeMarker = structuralMarker(form.survey[oldIndex]!);
-    const isGroupBegin = activeMarker === 'begin-group' || activeMarker === 'begin-repeat';
-    let predictedSurvey: SurveyRow[];
-    if (isGroupBegin) {
-      const endIdx = findMatchingEndIndex(form.survey, oldIndex);
-      if (endIdx < 0) {
-        // Unbalanced source — leave the survey alone; the §A6 banner
-        // already tells the user to fix the imbalance.
-        return;
+    // §B2 — all structural decision logic lives in shared/planSurveyMove
+    // so it's unit-tested and stays consistent with the §A6 save-guard
+    // oracle. The caller is now thin: dispatch, surface error message
+    // on reject, prompt for dependency-violation on leaf-ok.
+    const plan = planSurveyMove(form.survey, String(active.id), String(over.id));
+    if (plan.kind === 'rejected') {
+      // Silent no-op for the same-row case; surface the message
+      // otherwise so the user sees WHY their drop was refused.
+      if (plan.reason !== 'rows-not-found' || String(active.id) !== String(over.id)) {
+        setError(plan.message);
       }
-      // Refuse drops inside the group's own span (you can't move a group
-      // into itself).
-      if (newIndex > oldIndex && newIndex <= endIdx) {
-        setError('Move blocked — a group cannot land inside its own contents.');
-        return;
-      }
-      predictedSurvey = moveSurveySlice(form.survey, oldIndex, endIdx, newIndex);
-    } else {
-      predictedSurvey = arrayMove(form.survey, oldIndex, newIndex);
-    }
-
-    // §A4 leaf safety — predict what the survey would look like after
-    // this move and refuse if it would introduce a structural violation.
-    // The save-time guard (§A6) would block the eventual write anyway,
-    // but catching it at the drag-end avoids putting the form into an
-    // un-savable state in the first place.
-    const prevStructural = findStructuralViolations(form.survey);
-    const nextStructural = findStructuralViolations(predictedSurvey);
-    if (nextStructural.length > prevStructural.length) {
-      const first = nextStructural[nextStructural.length - 1]!;
-      setError(`Move blocked — it would unbalance the form: ${first.message}`);
       return;
     }
 
@@ -460,7 +434,8 @@ function SurveyTab(props: {
     // (Skipped for group-as-unit moves — the dependency validator is
     // per-row and a group move's per-row impact is harder to summarize;
     // the save-time validator still catches a broken survey.)
-    if (!isGroupBegin) {
+    if (!plan.isGroupMove) {
+      const newIndex = form.survey.findIndex((r) => r.rowId === over.id);
       const broken = predictViolationsForMove(form, String(active.id), newIndex);
       if (broken.length > 0) {
         const ok = window.confirm(
@@ -470,7 +445,7 @@ function SurveyTab(props: {
         if (!ok) return;
       }
     }
-    patch({ ...form, survey: predictedSurvey });
+    patch({ ...form, survey: plan.next });
   }
 
   // Phase-2 picker draft. Held in local state so the row doesn't enter
@@ -625,26 +600,26 @@ function SurveyTab(props: {
     if (idx < 0) return;
     const newIndex = idx + direction;
     if (newIndex < 0 || newIndex >= form.survey.length) return;
+    const targetRowId = form.survey[newIndex]!.rowId;
 
-    // §A4 — same boundary check as onDragEnd so arrow-key reorders can't
-    // split a begin/end pair either.
-    const predictedSurvey = arrayMove(form.survey, idx, newIndex);
-    const prevStructural = findStructuralViolations(form.survey);
-    const nextStructural = findStructuralViolations(predictedSurvey);
-    if (nextStructural.length > prevStructural.length) {
-      const first = nextStructural[nextStructural.length - 1]!;
-      setError(`Move blocked — it would unbalance the form: ${first.message}`);
+    // §B2 — share the §A4 structural decision with onDragEnd via the
+    // shared planner. The dependency-violation prompt stays here (the
+    // planner doesn't know about the dependency validator).
+    const plan = planSurveyMove(form.survey, rowId, targetRowId);
+    if (plan.kind === 'rejected') {
+      setError(plan.message);
       return;
     }
-
-    const broken = predictViolationsForMove(form, rowId, newIndex);
-    if (broken.length > 0) {
-      const ok = window.confirm(
-        `Moving this row will break dependency on: ${broken.join(', ')}. Move anyway?`,
-      );
-      if (!ok) return;
+    if (!plan.isGroupMove) {
+      const broken = predictViolationsForMove(form, rowId, newIndex);
+      if (broken.length > 0) {
+        const ok = window.confirm(
+          `Moving this row will break dependency on: ${broken.join(', ')}. Move anyway?`,
+        );
+        if (!ok) return;
+      }
     }
-    patch({ ...form, survey: predictedSurvey });
+    patch({ ...form, survey: plan.next });
   }
 
   function toggleGroup(beginRowId: string) {
@@ -669,22 +644,14 @@ function SurveyTab(props: {
    * and is deferred to a follow-up slice. Plan §A5 wrap.)
    */
   function ungroup(beginRowId: string) {
-    const beginIdx = form.survey.findIndex((r) => r.rowId === beginRowId);
-    if (beginIdx < 0) return;
-    const endIdx = findMatchingEndIndex(form.survey, beginIdx);
-    if (endIdx < 0) {
-      setError(
-        'Cannot ungroup — this group has no matching end row. Fix the imbalance first.',
-      );
+    // §B2 — delegate to shared/planUngroup so the operation is unit-tested
+    // and uses the same balance oracle the §A6 save-guard does.
+    const plan = planUngroup(form.survey, beginRowId);
+    if (plan.kind === 'rejected') {
+      setError(plan.message);
       return;
     }
-    // Slice out the begin row and the end row; children stay in place.
-    const next = [
-      ...form.survey.slice(0, beginIdx),
-      ...form.survey.slice(beginIdx + 1, endIdx),
-      ...form.survey.slice(endIdx + 1),
-    ];
-    patch({ ...form, survey: next });
+    patch({ ...form, survey: plan.next });
   }
 
   /**
@@ -744,7 +711,7 @@ function SurveyTab(props: {
   return (
     <div className="survey-tab">
       <div className="row gap toolbar">
-        <button onClick={() => addQuestion()}>+ Question</button>
+        <button onClick={() => addQuestion(defaultInsertIndex(form.survey))}>+ Question</button>
         <div className="row gap mode-toggle">
           <button
             className={mode === 'simple' ? 'active' : 'link'}
@@ -761,7 +728,11 @@ function SurveyTab(props: {
             Full
           </button>
         </div>
-        {mode === 'simple' && hiddenSimpleCount > 0 && (
+        {/* Only show the "N plumbing rows hidden" hint when there ARE
+            visible rows. When Simple mode is empty (a freshly-scaffolded
+            Default form), the empty-state below carries the message
+            instead — §B1 cold-start fix. */}
+        {mode === 'simple' && hiddenSimpleCount > 0 && displayItems.length > 0 && (
           <span className="muted small">
             {hiddenSimpleCount} plumbing row{hiddenSimpleCount === 1 ? '' : 's'} hidden (structural, hidden, inputs/ calculates) — switch to Full to edit.
           </span>
@@ -776,6 +747,37 @@ function SurveyTab(props: {
           <div className="survey-list">{displayItems.map(renderItem)}</div>
         </SortableContext>
       </DndContext>
+
+      {/* §B1 — positive empty-state for the cold-start case. Simple
+          mode + zero visible rows means either a freshly-scaffolded
+          Default form (real plumbing exists, user just hasn't added
+          questions yet) or a Blank form. Either way the right message
+          is encouragement, not a "N rows hidden" warning. */}
+      {mode === 'simple' && displayItems.length === 0 && (
+        <div className="survey-empty-state">
+          {hiddenSimpleCount > 0 ? (
+            <>
+              <p>
+                <strong>Your form is ready.</strong> The standard patient-linking setup is in
+                place ({hiddenSimpleCount} plumbing row
+                {hiddenSimpleCount === 1 ? '' : 's'} — view in Full mode).
+              </p>
+              <p className="muted">Add your first question to start authoring.</p>
+            </>
+          ) : (
+            <p className="muted">
+              No questions yet. Click <strong>+ Question</strong> to add your first row.
+            </p>
+          )}
+          <button
+            type="button"
+            className="primary"
+            onClick={() => addQuestion(defaultInsertIndex(form.survey))}
+          >
+            + Add your first question
+          </button>
+        </div>
+      )}
 
       {pickerOpen && (
         <QuestionTypePicker
@@ -869,48 +871,38 @@ type DisplayItem =
     };
 
 /**
- * Find the survey index of the `end` row that matches the `begin` row at
- * `beginIdx`. Returns -1 if the survey is unbalanced (no matching end).
- * Used by §A4 group-as-unit drag to compute the begin..end slice bounds.
+ * §B1 — pick the index where a top-level "+ Question" should land. The
+ * Part-B Default scaffold ends with linking `calculate` rows at depth 0
+ * (`patient_uuid`/`patient_id`/`created_by`/`created_by_person_uuid`);
+ * appending past those would silently bury the user's first real
+ * question behind invisible plumbing. Insert just before that trailing
+ * `calculate` run; on a form with no trailing calculates this returns
+ * `survey.length` and the append-to-end behavior is preserved.
  */
-function findMatchingEndIndex(survey: SurveyRow[], beginIdx: number): number {
-  const beginMarker = structuralMarker(survey[beginIdx]!);
-  if (beginMarker !== 'begin-group' && beginMarker !== 'begin-repeat') return -1;
-  let depth = 1;
-  for (let j = beginIdx + 1; j < survey.length; j++) {
-    const m = structuralMarker(survey[j]!);
-    if (m === 'begin-group' || m === 'begin-repeat') depth++;
-    else if (m === 'end-group' || m === 'end-repeat') {
+function defaultInsertIndex(survey: SurveyRow[]): number {
+  let depth = 0;
+  let trailingStart = -1;
+  for (let j = 0; j < survey.length; j++) {
+    const t = survey[j]!.type.trim().toLowerCase();
+    if (t === 'begin group' || t === 'begin repeat') {
+      depth++;
+      trailingStart = -1;
+      continue;
+    }
+    if (t === 'end group' || t === 'end repeat') {
       depth--;
-      if (depth === 0) return j;
+      trailingStart = -1;
+      continue;
+    }
+    if (depth !== 0) continue;
+    if (t === 'calculate') {
+      if (trailingStart === -1) trailingStart = j;
+    } else {
+      // any other top-level row breaks the trailing-calc run
+      trailingStart = -1;
     }
   }
-  return -1;
-}
-
-/**
- * Move the contiguous slice `[fromStart, fromEnd]` (inclusive) of `survey`
- * to land starting at `toIndex` (interpreted in the ORIGINAL survey
- * indexing). Pure — returns a new array. Used for §A4 group-as-unit drag
- * so the entire begin..end subtree moves as one.
- */
-function moveSurveySlice<T>(
-  arr: T[],
-  fromStart: number,
-  fromEnd: number,
-  toIndex: number,
-): T[] {
-  if (fromStart < 0 || fromEnd >= arr.length || fromStart > fromEnd) return arr;
-  const sliceLength = fromEnd - fromStart + 1;
-  const slice = arr.slice(fromStart, fromEnd + 1);
-  const without = [...arr.slice(0, fromStart), ...arr.slice(fromEnd + 1)];
-  // Translate toIndex from original-survey to without-slice indexing.
-  let insertAt: number;
-  if (toIndex <= fromStart) insertAt = toIndex;
-  else if (toIndex >= fromEnd) insertAt = toIndex - sliceLength + 1;
-  else insertAt = fromStart;
-  insertAt = Math.max(0, Math.min(insertAt, without.length));
-  return [...without.slice(0, insertAt), ...slice, ...without.slice(insertAt)];
+  return trailingStart === -1 ? survey.length : trailingStart;
 }
 
 /** Walk a `DisplayItem[]` tree and return every row ID currently

@@ -3,6 +3,7 @@ export * from './xlsform/parse.js';
 export * from './xlsform/serialize.js';
 export * from './xlsform/dependencies.js';
 export * from './xlsform/structuralBalance.js';
+export * from './xlsform/surveyEdits.js';
 export * from './xlsform/scaffolds.js';
 export * from './xlsform/relevantParser.js';
 export * from './xlsform/diff.js';

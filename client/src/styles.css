@@ -1156,6 +1156,25 @@ code {
 }
 .group-ungroup:hover { color: var(--text); }
 
+/* §B1 — positive empty-state shown when Simple mode has no visible
+   rows (a freshly-scaffolded Default form OR a Blank form). Replaces
+   the "N plumbing rows hidden" muted note that read as a half-broken
+   creation. */
+.survey-empty-state {
+  margin-top: 24px;
+  padding: 24px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  text-align: center;
+  background: #f9fafb;
+}
+.survey-empty-state p { margin: 0 0 8px 0; }
+.survey-empty-state button.primary {
+  margin-top: 8px;
+  padding: 8px 16px;
+  font-weight: 600;
+}
+
 /* §B3 — scaffold choice in the new-form card. */
 .create-form-scaffold {
   margin-top: 10px;

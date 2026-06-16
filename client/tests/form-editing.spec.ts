@@ -384,3 +384,97 @@ test('§A1+§A6 — adding a Group via the picker emits a balanced begin/end pai
     await fs.rm(tmpProject, { recursive: true, force: true });
   }
 });
+
+/* ====================== §B2 — ungroup e2e ====================== */
+/*
+ * docs/plans/shipped-batch-triad-punchlist.md §B2 — group-as-unit move,
+ * boundary-safe leaf move, and ungroup are real shipped mutating paths.
+ * The drag contract is pinned by the 17 shared `surveyEdits.test.ts`
+ * cases (planSurveyMove + planUngroup over every contract: group-as-unit
+ * intact, boundary-split rejected, drop-inside-own-span refused,
+ * ungroup balance). This e2e pins the UNGROUP path end-to-end through
+ * the UI + on-disk save — the one path the user reaches through a
+ * dedicated affordance (the "ungroup" link on each group header).
+ */
+test('§B2 — ungroup round-trips through the UI + on-disk form', async ({
+  page,
+  request,
+}) => {
+  const tmpProject = await fs.mkdtemp(path.join(os.tmpdir(), 'cht-ui-e2e-surveyedits-'));
+  try {
+    await fs.cp(FIXTURE_DIR, tmpProject, { recursive: true });
+    const opened = await request.post('http://127.0.0.1:5174/api/project/open', {
+      data: { path: tmpProject },
+    });
+    expect(opened.ok()).toBeTruthy();
+
+    await page.goto('/');
+    await expect(page.getByText(path.basename(tmpProject)).first()).toBeVisible();
+    await page.locator('.nav-item', { hasText: 'Forms' }).click();
+    await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+    // Full mode so the structural rows render and the group's accordion
+    // header (with the "ungroup" link) is reachable.
+    await page.getByRole('button', { name: 'Full', exact: true }).click();
+    await expect(page.locator('.survey-row').first()).toBeVisible();
+
+    // Add a fresh "triage" group so we have a known begin/end pair to
+    // ungroup without touching the existing `inputs` plumbing accordion.
+    await page.getByRole('button', { name: '+ Question' }).click();
+    const picker = page.locator('.qtype-modal');
+    await picker
+      .locator('input[placeholder*="has_fever"], input[placeholder*="patient_age"]')
+      .first()
+      .fill('triage');
+    await picker
+      .locator('.qtype-tile')
+      .filter({ has: page.locator('.qtype-tile-label', { hasText: /^Group$/ }) })
+      .click();
+    await expect(picker).not.toBeVisible();
+
+    // Save the baseline (triage begin + end seeded).
+    await page.locator('.page-header').getByRole('button', { name: 'Save', exact: true }).click();
+    await page.locator('.rule-builder-card').getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(
+      page.locator('.page-header').getByRole('button', { name: 'Saved', exact: true }),
+    ).toBeVisible();
+
+    const before = await request.get('http://127.0.0.1:5174/api/forms/app:pregnancy');
+    const beforeBody = (await before.json()) as {
+      form: { survey: Array<{ name: string; type: string }> };
+    };
+    expect(beforeBody.form.survey.length).toBe(12); // 10 fixture + 2 triage begin/end
+
+    // Ungroup the triage container via its header link. The shared
+    // planUngroup decision returned `kind:'ok'` and the inline patch
+    // strips the begin/end shell.
+    const triageHeader = page.locator('.survey-group-header', { hasText: 'triage' });
+    await expect(triageHeader).toBeVisible();
+    // The ungroup link sits next to the header inside the same row
+    // container — use the parent `.survey-group-header-row` for scope.
+    const triageHeaderRow = page.locator('.survey-group-header-row', { hasText: 'triage' });
+    await triageHeaderRow.getByRole('button', { name: 'ungroup' }).click();
+
+    // No structural badge appears (the survey is still balanced — empty
+    // begin/end pairs ungroup losslessly).
+    await expect(page.locator('.page-header .badge.danger')).toHaveCount(0);
+
+    // Save the ungrouped state.
+    await page.locator('.page-header').getByRole('button', { name: 'Save', exact: true }).click();
+    await page.locator('.rule-builder-card').getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(
+      page.locator('.page-header').getByRole('button', { name: 'Saved', exact: true }),
+    ).toBeVisible();
+
+    const after = await request.get('http://127.0.0.1:5174/api/forms/app:pregnancy');
+    const afterBody = (await after.json()) as {
+      form: { survey: Array<{ name: string; type: string }> };
+    };
+    // Triage's begin and end are gone (no other group shares the name).
+    const remainingTriage = afterBody.form.survey.filter((r) => r.name === 'triage');
+    expect(remainingTriage).toHaveLength(0);
+    // Row count dropped by exactly 2 (the begin + the end shell rows).
+    expect(afterBody.form.survey.length).toBe(10);
+  } finally {
+    await fs.rm(tmpProject, { recursive: true, force: true });
+  }
+});

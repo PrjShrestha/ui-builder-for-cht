@@ -61,3 +61,24 @@ test('computeSimpleHiddenRowIds keeps a select visible, hides inputs/ plumbing',
   assert.equal(hidden.has('c1'), true, 'inputs/ calculate must be hidden');
   assert.equal(hidden.has('g1'), true, 'structural begin group must be hidden');
 });
+
+test('computeSimpleHiddenRowIds hides EVERY row inside inputs/ regardless of type (§B1 regression)', () => {
+  // The Part-B scaffold seeds a `string _id` inside `inputs/contact` for
+  // the patient-selector pattern; pre-fix that string row leaked into
+  // Simple mode and a fresh Default app form opened as a single cryptic
+  // _id row labeled "Patient ID". Hide every inputs descendant.
+  const survey: SurveyRow[] = [
+    row({ type: 'begin group', name: 'inputs', rowId: 'g_inputs' }),
+    row({ type: 'begin group', name: 'contact', rowId: 'g_contact' }),
+    row({ type: 'string', name: '_id', rowId: 's_id' }), // would-be visible by type
+    row({ type: 'hidden', name: 'patient_id', rowId: 'h_pid' }),
+    row({ type: 'end group', rowId: 'g_contact_end' }),
+    row({ type: 'end group', rowId: 'g_inputs_end' }),
+    row({ type: 'integer', name: 'gravidity', rowId: 'q_grav' }),
+  ];
+  const hidden = computeSimpleHiddenRowIds(survey);
+  assert.equal(hidden.has('s_id'), true, 'string _id inside inputs/ MUST be hidden in Simple mode');
+  assert.equal(hidden.has('h_pid'), true, 'hidden patient_id inside inputs/ stays hidden');
+  assert.equal(hidden.has('g_contact'), true, 'nested begin group inside inputs/ stays hidden');
+  assert.equal(hidden.has('q_grav'), false, 'real question OUTSIDE inputs/ stays visible');
+});

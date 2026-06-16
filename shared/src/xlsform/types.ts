@@ -194,9 +194,16 @@ const CHT_INPUTS_GROUP = 'inputs';
  * Group-aware version of {@link isHiddenInSimpleMode}. Returns the set of
  * `rowId`s that should be hidden in Simple mode for this survey.
  *
- * Behaviour for `calculate` rows:
- *   - Inside the CHT `inputs/` group (at any depth) → hidden as plumbing.
- *   - Anywhere else → visible (treated as a real report-bound output).
+ * **Inside the CHT `inputs/` group, EVERY row is plumbing** — regardless
+ * of type. The Part-B scaffold seeds a `string _id` inside
+ * `inputs/contact` (the CHT patient-selector pattern); under the
+ * pre-fix rule that string row leaked into Simple, making a brand-new
+ * Default app form open as a single cryptic `_id` row labeled "Patient
+ * ID" — Bhishan's signature cold-start abandonment trigger
+ * (docs/plans/shipped-batch-triad-punchlist.md §B1). Treat any row
+ * descended from `inputs/` as hidden in Simple, so a fresh Default form
+ * opens genuinely empty and the user sees the "your form is ready"
+ * empty state.
  *
  * Every other "plumbing" classification from {@link isHiddenInSimpleMode}
  * (structural, hidden, start/end/today, etc.) is applied unchanged.
@@ -213,9 +220,12 @@ export function computeSimpleHiddenRowIds(survey: SurveyRow[]): Set<string> {
       groupStack.pop();
     }
 
-    if (t === 'calculate') {
-      const insideInputs = groupStack.some((g) => g.toLowerCase() === CHT_INPUTS_GROUP);
-      if (insideInputs) hidden.add(row.rowId);
+    const insideInputs = groupStack.some((g) => g.toLowerCase() === CHT_INPUTS_GROUP);
+    if (insideInputs) {
+      // Every row inside `inputs/` is plumbing — Part-B scaffold seeds a
+      // `string _id` there for the patient-selector pattern, which
+      // pre-fix leaked into Simple mode. See §B1.
+      hidden.add(row.rowId);
     } else if (isHiddenInSimpleMode(row)) {
       hidden.add(row.rowId);
     }
