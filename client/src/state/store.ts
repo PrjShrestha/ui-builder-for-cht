@@ -18,7 +18,8 @@ export type View =
   | { kind: 'contact-summary' }
   | { kind: 'flowchart'; id: string }
   | { kind: 'decisions' }
-  | { kind: 'deploy' };
+  | { kind: 'deploy' }
+  | { kind: 'standard-codes' };
 
 export interface ProjectInfo {
   path: string;

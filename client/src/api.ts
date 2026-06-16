@@ -212,4 +212,17 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ content }),
     }),
+
+  // FHIR V1 — Standard codes mapping (docs/plans/fhir-v1-workbench.md).
+  // GET returns the reconciled mapping (orphans relocated from a stale
+  // store); PUT writes the canonical bytes via compare-before-write +
+  // atomic tmp+rename. Sidecar lives at <project>/fhir-mapping.json.
+  getFhirMapping: () =>
+    jsonFetch<{ mapping: import('@cht-ui/shared').FhirMapping }>('/api/fhir-mapping'),
+
+  saveFhirMapping: (mapping: import('@cht-ui/shared').FhirMapping) =>
+    jsonFetch<{ ok: true; written: boolean }>('/api/fhir-mapping', {
+      method: 'PUT',
+      body: JSON.stringify({ mapping }),
+    }),
 };

@@ -12,6 +12,7 @@ import { ContactSummaryEditor } from './ui/ContactSummaryEditor.js';
 import { FlowchartView } from './ui/FlowchartView.js';
 import { DecisionsView } from './ui/DecisionsView.js';
 import { DeployPanel } from './ui/DeployPanel.js';
+import { StandardCodesView } from './ui/StandardCodesView.js';
 import { ErrorBanner } from './ui/ErrorBanner.js';
 import { UndoToastHost } from './ui/UndoToast.js';
 
@@ -78,6 +79,7 @@ export function App() {
         {view.kind === 'flowchart' && <FlowchartView formId={view.id} />}
         {view.kind === 'decisions' && <DecisionsView />}
         {view.kind === 'deploy' && <DeployPanel />}
+        {view.kind === 'standard-codes' && <StandardCodesView />}
       </main>
     </div>
   );

@@ -319,6 +319,37 @@ code {
 .structural-issues-popover li { margin-bottom: 4px; }
 .structural-issues-popover p { margin: 8px 0 0 0; }
 
+/* V1 Standard codes — workbench shell (PR1). Real workbench styling
+   lands in PR2 alongside the form picker + columns table. */
+.standard-codes-view header { margin-bottom: 16px; }
+.standard-codes-view .card { margin-bottom: 12px; padding: 14px 16px; }
+.standard-codes-view .card.error {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.standard-codes-summary {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.standard-codes-summary li {
+  background: #f3f4f6;
+  border-radius: 4px;
+  padding: 6px 12px;
+}
+.standard-codes-summary li.orphan-line {
+  background: #fef3c7;
+  border-left: 3px solid #d97706;
+  flex-basis: 100%;
+}
+.standard-codes-view .card.placeholder {
+  border-style: dashed;
+  background: #fafafa;
+}
+
 /* ---- Overview cards ---- */
 .overview-grid {
   display: grid;

@@ -77,6 +77,15 @@ export function Sidebar() {
           active={view.kind === 'deploy'}
           onClick={() => nav({ kind: 'deploy' })}
         />
+        {/* V1 Standard codes — gated on "project has app forms" per the
+            FHIR V1 plan (no app forms → nothing to map → disable). The
+            workbench is the single place codes are assigned. */}
+        <NavItem
+          label="Standard codes"
+          active={view.kind === 'standard-codes'}
+          onClick={() => nav({ kind: 'standard-codes' })}
+          disabled={!project.hasAppForms}
+        />
       </nav>
       {hasUnsaved && <div className="dirty-flag">Unsaved changes</div>}
     </aside>
