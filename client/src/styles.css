@@ -382,10 +382,16 @@ code {
 .code-chip.confirmed {
   background: #d1fae5;
   border: 1px solid #6ee7b7;
+  color: #065f46;
 }
 .code-chip.suggested {
   background: #fef3c7;
   border: 1px dashed #d97706;
+  color: #92400e;
+}
+.code-chip code {
+  background: none;
+  color: inherit;
 }
 .status-chip {
   display: inline-block;
