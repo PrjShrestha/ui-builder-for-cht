@@ -51,6 +51,20 @@ by reading chip text.
   meaning, and actually implement the `row-status-*` rules (a per-status left-border accent reads in
   greyscale). Keep the dashed-vs-solid border as a reinforcing third channel.
 
+### B3a — Code values are barely legible on the chip backgrounds *(USER-CONFIRMED LIVE — top priority)*
+The user reports they "cannot see the codes properly" in the running workbench. Root cause: `.code-chip`
+([styles.css:377-389](../../client/src/styles.css#L377-L389)) sets a pale colored background (`#d1fae5` /
+`#fef3c7`) but **no text `color`**, and the inner `<code>` element ([styles.css:69-75](../../client/src/styles.css#L69-L75))
+layers its own `background: rgba(0,0,0,0.04)` with no color either — so the code value (`<code>{m.code}</code>`,
+[StandardCodesView.tsx:451](../../client/src/ui/StandardCodesView.tsx#L451)/:616) renders as a muddy
+low-contrast box (two stacked backgrounds, inherited text color never tuned for the pastel chip). The
+status chips read fine only because they set explicit dark text (`#047857`/`#b45309`); the code chips
+never got that.
+- **Fix:** give `.code-chip` an explicit high-contrast per-state text color (e.g. `.confirmed` → `#065f46`,
+  `.suggested` → `#92400e`, both ≥ 4.5:1 on their backgrounds) and neutralize the doubled inner `<code>`
+  background inside a chip (`.code-chip code { background: none; color: inherit; }`). Verify against
+  WCAG AA. This is the most user-visible issue in V1 — do it first.
+
 ---
 
 ## 🟠 High
