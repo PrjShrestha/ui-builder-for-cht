@@ -97,13 +97,80 @@ await writeXlsx(join(root, 'forms', 'app', 'pregnancy.xlsx'), {
   ],
 });
 
-// app_settings/base_settings.json — minimal so the server's `hasAppSettings`
-// check returns true and the project opens cleanly.
+// app_settings/base_settings.json — carries the canonical CHT place hierarchy
+// (district_hospital → health_center → clinic → person) so the Hierarchy editor
+// has a real tree to render/edit. Modeled on server/templates/cht-default.
+const contactTypes = [
+  {
+    id: 'district_hospital',
+    name_key: 'contact.type.district_hospital',
+    group_key: 'contact.type.district_hospital.plural',
+    create_key: 'contact.type.district_hospital.new',
+    edit_key: 'contact.type.place.edit',
+    icon: 'medic-district-hospital',
+    create_form: 'form:contact:district_hospital:create',
+    edit_form: 'form:contact:district_hospital:edit',
+  },
+  {
+    id: 'health_center',
+    name_key: 'contact.type.health_center',
+    group_key: 'contact.type.health_center.plural',
+    create_key: 'contact.type.health_center.new',
+    edit_key: 'contact.type.place.edit',
+    parents: ['district_hospital'],
+    icon: 'medic-health-center',
+    create_form: 'form:contact:health_center:create',
+    edit_form: 'form:contact:health_center:edit',
+  },
+  {
+    id: 'clinic',
+    name_key: 'contact.type.clinic',
+    group_key: 'contact.type.clinic.plural',
+    create_key: 'contact.type.clinic.new',
+    edit_key: 'contact.type.place.edit',
+    parents: ['health_center'],
+    icon: 'medic-clinic',
+    create_form: 'form:contact:clinic:create',
+    edit_form: 'form:contact:clinic:edit',
+  },
+  {
+    id: 'person',
+    name_key: 'contact.type.person',
+    group_key: 'contact.type.person.plural',
+    create_key: 'contact.type.person.new',
+    edit_key: 'contact.type.person.edit',
+    parents: ['district_hospital', 'health_center', 'clinic'],
+    icon: 'medic-person',
+    person: true,
+    create_form: 'form:contact:person:create',
+    edit_form: 'form:contact:person:edit',
+  },
+];
+
 await mkdir(join(root, 'app_settings'), { recursive: true });
 await writeFile(
   join(root, 'app_settings', 'base_settings.json'),
   JSON.stringify(
-    { contact_types: [], place_hierarchy_types: [], permissions: {} },
+    {
+      contact_types: contactTypes,
+      place_hierarchy_types: ['district_hospital', 'health_center', 'clinic'],
+      permissions: {},
+    },
+    null,
+    2,
+  ) + '\n',
+);
+
+// forms/contact/place-types.json — human display names for the place types,
+// surfaced in the Hierarchy editor's "Display name" field.
+await writeFile(
+  join(root, 'forms', 'contact', 'place-types.json'),
+  JSON.stringify(
+    {
+      district_hospital: 'District Hospital',
+      health_center: 'Health Center',
+      clinic: 'Clinic',
+    },
     null,
     2,
   ) + '\n',

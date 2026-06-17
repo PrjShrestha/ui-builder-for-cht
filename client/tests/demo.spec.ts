@@ -274,3 +274,28 @@ test('demo 3 — an edit survives Save → reload (isolated copy, never your rea
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
+
+/* ── Chapter 4 — place hierarchy ──────────────────────────────────────────── */
+
+test('demo 4 — view the place hierarchy and add a new place type', async ({ page }) => {
+  await test.step('Open the Hierarchy editor', async () => {
+    await openProject(page);
+    await page.locator('.nav-item', { hasText: 'Hierarchy' }).click();
+    await expect(page.getByRole('heading', { name: 'Hierarchy' })).toBeVisible();
+    // The canonical place chain (district_hospital → health_center → clinic →
+    // person) renders as a tree.
+    await expect(page.locator('.tree-row', { hasText: 'district_hospital' })).toBeVisible();
+    await expect(page.locator('.tree-row', { hasText: 'person' })).toBeVisible();
+  });
+
+  await test.step('Add a "ward" place type under health_center', async () => {
+    await page.getByRole('button', { name: '+ Type' }).click();
+    const modal = page.locator('.qtype-modal');
+    await expect(modal).toBeVisible();
+    await modal.getByPlaceholder(/chw, patient/).fill('ward');
+    await modal.locator('select').selectOption('health_center');
+    await modal.getByRole('button', { name: 'Add type' }).click();
+    await expect(modal).not.toBeVisible();
+    await expect(page.locator('.tree-row', { hasText: 'ward' })).toBeVisible();
+  });
+});
