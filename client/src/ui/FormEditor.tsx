@@ -98,6 +98,12 @@ export function FormEditor({ formId }: { formId: string }) {
   const [loading, setLoading] = useState(true);
   const [showPreview, setShowPreview] = useState(false);
   const [pendingSaveDiff, setPendingSaveDiff] = useState<XLSFormDiff | null>(null);
+  // §H3 follow-up — click-to-jump channel. The Structural-issues popover lives in
+  // the page header; clicking a row item sets `revealRowId`, which SurveyTab
+  // observes to flip into Full mode (structural plumbing is hidden in Simple)
+  // and scroll/flash/focus the target row. SurveyTab clears it via
+  // `onRevealConsumed` so the same row can be re-clicked later.
+  const [revealRowId, setRevealRowId] = useState<string | null>(null);
   const contactForms = useContactFormFields();
   // Tier 1.5 — flatten the contact-form field lists into a single deduped
   // name list for the calc builder's "Contact input field" reference kind.
@@ -206,7 +212,13 @@ export function FormEditor({ formId }: { formId: string }) {
         </div>
         <div className="row gap">
           {structuralViolations.length > 0 && (
-            <StructuralIssuesBadge violations={structuralViolations} />
+            <StructuralIssuesBadge
+              violations={structuralViolations}
+              onJumpToRow={(rowId) => {
+                setTab('survey');
+                setRevealRowId(rowId);
+              }}
+            />
           )}
           {violations.length > 0 && (
             <span className="badge warn">{violations.length} ordering issue(s)</span>
@@ -288,6 +300,8 @@ export function FormEditor({ formId }: { formId: string }) {
             violationsByRow={violationsByRow}
             inputContactFields={inputContactFields}
             contextKeys={contextKeys}
+            revealRowId={revealRowId}
+            onRevealConsumed={() => setRevealRowId(null)}
           />
           {showPreview && (
             <div className="preview-pane">
@@ -337,7 +351,10 @@ export function FormEditor({ formId }: { formId: string }) {
  * outside-click; the trigger announces both the count and a screen-
  * reader-friendly aria-expanded.
  */
-function StructuralIssuesBadge(props: { violations: StructuralViolation[] }) {
+function StructuralIssuesBadge(props: {
+  violations: StructuralViolation[];
+  onJumpToRow: (rowId: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   // eslint-disable-next-line no-undef
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -406,13 +423,23 @@ function StructuralIssuesBadge(props: { violations: StructuralViolation[] }) {
           <ol>
             {props.violations.map((v) => (
               <li key={`${v.index}-${v.rowId}-${v.kind}`}>
-                <strong>Row {v.index + 1}:</strong> {v.message}
+                <button
+                  type="button"
+                  className="link structural-issue-jump"
+                  onClick={() => {
+                    props.onJumpToRow(v.rowId);
+                    setOpen(false);
+                    triggerRef.current?.focus();
+                  }}
+                >
+                  <strong>Row {v.index + 1}:</strong> {v.message}
+                </button>
               </li>
             ))}
           </ol>
           <p className="muted small">
-            Save is blocked until the form is structurally balanced. Use Full mode to inspect
-            the rows.
+            Save is blocked until the form is structurally balanced. Click an issue to jump
+            to the row (switches to Full mode automatically).
           </p>
         </div>
       )}
@@ -433,13 +460,61 @@ function SurveyTab(props: {
    *  builder's reference kinds. */
   inputContactFields: string[];
   contextKeys: string[];
+  /** §H3 follow-up — when the page-header Structural-issues popover requests
+   *  a jump, FormEditor sets this to the target rowId. The effect below flips
+   *  mode to Full (structural rows are hidden in Simple), scrolls the row's
+   *  DOM anchor into view, pulses a `.row-flash` outline, and focuses the row
+   *  so screen readers announce it. Cleared via `onRevealConsumed` once the
+   *  scroll completes so the same row can be re-clicked. */
+  revealRowId: string | null;
+  onRevealConsumed: () => void;
 }) {
-  const { form, patch, violationsByRow } = props;
+  const { form, patch, violationsByRow, revealRowId, onRevealConsumed } = props;
   const undo = props.undo;
   // §A4 surfaces structural-violation refusals via the shared error
   // toast so the user sees why a move was blocked.
   const setError = useApp((s) => s.setError);
   const [mode, setMode] = useState<'simple' | 'full'>('simple');
+
+  // §H3 follow-up — click-to-jump effect. Runs when the header popover sets
+  // `revealRowId`. Two-phase by design: if we're in Simple, structural rows
+  // are hidden, so the first run flips mode to 'full' and returns; React
+  // re-runs the effect after the re-render commits and that second run does
+  // the actual scroll/flash/focus. We wait one animation frame so the new
+  // DOM is painted before querySelector runs (avoids racing the dnd-kit
+  // SortableContext re-mount). No-ops gracefully if the row anchor isn't
+  // found — an unbalanced survey can render oddly.
+  useEffect(() => {
+    if (!revealRowId) return;
+    if (mode !== 'full') {
+      setMode('full');
+      return;
+    }
+    // `CSS` from dnd-kit shadows the global, so reach for the global
+    // CSSOM `CSS.escape` via `window`.
+    // eslint-disable-next-line no-undef
+    const raf = window.requestAnimationFrame(() => {
+      const el =
+        // eslint-disable-next-line no-undef
+        (document.querySelector(
+          // eslint-disable-next-line no-undef
+          `[data-row-id="${window.CSS.escape(revealRowId)}"]`,
+          // eslint-disable-next-line no-undef
+        ) as HTMLElement | null);
+      if (el) {
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        el.classList.add('row-flash');
+        el.focus({ preventScroll: true });
+        // eslint-disable-next-line no-undef
+        window.setTimeout(() => el.classList.remove('row-flash'), 1600);
+      }
+      onRevealConsumed();
+    });
+    return () => {
+      // eslint-disable-next-line no-undef
+      window.cancelAnimationFrame(raf);
+    };
+  }, [revealRowId, mode, onRevealConsumed]);
   // Begin-row IDs the user has explicitly TOGGLED via the group header.
   // The set stores "flip from default" intent — a group whose name is in
   // DEFAULT_COLLAPSED_GROUP_NAMES (`inputs`) is collapsed by default and
@@ -1134,6 +1209,8 @@ function SurveyGroupAccordion(props: {
       style={style}
       className={`survey-group-accordion depth-${item.depth}`}
       data-structural-type={item.structuralType}
+      data-row-id={item.beginRowId}
+      tabIndex={-1}
     >
       <div className="survey-group-header-row">
         <button
@@ -1252,6 +1329,8 @@ function SurveyRowCard(props: {
       ref={setNodeRef}
       style={style}
       className={`survey-row${structural ? ' structural' : ''}${violations.length ? ' has-violation' : ''}`}
+      data-row-id={props.row.rowId}
+      tabIndex={-1}
     >
       <button className="drag-handle" {...attributes} {...listeners} aria-label="drag">
         ⋮⋮

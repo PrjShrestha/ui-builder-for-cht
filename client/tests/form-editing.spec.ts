@@ -478,3 +478,240 @@ test('§B2 — ungroup round-trips through the UI + on-disk form', async ({
     await fs.rm(tmpProject, { recursive: true, force: true });
   }
 });
+
+/* ============== §H3 follow-up — structural-issues click-to-jump ============== */
+/*
+ * docs/plans/shipped-batch-triad-punchlist.md §H3 (follow-up) — the
+ * Structural-issues popover lists every imbalance, but each entry is now a
+ * clickable button that jumps to the offending row, forces Full mode (so
+ * structural rows are visible), pulses a `.row-flash` outline, and moves
+ * focus to the row. This pins the full chain end-to-end:
+ *   1. an unbalanced survey shows the danger badge in the page header
+ *   2. clicking it opens the popover; clicking an issue triggers the jump
+ *   3. SurveyTab flips Simple → Full and the target accordion gets
+ *      `.row-flash` + focus.
+ *
+ * The unbalance is introduced via the UI (delete the `end group` row of a
+ * freshly-added "triage" group) so the test does not depend on a bespoke
+ * fixture and exercises the actual save-block trigger users hit.
+ */
+test('§H3 follow-up — clicking a structural-issue jumps to the row, forces Full mode, and flashes', async ({
+  page,
+  request,
+}) => {
+  const tmpProject = await fs.mkdtemp(path.join(os.tmpdir(), 'cht-ui-e2e-jump-'));
+  try {
+    await fs.cp(FIXTURE_DIR, tmpProject, { recursive: true });
+    const opened = await request.post('http://127.0.0.1:5174/api/project/open', {
+      data: { path: tmpProject },
+    });
+    expect(opened.ok()).toBeTruthy();
+
+    await page.goto('/');
+    await expect(page.getByText(path.basename(tmpProject)).first()).toBeVisible();
+    await page.locator('.nav-item', { hasText: 'Forms' }).click();
+    await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+    await expect(page.locator('.survey-row').first()).toBeVisible();
+
+    // Full mode is needed to (a) add a group and (b) reach the end-group row
+    // so we can delete it. We'll switch back to Simple after to prove the
+    // jump auto-flips back to Full.
+    await page.getByRole('button', { name: 'Full', exact: true }).click();
+
+    // Seed a balanced "triage" group.
+    await page.getByRole('button', { name: '+ Question' }).click();
+    const picker = page.locator('.qtype-modal');
+    await picker
+      .locator('input[placeholder*="has_fever"], input[placeholder*="patient_age"]')
+      .first()
+      .fill('triage');
+    await picker
+      .locator('.qtype-tile')
+      .filter({ has: page.locator('.qtype-tile-label', { hasText: /^Group$/ }) })
+      .click();
+    await expect(picker).not.toBeVisible();
+
+    // Delete ONLY the end row so the begin is left dangling — unbalanced.
+    const endRow = page
+      .locator('.survey-row')
+      .filter({ has: page.locator('code.type-chip-raw', { hasText: /^end group$/ }) });
+    await expect(endRow).toHaveCount(1);
+    await endRow.getByRole('button', { name: /delete/i }).click();
+
+    // The structural-issues badge MUST appear once the survey goes unbalanced.
+    const badge = page.locator('.page-header .badge.danger');
+    await expect(badge).toBeVisible();
+
+    // Switch back to Simple so we can prove the jump auto-flips to Full.
+    await page.getByRole('button', { name: 'Simple', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Simple', exact: true })).toHaveClass(/active/);
+
+    // Open the popover and click the first issue (the "Row N" jump button).
+    await badge.click();
+    const popover = page.locator('.structural-issues-popover');
+    await expect(popover).toBeVisible();
+    await popover.locator('button.structural-issue-jump').first().click();
+
+    // Jump consequences:
+    //   1. mode is now Full
+    //   2. some row/accordion picked up `.row-flash` (the begin of triage
+    //      renders as an accordion since the end is missing — its data-row-id
+    //      is the begin row's id)
+    //   3. that element holds focus
+    await expect(page.getByRole('button', { name: 'Full', exact: true })).toHaveClass(/active/);
+    const flashed = page.locator('[data-row-id].row-flash');
+    await expect(flashed).toHaveCount(1);
+    // Focus assertion: the flashed element is the active focus target. We
+    // compare data-row-id rather than the DOM node directly so the assertion
+    // works whether it's a `.survey-row` or `.survey-group-accordion`.
+    const flashedRowId = await flashed.getAttribute('data-row-id');
+    const activeRowId = await page.evaluate(
+      // eslint-disable-next-line no-undef
+      () => (document.activeElement as HTMLElement | null)?.getAttribute('data-row-id') ?? null,
+    );
+    expect(activeRowId).toBe(flashedRowId);
+  } finally {
+    await fs.rm(tmpProject, { recursive: true, force: true });
+  }
+});
+
+/* ==================== Calculation builder (Tier 0/1/1.5) ==================== */
+/*
+ * docs/plans/calculation-builder.md §4 lists "calc-builder e2e, incl. a
+ * Decisions-still-renders assertion after a builder edit" as a deliverable.
+ * Until now the calc builder had unit/round-trip coverage only (the 17
+ * calculationBuilder.roundtrip.test.ts cases + the 258-cell field-coverage
+ * tripwire) but ZERO browser coverage. These two tests close that:
+ *   1. a single-value (auto-quoted text) edit round-trips save → reload —
+ *      the round-trip-to-disk invariant through the real serialize/parse path;
+ *   2. an if-then decision table built in the UI round-trips AND surfaces in
+ *      the read-only Decisions sign-off view (the §4 "Decisions-still-renders"
+ *      assertion, made concrete: the calc actually appears there).
+ *
+ * Both save, so both run against an isolated temp copy of the fixture.
+ * `gravidity` (the only `integer` row) is the edit target — visible in the
+ * default Simple mode, and a regular question accepts a `calculation` cell.
+ */
+
+/** Open the calculation builder on gravidity's advanced panel. Returns the
+ *  calc-field locator (for post-save value assertions) and the modal. */
+async function openCalcBuilderOnGravidity(page: Page) {
+  const gravRow = rowByType(page, /^integer$/);
+  await gravRow.getByRole('button', { name: /show advanced/ }).click();
+  const calcField = gravRow
+    .locator('.expr-field')
+    .filter({ has: page.locator('code.raw-col-tag', { hasText: 'calculation' }) });
+  // The build button lives inside the `<label>`, so its computed accessible
+  // name is the whole field label — match on visible text instead.
+  await calcField.locator('button', { hasText: 'build' }).click();
+  const modal = page.locator('.rule-builder-modal[aria-label="Calculation builder"]');
+  await expect(modal).toBeVisible();
+  return { calcField, modal };
+}
+
+test('calc builder — a single-value (auto-quoted text) calculation round-trips save → reload', async ({
+  page,
+  request,
+}) => {
+  const tmpProject = await fs.mkdtemp(path.join(os.tmpdir(), 'cht-ui-e2e-calc-'));
+  try {
+    await fs.cp(FIXTURE_DIR, tmpProject, { recursive: true });
+    const opened = await request.post('http://127.0.0.1:5174/api/project/open', {
+      data: { path: tmpProject },
+    });
+    expect(opened.ok()).toBeTruthy();
+
+    await page.goto('/');
+    await expect(page.getByText(path.basename(tmpProject)).first()).toBeVisible();
+    await page.locator('.nav-item', { hasText: 'Forms' }).click();
+    await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+    await expect(page.locator('.survey-row').first()).toBeVisible();
+
+    const { calcField, modal } = await openCalcBuilderOnGravidity(page);
+    await modal.getByRole('tab', { name: 'Single value' }).click();
+    await modal.getByRole('radio', { name: 'Text', exact: true }).click();
+    await modal.getByLabel('Literal text value').fill('yes');
+    await modal.getByRole('button', { name: 'Save', exact: true }).click();
+
+    // Auto-quote: the literal `yes` is stored as the XLSForm string `'yes'`.
+    await expect(calcField.locator('input').first()).toHaveValue("'yes'");
+
+    // Persist through the diff modal, then reload — the server re-parses from
+    // disk, proving the calculation round-tripped serialize → write → parse.
+    await page.locator('.page-header').getByRole('button', { name: 'Save', exact: true }).click();
+    await page.locator('.rule-builder-card').getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(
+      page.locator('.page-header').getByRole('button', { name: 'Saved', exact: true }),
+    ).toBeVisible();
+
+    await page.goto('/');
+    await page.locator('.nav-item', { hasText: 'Forms' }).click();
+    await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+    await expect(page.locator('.survey-row').first()).toBeVisible();
+
+    const reGrav = rowByType(page, /^integer$/);
+    await reGrav.getByRole('button', { name: /show advanced/ }).click();
+    const reCalc = reGrav
+      .locator('.expr-field')
+      .filter({ has: page.locator('code.raw-col-tag', { hasText: 'calculation' }) });
+    await expect(reCalc.locator('input').first()).toHaveValue("'yes'");
+  } finally {
+    await fs.rm(tmpProject, { recursive: true, force: true });
+  }
+});
+
+test('calc builder — an if-then table round-trips and surfaces in the Decisions view', async ({
+  page,
+  request,
+}) => {
+  const tmpProject = await fs.mkdtemp(path.join(os.tmpdir(), 'cht-ui-e2e-calc-dt-'));
+  try {
+    await fs.cp(FIXTURE_DIR, tmpProject, { recursive: true });
+    const opened = await request.post('http://127.0.0.1:5174/api/project/open', {
+      data: { path: tmpProject },
+    });
+    expect(opened.ok()).toBeTruthy();
+
+    await page.goto('/');
+    await expect(page.getByText(path.basename(tmpProject)).first()).toBeVisible();
+    await page.locator('.nav-item', { hasText: 'Forms' }).click();
+    await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+    await expect(page.locator('.survey-row').first()).toBeVisible();
+
+    const { calcField, modal } = await openCalcBuilderOnGravidity(page);
+    await modal.getByRole('tab', { name: 'If-then table' }).click();
+    await modal.getByRole('button', { name: '+ Rule' }).click();
+
+    // Give rule 1 a real (non-empty) condition. "+ comparison" seeds
+    // `${<first field>} = ''` — enough to serialize to a valid if-chain that
+    // re-parses as a decision_table (an empty condition would demote to raw).
+    await modal.getByRole('button', { name: /edit condition for rule 1/ }).click();
+    // The nested rule builder renders INSIDE the calc-card, so both cards
+    // carry a "Save" — target the innermost (last) card to disambiguate.
+    const ruleBuilder = page.locator('.rule-builder-card').last();
+    await ruleBuilder.getByRole('button', { name: '+ comparison' }).click();
+    await ruleBuilder.getByRole('button', { name: 'Save', exact: true }).click();
+
+    // Otherwise → numeric 0, so the cell serializes to `if(cond, '', 0)`.
+    const otherwise = modal.locator('.otherwise-row');
+    await otherwise.getByRole('radio', { name: 'Number' }).click();
+    await otherwise.locator('input[type="number"]').fill('0');
+
+    await modal.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(calcField.locator('input').first()).toHaveValue(/^if\(/);
+
+    // Persist.
+    await page.locator('.page-header').getByRole('button', { name: 'Save', exact: true }).click();
+    await page.locator('.rule-builder-card').getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(
+      page.locator('.page-header').getByRole('button', { name: 'Saved', exact: true }),
+    ).toBeVisible();
+
+    // The §4 deliverable: the read-only Decisions view still renders AND now
+    // aggregates the new decision-table calculation (`Compute "gravidity"`).
+    await page.locator('.nav-item', { hasText: 'Decisions' }).click();
+    await expect(page.getByText('Compute "gravidity"')).toBeVisible();
+  } finally {
+    await fs.rm(tmpProject, { recursive: true, force: true });
+  }
+});
