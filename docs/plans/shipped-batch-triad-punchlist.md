@@ -79,10 +79,25 @@ future "insert raw row," paste, or import-merge path that places a bare begin/en
   matched begin/end pair. ([structuralBalance.ts](../../shared/src/xlsform/structuralBalance.ts).)
 
 ### H3 — Designer a11y/discoverability batch
-- **Save-block detail is hover-only.** The unbalanced-groups badge is a non-interactive `<span>` whose
-  per-issue detail lives only in `title=` ([FormEditor.tsx:207-213](../../client/src/ui/FormEditor.tsx#L207-L213)) —
-  unreachable by keyboard/touch/SR; only the *first* of N issues reaches the error banner. Make the
-  badge a real button → inline, persistent list of **all** issues (each naming the implicated row).
+- **Save-block detail — ✅ DONE + one follow-up.** The badge is now a real `<button>` + popover
+  listing every issue with ARIA/Escape/outside-click ([FormEditor.tsx:340-421](../../client/src/ui/FormEditor.tsx#L340-L421)) —
+  the original hover-only/first-issue-only gap is closed. **Remaining (user-requested): make each
+  listed issue clickable → jump to the offending row.** Each `StructuralViolation` already carries
+  `rowId`/`index` ([structuralBalance.ts:31-44](../../shared/src/xlsform/structuralBalance.ts#L31-L44)). Wire:
+  (1) render each popover `<li>` as a `<button class="link" onClick={() => onJumpToRow(v.rowId)}>` and
+  close the popover on click;
+  (2) add an `onJumpToRow` prop — FormEditor lifts the survey `mode` state out of `SurveyTab` (or adds a
+  `revealRowId`), and on jump forces **Full mode** (structural rows are hidden in Simple) + sets
+  `revealRowId`;
+  (3) tag the row containers with a DOM anchor — `data-row-id={row.rowId}` on the `.survey-row` root
+  ([:1251](../../client/src/ui/FormEditor.tsx#L1251)) AND on the `.survey-group-accordion` root
+  ([~:1135](../../client/src/ui/FormEditor.tsx#L1135)) so begin-group violations are reachable;
+  (4) `SurveyTab` `useEffect([revealRowId, mode])`: after the Full-mode re-render commits (rAF/timeout),
+  `document.querySelector('[data-row-id="…"]')?.scrollIntoView({block:'center'})`, add a transient
+  `.row-flash` class (a brief outline/bg pulse keyframe in styles.css), move focus to the row, clear
+  `revealRowId`; no-op gracefully if the element isn't found (an unbalanced survey may render oddly).
+  e2e: open the popover on an unbalanced survey, click an issue, assert Full mode + the row got
+  `.row-flash` / received focus.
 - **Group-as-unit drag is invisible.** The group drag handle is the same bare `⋮⋮` as a leaf row with
   no visible label/tooltip ([FormEditor.tsx:1054-1062](../../client/src/ui/FormEditor.tsx#L1054-L1062));
   the toolbar hint never says groups move as a unit. Mode-error trap (move 1 row vs 12). Differentiate
