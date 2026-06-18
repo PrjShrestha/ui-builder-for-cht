@@ -393,6 +393,11 @@ code {
   background: none;
   color: inherit;
 }
+/* The dictionary system label and display text live as `<span className="muted small">`
+   inside the chip — without this override they pick up the global muted gray (#718096),
+   which fails WCAG AA on the pastel chip backgrounds (~3.3:1). Inheriting the chip's
+   text color keeps them readable at the chip's verified contrast. */
+.code-chip .muted { color: inherit; }
 .status-chip {
   display: inline-block;
   padding: 2px 8px;
