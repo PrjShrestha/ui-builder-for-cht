@@ -73,14 +73,17 @@ const ACTION_CATALOG: ActionMeta[] = [
   { name: 'upload-extension-libs',       category: 'upload', requiresInstance: true, dangerous: false, label: 'Upload extension libs' },
   { name: 'upload-docs',                 category: 'upload', requiresInstance: true, dangerous: false, label: 'Upload generated docs' },
   { name: 'upload-sms-from-csv',         category: 'upload', requiresInstance: true, dangerous: false, label: 'Upload SMS from CSV' },
+  { name: 'upload-database-indexes',     category: 'upload', requiresInstance: true, dangerous: false, label: 'Upload database indexes' },
   // utility
   { name: 'csv-to-docs',             category: 'utility', requiresInstance: false, dangerous: false, label: 'Convert CSVs to docs' },
   { name: 'edit-contacts',           category: 'utility', requiresInstance: true,  dangerous: true,  label: 'Edit contacts (bulk)' },
   { name: 'move-contacts',           category: 'utility', requiresInstance: true,  dangerous: true,  label: 'Move contacts in hierarchy' },
+  { name: 'merge-contacts',          category: 'utility', requiresInstance: true,  dangerous: true,  label: 'Merge contacts (lineage)' },
   { name: 'create-users',            category: 'utility', requiresInstance: true,  dangerous: true,  label: 'Create users' },
   // danger
   { name: 'delete-all-forms',        category: 'danger', requiresInstance: true, dangerous: true, label: 'Delete ALL forms from instance' },
   { name: 'delete-forms',            category: 'danger', requiresInstance: true, dangerous: true, label: 'Delete selected forms from instance' },
+  { name: 'delete-contacts',         category: 'danger', requiresInstance: true, dangerous: true, label: 'Delete contacts (irreversible)' },
 ];
 
 interface ErrorHint {
