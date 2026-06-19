@@ -37,6 +37,23 @@ interface Action {
   label: string;
 }
 
+/**
+ * cht-conf actions that accept positional `-- <basenames>` for targeted form
+ * deploys. See docs/plans/deploy-targeted-forms.md §2. Each one is paired with
+ * the form category whose basenames it consumes (app vs contact).
+ */
+const FORM_SCOPED_ACTIONS: Record<string, 'app' | 'contact'> = {
+  'convert-app-forms': 'app',
+  'upload-app-forms': 'app',
+  'upload-contact-forms': 'contact',
+};
+
+interface FormListItem {
+  formId: string;
+  category: 'app' | 'contact';
+  basename: string;
+}
+
 const CATEGORY_ORDER: Category[] = [
   'validate',
   'compile',
@@ -77,6 +94,17 @@ export function DeployPanel() {
   const [config, setConfig] = useState<DeployConfig | null>(null);
   const [password, setPassword] = useState('');
   const [pendingAction, setPendingAction] = useState<Action | null>(null);
+  // Targeted-deploy state: which forms exist + which are changed in git.
+  // pickerAction is set when the user clicks a form-scoped action; the picker
+  // hands selected basenames back to launch() as `extraArgs = ['--', ...names]`.
+  const [allForms, setAllForms] = useState<FormListItem[]>([]);
+  const [changedFormIds, setChangedFormIds] = useState<Set<string>>(new Set());
+  const [hasGit, setHasGit] = useState<boolean>(false);
+  const [pickerAction, setPickerAction] = useState<Action | null>(null);
+  // Bridge between picker confirm and the password-gate detour: when a
+  // form-scoped action needs a password, the picker's chosen extraArgs have
+  // to survive across pendingAction → launch().
+  const [pickerExtraArgsForPending, setPickerExtraArgsForPending] = useState<string[] | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
   const [lines, setLines] = useState<string[]>([]);
   const [hints, setHints] = useState<FriendlyHint[]>([]);
@@ -94,6 +122,19 @@ export function DeployPanel() {
       setChtConfVersion(r.version);
     });
     void api.getDeployConfig().then((r) => setConfig(r.config ?? { target: 'local' }));
+    void api.listForms().then((r) => {
+      setAllForms(
+        r.forms.map((f) => ({
+          formId: f.id,
+          category: f.category,
+          basename: f.filename.replace(/\.xlsx$/i, ''),
+        })),
+      );
+    });
+    void api.getChangedForms().then((r) => {
+      setHasGit(r.git);
+      setChangedFormIds(new Set(r.changed.map((c) => c.formId)));
+    });
   }, []);
 
   useEffect(() => {
@@ -123,11 +164,40 @@ export function DeployPanel() {
       );
       if (!ok) return;
     }
+    // Form-scoped actions (convert-app-forms, upload-app-forms,
+    // upload-contact-forms) open the picker first; default-all preserves
+    // today's whole-config behaviour, and "Select changed" narrows it.
+    if (action.name in FORM_SCOPED_ACTIONS) {
+      // Refresh git changes whenever the picker opens — the working tree may
+      // have advanced since the panel mounted.
+      void api.getChangedForms().then((r) => {
+        setHasGit(r.git);
+        setChangedFormIds(new Set(r.changed.map((c) => c.formId)));
+      });
+      setPickerAction(action);
+      return;
+    }
     if (action.requiresInstance && !password) {
       setPendingAction(action);
       return;
     }
     await launch(action, password);
+  }
+
+  /**
+   * Resume launching after the form picker confirms. Splits in two paths
+   * because requiresInstance actions still need the password gate, and we
+   * have to forward `extraArgs` through that gate too.
+   */
+  function launchFromPicker(action: Action, basenames: string[]) {
+    setPickerAction(null);
+    const extraArgs = basenames.length > 0 ? ['--', ...basenames] : undefined;
+    if (action.requiresInstance && !password) {
+      setPendingAction(action);
+      setPickerExtraArgsForPending(extraArgs ?? null);
+      return;
+    }
+    void launch(action, password, extraArgs);
   }
 
   async function runMacro(macro: DeployMacroSpec) {
@@ -162,7 +232,7 @@ export function DeployPanel() {
     }
   }
 
-  async function launch(action: Action, pw: string) {
+  async function launch(action: Action, pw: string, extraArgs?: string[]) {
     setError(null);
     setLines([]);
     setHints([]);
@@ -172,7 +242,7 @@ export function DeployPanel() {
       const res = await api.runChtConfAction(
         action.name,
         action.requiresInstance ? pw : undefined,
-        undefined,
+        extraArgs,
         dryRun,
       );
       setRunId(res.runId);
@@ -268,7 +338,14 @@ export function DeployPanel() {
         <div className="card">
           <p>
             <strong>Enter password</strong> for <code>{config?.user ?? '(no user)'}</code> to run{' '}
-            <code>{pendingAction.name}</code>.
+            <code>{pendingAction.name}</code>
+            {pickerExtraArgsForPending && pickerExtraArgsForPending.length > 1 && (
+              <>
+                {' '}on{' '}
+                <code>{pickerExtraArgsForPending.slice(1).join(' ')}</code>
+              </>
+            )}
+            .
           </p>
           <div className="row gap">
             <input
@@ -279,25 +356,46 @@ export function DeployPanel() {
               autoFocus
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && password) {
-                  void launch(pendingAction, password);
+                  void launch(pendingAction, password, pickerExtraArgsForPending ?? undefined);
                   setPendingAction(null);
+                  setPickerExtraArgsForPending(null);
                 }
               }}
             />
             <button
               onClick={() => {
-                void launch(pendingAction, password);
+                void launch(pendingAction, password, pickerExtraArgsForPending ?? undefined);
                 setPendingAction(null);
+                setPickerExtraArgsForPending(null);
               }}
               disabled={!password}
             >
               Run
             </button>
-            <button className="link" onClick={() => setPendingAction(null)}>
+            <button
+              className="link"
+              onClick={() => {
+                setPendingAction(null);
+                setPickerExtraArgsForPending(null);
+              }}
+            >
               cancel
             </button>
           </div>
         </div>
+      )}
+
+      {pickerAction && (
+        <DeployFormPicker
+          action={pickerAction}
+          category={FORM_SCOPED_ACTIONS[pickerAction.name]!}
+          allForms={allForms}
+          changedFormIds={changedFormIds}
+          hasGit={hasGit}
+          config={config}
+          onConfirm={(basenames) => launchFromPicker(pickerAction, basenames)}
+          onCancel={() => setPickerAction(null)}
+        />
       )}
 
       <div className="deploy-grid">
@@ -593,5 +691,181 @@ function DeployMacros(props: {
         })}
       </div>
     </section>
+  );
+}
+
+/* ------------------------- Targeted-form picker ------------------------- */
+
+/**
+ * Build the cht-conf `--target ...` prefix the way the server's buildArgs
+ * does, but redacted for display: passwords appear as `***`. Kept in sync
+ * with [server/src/routes/cht-conf.ts:buildArgs] — the goal is "the user can
+ * read this line and predict what the server will spawn." See
+ * docs/plans/deploy-targeted-forms.md §2: command-preview honesty matters
+ * for non-technical owners who decide whether to click Run.
+ */
+function previewTargetPrefix(config: DeployConfig | null): string {
+  if (!config) return '';
+  if (config.target === 'local') return '--local';
+  if (config.target === 'instance' && config.instance) {
+    const userFlag = config.user ? ` --user=${config.user}` : '';
+    return `--instance=${config.instance}${userFlag}`;
+  }
+  if (config.target === 'url' && config.url) {
+    try {
+      // eslint-disable-next-line no-undef
+      const u = new URL(config.url);
+      const userinfo = config.user ? `${encodeURIComponent(config.user)}:***@` : '';
+      return `--url=${u.protocol}//${userinfo}${u.host}${u.pathname}${u.search}`;
+    } catch {
+      return `--url=${config.url}`;
+    }
+  }
+  return '';
+}
+
+/**
+ * Modal-ish checklist for targeted form deploys. Default = every form in the
+ * action's category checked (preserves today's whole-config behaviour); the
+ * "Select changed (N)" button narrows it to working-tree changes from
+ * `git status`. The command preview at the bottom mirrors exactly what the
+ * server will spawn (with the password redacted).
+ *
+ * Out of scope here: chaining convert→upload as one click. The plan defers
+ * that to a sequence-endpoint follow-up (see §4); MVP = two clicks of the
+ * picker against the two actions.
+ */
+function DeployFormPicker(props: {
+  action: Action;
+  category: 'app' | 'contact';
+  allForms: FormListItem[];
+  changedFormIds: Set<string>;
+  hasGit: boolean;
+  config: DeployConfig | null;
+  onConfirm: (basenames: string[]) => void;
+  onCancel: () => void;
+}) {
+  const eligible = props.allForms.filter((f) => f.category === props.category);
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(eligible.map((f) => f.basename)),
+  );
+
+  const changedInCategory = eligible.filter((f) => props.changedFormIds.has(f.formId));
+  const noneSelected = selected.size === 0;
+  const allSelected = selected.size === eligible.length && eligible.length > 0;
+
+  function toggle(basename: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(basename)) next.delete(basename);
+      else next.add(basename);
+      return next;
+    });
+  }
+
+  function selectAll() {
+    setSelected(new Set(eligible.map((f) => f.basename)));
+  }
+  function selectNone() {
+    setSelected(new Set());
+  }
+  function selectChanged() {
+    setSelected(new Set(changedInCategory.map((f) => f.basename)));
+  }
+
+  // Command preview — the server's buildArgs will append `-- <names>` after
+  // the action when extraArgs is non-empty. If the user un-selects everything,
+  // the cht-conf default (all forms) kicks in — surface that explicitly so
+  // they aren't surprised by a blank checklist running the whole category.
+  const targetPrefix = previewTargetPrefix(props.config);
+  const selectedBasenames = eligible
+    .filter((f) => selected.has(f.basename))
+    .map((f) => f.basename);
+  const cmd = noneSelected || allSelected
+    ? `cht ${targetPrefix} ${props.action.name}`.trim()
+    : `cht ${targetPrefix} ${props.action.name} -- ${selectedBasenames.join(' ')}`.trim();
+
+  return (
+    <div className="card">
+      <div className="row gap" style={{ alignItems: 'baseline', justifyContent: 'space-between' }}>
+        <h3 style={{ margin: 0 }}>
+          {props.action.label} — pick forms
+        </h3>
+        <button className="link" onClick={props.onCancel}>cancel</button>
+      </div>
+      <p className="muted small">
+        Default is every {props.category} form — leave as-is to deploy the whole category
+        (same as before). Narrow it to deploy only the forms you changed.
+      </p>
+
+      <div className="row gap" style={{ flexWrap: 'wrap' }}>
+        <button className="link" onClick={selectAll} disabled={allSelected}>
+          select all
+        </button>
+        <button className="link" onClick={selectNone} disabled={noneSelected}>
+          deselect all
+        </button>
+        {props.hasGit && (
+          <button
+            className="link"
+            onClick={selectChanged}
+            disabled={changedInCategory.length === 0}
+            title={
+              changedInCategory.length === 0
+                ? 'No working-tree changes in this category'
+                : `Check exactly the ${changedInCategory.length} changed ${props.category} form(s)`
+            }
+          >
+            Select changed ({changedInCategory.length})
+          </button>
+        )}
+      </div>
+
+      {eligible.length === 0 ? (
+        <p className="muted">No {props.category} forms found in this project.</p>
+      ) : (
+        <ul className="deploy-form-picker">
+          {eligible.map((f) => {
+            const isChanged = props.changedFormIds.has(f.formId);
+            return (
+              <li key={f.formId}>
+                <label className="row gap" style={{ alignItems: 'center', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(f.basename)}
+                    onChange={() => toggle(f.basename)}
+                  />
+                  <code>{f.basename}</code>
+                  {isChanged && <span className="badge small">changed</span>}
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <div className="deploy-cmd-preview">
+        <div className="muted small">Command preview:</div>
+        <pre><code>{cmd}</code></pre>
+        {noneSelected && eligible.length > 0 && (
+          <p className="muted small">
+            Nothing selected — cht-conf will deploy <strong>all {props.category} forms</strong>{' '}
+            (default behaviour when no <code>--</code> args are passed).
+          </p>
+        )}
+      </div>
+
+      <div className="row gap">
+        <button
+          onClick={() => props.onConfirm(noneSelected || allSelected ? [] : selectedBasenames)}
+          disabled={eligible.length === 0}
+        >
+          {noneSelected || allSelected
+            ? `Run ${props.action.name} (all)`
+            : `Run on ${selectedBasenames.length} form${selectedBasenames.length === 1 ? '' : 's'}`}
+        </button>
+        <button className="link" onClick={props.onCancel}>cancel</button>
+      </div>
+    </div>
   );
 }

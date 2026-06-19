@@ -4,6 +4,8 @@
 import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import os from 'node:os';
 import { getProjectPath, resolveInsideProject } from '../state.js';
 import {
   parseXlsForm,
@@ -151,6 +153,78 @@ function findMatchingBrace(src: string, openIdx: number): number {
   return -1;
 }
 
+/**
+ * Run a git subprocess against the project folder, returning stdout + exit code.
+ * Uses `shell: true` on Windows because `git` resolves through Git-for-Windows'
+ * shim. Captures errors silently — callers treat non-zero exit as "not a git
+ * repo / unavailable" rather than throwing.
+ */
+function runGit(projectPath: string, gitArgs: string[]): Promise<{ stdout: string; code: number | null }> {
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    const child = spawn('git', ['-C', projectPath, ...gitArgs], {
+      shell: os.platform() === 'win32',
+      windowsHide: true,
+    });
+    child.stdout?.on('data', (b: Buffer) => { stdout += b.toString('utf8'); });
+    child.stderr?.on('data', (b: Buffer) => { stderr += b.toString('utf8'); });
+    child.on('close', (code) => resolve({ stdout, code }));
+    child.on('error', () => resolve({ stdout: '', code: -1 }));
+    // Unused but referenced to satisfy strictness:
+    void stderr;
+  });
+}
+
+interface ChangedForm {
+  category: FormCategory;
+  basename: string;
+  formId: string;
+}
+
+/**
+ * Discover which form xlsx files differ from the working tree's git baseline.
+ * Used by the Deploy panel's "Select changed" quick-pick — see
+ * docs/plans/deploy-targeted-forms.md §3. Returns `git: false` when the
+ * project isn't a git repo (UI hides the button); otherwise the deduped list
+ * of changed `forms/app/*.xlsx` + `forms/contact/*.xlsx`. Uses
+ * `git status --porcelain` so unstaged + just-saved files are included
+ * (the working-tree definition of "what I changed since last commit").
+ */
+async function detectChangedForms(projectPath: string): Promise<{ git: boolean; changed: ChangedForm[] }> {
+  const probe = await runGit(projectPath, ['rev-parse', '--is-inside-work-tree']);
+  if (probe.code !== 0 || probe.stdout.trim() !== 'true') {
+    return { git: false, changed: [] };
+  }
+  const status = await runGit(projectPath, ['status', '--porcelain', '--', 'forms/']);
+  if (status.code !== 0) return { git: true, changed: [] };
+
+  const seen = new Set<string>();
+  const changed: ChangedForm[] = [];
+  for (const rawLine of status.stdout.split('\n')) {
+    if (rawLine.length < 4) continue;
+    // Porcelain format: `XY <path>` or `XY <old> -> <new>` for renames.
+    // Path starts at col 3 (after two status chars + space). For renames we
+    // care about the destination side.
+    let rel = rawLine.slice(3);
+    const arrow = rel.indexOf(' -> ');
+    if (arrow >= 0) rel = rel.slice(arrow + 4);
+    // Quoted paths use C-style escapes; strip the surrounding quotes (good
+    // enough for our regex match — we don't need byte-exact reconstruction).
+    if (rel.startsWith('"') && rel.endsWith('"')) rel = rel.slice(1, -1);
+    const m = /^forms\/(app|contact)\/([^/]+)\.xlsx$/i.exec(rel);
+    if (!m) continue;
+    const category = m[1] as FormCategory;
+    const basename = m[2]!;
+    const id = formId(category, basename);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    changed.push({ category, basename, formId: id });
+  }
+  changed.sort((a, b) => a.formId.localeCompare(b.formId));
+  return { git: true, changed };
+}
+
 export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/forms', async (_req, reply) => {
     const projectPath = await getProjectPath();
@@ -162,6 +236,12 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
       listFormsInDir(contactDir, 'contact'),
     ]);
     return { forms: [...appForms, ...contactForms] };
+  });
+
+  app.get('/api/forms/changed', async (_req, reply) => {
+    const projectPath = await getProjectPath();
+    if (!projectPath) return reply.code(400).send({ error: 'No project open' });
+    return detectChangedForms(projectPath);
   });
 
   app.get<{ Params: { id: string } }>('/api/forms/:id', async (req, reply) => {

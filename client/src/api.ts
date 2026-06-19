@@ -147,6 +147,16 @@ export const api = {
 
   listForms: () => jsonFetch<{ forms: FormListEntry[] }>('/api/forms'),
 
+  /** Working-tree changed forms via `git status --porcelain forms/`. Non-git
+   *  projects come back as `{ git: false, changed: [] }` — the Deploy UI uses
+   *  this to hide the "Select changed" quick-pick. See
+   *  docs/plans/deploy-targeted-forms.md §3. */
+  getChangedForms: () =>
+    jsonFetch<{
+      git: boolean;
+      changed: Array<{ category: 'app' | 'contact'; basename: string; formId: string }>;
+    }>('/api/forms/changed'),
+
   getForm: (id: string) =>
     jsonFetch<{ id: string; form: XLSForm; properties: unknown }>(
       `/api/forms/${encodeURIComponent(id)}`,

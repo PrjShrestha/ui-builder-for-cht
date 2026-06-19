@@ -1848,6 +1848,36 @@ code {
 .action-btn.danger:hover:not(:disabled) { background: #fff5f5; }
 .action-label { font-weight: 500; }
 .action-code { font-size: 11px; color: var(--text-muted); }
+
+/* Targeted-form deploy picker — see docs/plans/deploy-targeted-forms.md.
+   The list scrolls when there are many forms; cmd-preview is the user-facing
+   honesty layer (Bhishan persona: read this line, predict the deploy). */
+.deploy-form-picker {
+  list-style: none;
+  margin: 8px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--bg);
+}
+.deploy-form-picker li { padding: 3px 0; }
+.deploy-cmd-preview {
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.deploy-cmd-preview pre {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.deploy-cmd-preview .muted { color: #94a3b8; }
+.deploy-cmd-preview code { background: none; color: inherit; }
 .deploy-log {
   background: var(--bg-card);
   border: 1px solid var(--border);
