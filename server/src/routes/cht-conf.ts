@@ -130,23 +130,71 @@ function chtBinary(): string {
   return path.join(serverRoot, 'node_modules', '.bin', isWindows ? 'cht.cmd' : 'cht');
 }
 
-function buildArgs(action: string, deploy: DeployConfig | null, extras: string[]): string[] {
+/**
+ * Build the URL with userinfo spliced in. cht-conf only honors `--user` when
+ * paired with `--instance` (it throws "The --user switch must be accompanied
+ * with --instance" in `get-api-url.js`). For `--url` mode it reads credentials
+ * verbatim from the URL string, so we have to embed `user:password@`. We
+ * `encodeURIComponent` both halves so shell metachars (`&`, `|`, `^`) survive
+ * the Windows `shell: true` spawn, and cht-conf's `new URL(...)` decodes them
+ * back to the originals.
+ */
+function buildUrlWithCreds(
+  rawUrl: string,
+  user: string | undefined,
+  password: string | undefined,
+): { actual: string; redacted: string } {
+  // eslint-disable-next-line no-undef
+  const u = new URL(rawUrl);
+  if (!user) {
+    const s = u.toString();
+    return { actual: s, redacted: s };
+  }
+  const encUser = encodeURIComponent(user);
+  const encPwd = password ? encodeURIComponent(password) : '';
+  const userinfoActual = encPwd ? `${encUser}:${encPwd}` : encUser;
+  const userinfoRedacted = encPwd ? `${encUser}:***` : encUser;
+  const tail = `${u.host}${u.pathname}${u.search}${u.hash}`;
+  return {
+    actual: `${u.protocol}//${userinfoActual}@${tail}`,
+    redacted: `${u.protocol}//${userinfoRedacted}@${tail}`,
+  };
+}
+
+function buildArgs(
+  action: string,
+  deploy: DeployConfig | null,
+  password: string | undefined,
+  extras: string[],
+): { args: string[]; loggedArgs: string[] } {
   const args: string[] = [];
+  const loggedArgs: string[] = [];
   // Deploy targeting flags only added when the action needs an instance.
   const meta = ACTION_CATALOG.find((a) => a.name === action);
   if (meta?.requiresInstance && deploy) {
     if (deploy.target === 'local') {
       args.push('--local');
+      loggedArgs.push('--local');
     } else if (deploy.target === 'instance' && deploy.instance) {
       args.push(`--instance=${deploy.instance}`);
+      loggedArgs.push(`--instance=${deploy.instance}`);
+      // cht-conf accepts `--user=` only with `--instance` (then prompts for
+      // the password, which we satisfy via stdin below).
+      if (deploy.user) {
+        args.push(`--user=${deploy.user}`);
+        loggedArgs.push(`--user=${deploy.user}`);
+      }
     } else if (deploy.target === 'url' && deploy.url) {
-      args.push(`--url=${deploy.url}`);
+      const { actual, redacted } = buildUrlWithCreds(deploy.url, deploy.user, password);
+      args.push(`--url=${actual}`);
+      loggedArgs.push(`--url=${redacted}`);
     }
-    if (deploy.user) args.push('--user', deploy.user);
   }
   args.push(action);
   args.push(...extras);
-  return args;
+  loggedArgs.push(action);
+  loggedArgs.push(...extras);
+  return { args, loggedArgs };
 }
 
 function pushLine(state: RunState, line: string): void {
@@ -247,7 +295,12 @@ export async function registerChtConfRoutes(app: FastifyInstance): Promise<void>
       if (!meta) return reply.code(400).send({ error: `Unknown action: ${req.body.action}` });
 
       const deploy = await getDeployConfig();
-      const args = buildArgs(req.body.action, deploy, req.body.extraArgs ?? []);
+      const { args, loggedArgs } = buildArgs(
+        req.body.action,
+        deploy,
+        req.body.password,
+        req.body.extraArgs ?? [],
+      );
       const id = newRunId();
       const state: RunState = {
         id,
@@ -268,7 +321,7 @@ export async function registerChtConfRoutes(app: FastifyInstance): Promise<void>
       // Playwright + manual UI testing without a real CHT instance.
       const dryRun = req.body.dryRun === true || isDryRunEnabled();
       if (dryRun) {
-        pushLine(state, `[dry-run] cht ${args.join(' ')}`);
+        pushLine(state, `[dry-run] cht ${loggedArgs.join(' ')}`);
         pushLine(state, `(cwd: ${projectPath})`);
         void (async () => {
           const result = await runDryRun(req.body.action);
@@ -281,7 +334,7 @@ export async function registerChtConfRoutes(app: FastifyInstance): Promise<void>
         return { ok: true, runId: id, dryRun: true };
       }
 
-      pushLine(state, `$ cht ${args.join(' ')}`);
+      pushLine(state, `$ cht ${loggedArgs.join(' ')}`);
       pushLine(state, `(cwd: ${projectPath})`);
 
       const env: NodeJS.ProcessEnv = { ...process.env };
@@ -373,8 +426,13 @@ export async function registerChtConfRoutes(app: FastifyInstance): Promise<void>
             continue;
           }
 
-          const args = buildArgs(action, deploy ?? null, []);
-          pushLine(state, `$ cht ${args.join(' ')}`);
+          const { args, loggedArgs } = buildArgs(
+            action,
+            deploy ?? null,
+            req.body.password,
+            [],
+          );
+          pushLine(state, `$ cht ${loggedArgs.join(' ')}`);
 
           const env: NodeJS.ProcessEnv = { ...process.env };
           if (req.body.password && deploy?.user) {
