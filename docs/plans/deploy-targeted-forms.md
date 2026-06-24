@@ -55,5 +55,6 @@ New server endpoint `GET /api/forms/changed` → run `git -C <projectRoot> statu
 - **Developer:** mirrors the real cht-conf workflow (`upload-app-forms -- <names>`); the on-demand lens should confirm the `--`/basename handling matches cht-conf exactly.
 - **QA (Lorena):** the loggedArgs assertion + changed-detection unit are the critical-path guards.
 
-## Open question
-Define "changed" as **working-tree diff** (`status --porcelain`, catches unstaged + just-saved) vs **diff vs last deploy** (we don't track a deploy baseline). Recommend working-tree diff for v1 — it's what a user means by "what I changed," needs no new state, and is exactly what they'd `git diff` before deploying manually.
+## Decisions (planner-locked, 2026-06-19)
+1. **"Changed" = working-tree diff.** `git status --porcelain -- forms/` (plus untracked `*.xlsx`), not a deploy baseline. It's exactly what a user means by "what I changed," catches both unstaged edits and forms just saved this session, and needs no new persisted state. (A deploy-baseline is out of scope — we don't track last-deployed state.)
+2. **v1 = two clicks (convert, then upload).** The targeted flow runs `convert-app-forms -- <names>` then `upload-app-forms -- <names>` as two single-action calls sharing the same `extraArgs` — no server change needed (the run-action path already carries `extraArgs`). Folding them into one "Deploy changed forms" button requires extending the **sequence** endpoint ([cht-conf.ts:379](../../server/src/routes/cht-conf.ts#L379)) to carry per-action `extraArgs`; **defer that to a follow-up** once the two-click flow is proven.
