@@ -469,6 +469,9 @@ code {
   font-size: 13px;
 }
 .picker-result:hover { background: #eef2ff; }
+/* The code value (e.g. 8665-2) is the key identifier — force dark, bold text
+   so it's legible instead of inheriting the button's washed-out colour. */
+.picker-result code { color: #1a202c; font-weight: 600; background: #eef2ff; }
 .picker-actions { text-align: right; }
 /* PR3 — choice-level sub-rows under a select_* question */
 .choice-row .choice-cell { padding-left: 32px; background: #fcfcfd; }
