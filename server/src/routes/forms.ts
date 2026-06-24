@@ -183,25 +183,19 @@ interface ChangedForm {
 }
 
 /**
- * Discover which form xlsx files differ from the working tree's git baseline.
- * Used by the Deploy panel's "Select changed" quick-pick — see
- * docs/plans/deploy-targeted-forms.md §3. Returns `git: false` when the
- * project isn't a git repo (UI hides the button); otherwise the deduped list
- * of changed `forms/app/*.xlsx` + `forms/contact/*.xlsx`. Uses
- * `git status --porcelain` so unstaged + just-saved files are included
- * (the working-tree definition of "what I changed since last commit").
+ * Parse `git status --porcelain -- forms/` stdout into a deduplicated list of
+ * changed form xlsx files. Exported for unit-testing; callers should use
+ * `detectChangedForms` which handles the git subprocess.
+ *
+ * Handles:
+ * - Modified/Added/Deleted/Untracked: `XY forms/app/pregnancy.xlsx`
+ * - Renames: `R  forms/app/old.xlsx -> forms/app/new.xlsx` (destination wins)
+ * - Quoted paths (git uses C-escapes + quotes when the path has special chars)
  */
-async function detectChangedForms(projectPath: string): Promise<{ git: boolean; changed: ChangedForm[] }> {
-  const probe = await runGit(projectPath, ['rev-parse', '--is-inside-work-tree']);
-  if (probe.code !== 0 || probe.stdout.trim() !== 'true') {
-    return { git: false, changed: [] };
-  }
-  const status = await runGit(projectPath, ['status', '--porcelain', '--', 'forms/']);
-  if (status.code !== 0) return { git: true, changed: [] };
-
+export function parseGitPorcelain(stdout: string): ChangedForm[] {
   const seen = new Set<string>();
   const changed: ChangedForm[] = [];
-  for (const rawLine of status.stdout.split('\n')) {
+  for (const rawLine of stdout.split('\n')) {
     if (rawLine.length < 4) continue;
     // Porcelain format: `XY <path>` or `XY <old> -> <new>` for renames.
     // Path starts at col 3 (after two status chars + space). For renames we
@@ -222,7 +216,26 @@ async function detectChangedForms(projectPath: string): Promise<{ git: boolean; 
     changed.push({ category, basename, formId: id });
   }
   changed.sort((a, b) => a.formId.localeCompare(b.formId));
-  return { git: true, changed };
+  return changed;
+}
+
+/**
+ * Discover which form xlsx files differ from the working tree's git baseline.
+ * Used by the Deploy panel's "Select changed" quick-pick — see
+ * docs/plans/deploy-targeted-forms.md §3. Returns `git: false` when the
+ * project isn't a git repo (UI hides the button); otherwise the deduped list
+ * of changed `forms/app/*.xlsx` + `forms/contact/*.xlsx`. Uses
+ * `git status --porcelain` so unstaged + just-saved files are included
+ * (the working-tree definition of "what I changed since last commit").
+ */
+async function detectChangedForms(projectPath: string): Promise<{ git: boolean; changed: ChangedForm[] }> {
+  const probe = await runGit(projectPath, ['rev-parse', '--is-inside-work-tree']);
+  if (probe.code !== 0 || probe.stdout.trim() !== 'true') {
+    return { git: false, changed: [] };
+  }
+  const status = await runGit(projectPath, ['status', '--porcelain', '--', 'forms/']);
+  if (status.code !== 0) return { git: true, changed: [] };
+  return { git: true, changed: parseGitPorcelain(status.stdout) };
 }
 
 export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
