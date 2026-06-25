@@ -7,8 +7,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { getProjectPath, resolveInsideProject } from '../state.js';
+import { getParsedForm, invalidate as invalidateParsedForm } from '../parsedFormCache.js';
 import {
-  parseXlsForm,
   serializeXlsForm,
   buildAppFormScaffold,
   buildBlankFormScaffold,
@@ -268,8 +268,9 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
     if (!(await fileExists(paths.xlsx))) {
       return reply.code(404).send({ error: `Form file missing: ${paths.xlsx}` });
     }
-    const buf = await fs.readFile(paths.xlsx);
-    const form = await parseXlsForm(buf);
+    // Routed through the parsed-form cache — warm reads skip the ~105 ms
+    // parse and just `fs.stat` the file. See parsedFormCache.ts.
+    const form = await getParsedForm(paths.xlsx);
     let properties: unknown = null;
     if (await fileExists(paths.properties)) {
       try {
@@ -296,6 +297,10 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
       const tmp = `${paths.xlsx}.tmp`;
       await fs.writeFile(tmp, buf);
       await fs.rename(tmp, paths.xlsx);
+      // Bust the parsed-form cache — mtime keys cover external edits but
+      // Windows mtime resolution can be coarser than the gap between our
+      // own write and the next read, so explicit eviction is mandatory.
+      invalidateParsedForm(paths.xlsx);
       if (req.body.properties !== undefined && req.body.properties !== null) {
         const propBuf = JSON.stringify(req.body.properties, null, 2);
         await fs.writeFile(paths.properties, propBuf, 'utf8');
@@ -342,6 +347,7 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
       scaffold.settings.version = new Date().toISOString().slice(0, 10);
       const buf = await serializeXlsForm(scaffold);
       await fs.writeFile(paths.xlsx, buf);
+      invalidateParsedForm(paths.xlsx);
       if (category === 'app') {
         const props = {
           title: [{ locale: 'en', content: basename }],
@@ -367,6 +373,7 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
     for (const p of [paths.xlsx, paths.xml, paths.properties]) {
       if (await fileExists(p)) await fs.unlink(p);
     }
+    invalidateParsedForm(paths.xlsx);
     return { ok: true };
   });
 }

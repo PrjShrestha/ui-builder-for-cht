@@ -41,7 +41,7 @@ import {
 } from '@cht-ui/shared';
 import { loadStarterPack } from '@cht-ui/shared/dist/fhir/loadStarterPack.js';
 import { resolveInsideProject } from '../state.js';
-import { parseXlsForm } from '@cht-ui/shared';
+import { getParsedForm, directorySignature } from '../parsedFormCache.js';
 
 const SIDECAR_FILENAME = 'fhir-mapping.json';
 
@@ -71,7 +71,28 @@ function emptyMapping(): FhirMapping {
  * own confirmed binding (MVP §3 item 6). The codec strings here are
  * the same ones the V1 PUT will compare against.
  */
+/**
+ * Tier-1b derived-result cache. `buildLiveKeys` walks every app+contact
+ * form on every `/api/fhir-mapping` GET — even with per-form parse
+ * caching, iterating + encoding adds up. We cache the result keyed by a
+ * cheap stat-only signature of both forms directories: if nothing under
+ * `forms/app` or `forms/contact` has been touched since last GET, the
+ * previous live-keys array is byte-equivalent and we skip the work
+ * entirely.
+ *
+ * Keyed by projectPath so a project switch invalidates naturally.
+ */
+const liveKeysCache = new Map<string, { signature: string; liveKeys: string[] }>();
+
 async function buildLiveKeys(projectPath: string): Promise<string[]> {
+  const [appSig, contactSig] = await Promise.all([
+    directorySignature(path.join(projectPath, 'forms/app')),
+    directorySignature(path.join(projectPath, 'forms/contact')),
+  ]);
+  const signature = `app=${appSig ?? '∅'}|contact=${contactSig ?? '∅'}`;
+  const hit = liveKeysCache.get(projectPath);
+  if (hit && hit.signature === signature) return hit.liveKeys;
+
   const liveKeys = new Set<string>();
   for (const [category, dirName] of [
     ['app', 'forms/app'],
@@ -89,8 +110,9 @@ async function buildLiveKeys(projectPath: string): Promise<string[]> {
       const formId = `${category}:${basename}`;
       let form;
       try {
-        const buf = await fs.readFile(path.join(projectPath, dirName, filename));
-        form = await parseXlsForm(buf);
+        // Parsed-form cache routes this through stat-only fast path on
+        // warm reads (~1 ms) vs ~105 ms cold.
+        form = await getParsedForm(path.join(projectPath, dirName, filename));
       } catch {
         // Unparseable workbook — best-effort; skip silently so the
         // reconcile doesn't drop everything else.
@@ -111,7 +133,9 @@ async function buildLiveKeys(projectPath: string): Promise<string[]> {
       }
     }
   }
-  return Array.from(liveKeys);
+  const result = Array.from(liveKeys);
+  liveKeysCache.set(projectPath, { signature, liveKeys: result });
+  return result;
 }
 
 /** Read + parse the sidecar, returning the empty mapping when absent. */
@@ -139,6 +163,11 @@ async function writeSidecar(sidecarPath: string, content: string): Promise<void>
 
 export async function registerFhirMappingRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/fhir-mapping', async (_req, reply) => {
+    // Timing instrumentation — see docs/plans/perf-parse-cache.md targets:
+    // warm `/api/fhir-mapping` < 200 ms (from ~7 s). Always-on so we
+    // catch any regression in normal usage, not just measurement passes.
+    // eslint-disable-next-line no-undef
+    const t0 = performance.now();
     let sidecarPath: string;
     let projectPath: string;
     try {
@@ -148,7 +177,11 @@ export async function registerFhirMappingRoutes(app: FastifyInstance): Promise<v
       return reply.code(400).send({ error: (e as Error).message });
     }
     const stored = await readSidecar(sidecarPath);
+    // eslint-disable-next-line no-undef
+    const tBeforeLive = performance.now();
     const liveKeys = await buildLiveKeys(projectPath);
+    // eslint-disable-next-line no-undef
+    const tAfterLive = performance.now();
     // Reconcile relocates any stored key not in `liveKeys` to
     // `orphans[]` losslessly. Pure (no I/O); the route doesn't write
     // the reconciled state on GET — it returns it for the workbench to
@@ -169,6 +202,12 @@ export async function registerFhirMappingRoutes(app: FastifyInstance): Promise<v
       // Pack absent / load failure is non-fatal — the workbench still
       // works, just without pre-fills.
     }
+    // eslint-disable-next-line no-undef
+    const t1 = performance.now();
+    app.log.info(
+      { liveMs: +(tAfterLive - tBeforeLive).toFixed(1), totalMs: +(t1 - t0).toFixed(1), liveKeys: liveKeys.length },
+      'GET /api/fhir-mapping',
+    );
     return { mapping: reconciled };
   });
 

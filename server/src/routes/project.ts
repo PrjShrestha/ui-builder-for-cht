@@ -5,8 +5,8 @@ import type { FastifyInstance } from 'fastify';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { parseXlsForm } from '@cht-ui/shared';
 import { getProjectPath, setProjectPath } from '../state.js';
+import { getParsedForm, directorySignature } from '../parsedFormCache.js';
 
 /** Minimal shape returned to the client when describing a project. */
 interface ProjectInfo {
@@ -62,6 +62,17 @@ async function describeProject(projectPath: string): Promise<ProjectInfo> {
 }
 
 /**
+ * Tier-1b derived-result cache for `scanContactFieldChoices`. Keyed by the
+ * project path + the contact-forms directory signature (stat-only). If no
+ * `.xlsx` under `forms/contact` has changed, the previous result is
+ * byte-equivalent and we skip the merged-map work entirely.
+ */
+const contactChoicesCache = new Map<
+  string,
+  { signature: string; choices: Record<string, string[]> }
+>();
+
+/**
  * Walks `forms/contact/*.xlsx` and indexes their select_one / select_multiple
  * rows into `{ [rowName]: choiceNames[] }`. Pure read; no XLSForm bytes are
  * mutated. Failures (unreadable directory, bad workbook) degrade silently to
@@ -72,19 +83,25 @@ async function scanContactFieldChoices(
   projectPath: string,
 ): Promise<Record<string, string[]>> {
   const contactDir = path.join(projectPath, 'forms', 'contact');
+  const signature = (await directorySignature(contactDir)) ?? '∅';
+  const hit = contactChoicesCache.get(projectPath);
+  if (hit && hit.signature === signature) return hit.choices;
+
   let entries: string[];
   try {
     entries = await fs.readdir(contactDir);
   } catch {
+    contactChoicesCache.set(projectPath, { signature, choices: {} });
     return {};
   }
   const xlsxFiles = entries.filter((e) => e.toLowerCase().endsWith('.xlsx'));
   // Parallelize per-form parsing (mirrors the forms.ts listing pattern).
+  // Per-form parse routes through the shared cache; cold-start does N
+  // parses, warm reads do N stats.
   const perForm = await Promise.all(
     xlsxFiles.map(async (filename) => {
       try {
-        const buf = await fs.readFile(path.join(contactDir, filename));
-        const form = await parseXlsForm(buf);
+        const form = await getParsedForm(path.join(contactDir, filename));
         // Index this form's choices sheet: list_name → choice names.
         const listToValues = new Map<string, string[]>();
         for (const c of form.choices) {
@@ -111,6 +128,7 @@ async function scanContactFieldChoices(
   // Merge (last-write-wins on collision — documented limitation).
   const merged: Record<string, string[]> = {};
   for (const local of perForm) Object.assign(merged, local);
+  contactChoicesCache.set(projectPath, { signature, choices: merged });
   return merged;
 }
 
@@ -123,7 +141,12 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
       await setProjectPath(null);
       return { open: false, error: 'previous project path no longer exists' };
     }
-    return { open: true, project: await describeProject(projectPath) };
+    // eslint-disable-next-line no-undef
+    const t0 = performance.now();
+    const project = await describeProject(projectPath);
+    // eslint-disable-next-line no-undef
+    app.log.info({ ms: +(performance.now() - t0).toFixed(1) }, 'GET /api/project (describeProject)');
+    return { open: true, project };
   });
 
   app.post<{ Body: { path: string } }>(
@@ -148,7 +171,12 @@ export async function registerProjectRoutes(app: FastifyInstance): Promise<void>
         return reply.code(400).send({ error: `Path is not a directory: ${abs}` });
       }
       await setProjectPath(abs);
-      return { open: true, project: await describeProject(abs) };
+      // eslint-disable-next-line no-undef
+      const t0 = performance.now();
+      const project = await describeProject(abs);
+      // eslint-disable-next-line no-undef
+      app.log.info({ ms: +(performance.now() - t0).toFixed(1) }, 'POST /api/project/open (describeProject)');
+      return { open: true, project };
     },
   );
 
