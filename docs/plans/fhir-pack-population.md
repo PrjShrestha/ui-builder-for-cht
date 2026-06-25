@@ -48,20 +48,42 @@ JSON at runtime (offline, fast autocomplete) — the script is just how we *refr
    which `systemLabel` doesn't recognize → renders the bare URL. Align the script's ICD-10 `system` to
    the canonical URL `systemLabel` expects (or extend `systemLabel`) — folds into this work.
 
-## The size/coverage tradeoff — offline means "only what's vendored"
-Full terminologies are huge (ICD-11 ~17k, LOINC ~100k) — vendoring all of them bloats the repo and the
-in-memory index. So coverage is a deliberate choice:
-- **Curated subset** (recommended default): a few hundred codes per dictionary, scoped to MCH/CHW use
-  (observations for LOINC, conditions/diagnoses for ICD, CIEL for the rest). Offline, fast, covers the
-  common cases. The long tail falls back to the raw-code escape hatch (B1 from the FHIR-triad punch list).
-- **+ Online typeahead enrichment** (post-V1, the MVP's deferred V1.5): for the long tail, an optional
-  live query to the same free APIs with a circuit breaker and a bundled fallback banner — only with the
-  recorded-fixture contract gate the MVP types reserve. Bundled stays the source of truth.
+## Decision (locked, 2026-06-25): BROAD vendored — full-ish dictionaries, offline
+Vendor large slices of each system (WHO ICD-11 MMS ~17k, ICD-10, a LOINC observation slice, CIEL),
+fully offline. **This changes the architecture** — you can no longer ship one JSON the client indexes on
+open (17k+ codes per dictionary would re-create the exact slowness we're fixing). So:
 
-## Verify the index scales
-The picker builds an in-memory prefix/trigram index over the pack. Confirm it stays sub-50 ms search at
-the chosen subset size (a few hundred–few thousand codes); if not, that's a small index tweak, not a
-redesign.
+### Separate the data + move search server-side
+- **Starter pack stays small.** `cht-mch-v1.json` keeps only the per-question MCH *suggestions* (the
+  `concepts[]` with `questionName`). The **dictionaries are a separate, large, vendored dataset** — e.g.
+  `shared/src/fhir/dictionaries/{loinc,icd10,icd11,ciel}.<compact>` — never loaded into the client wholesale.
+- **New server search endpoint:** `GET /api/fhir/dictionary/search?system=<sys>&q=<text>&limit=50`. The
+  server **lazily** loads the requested dictionary on first query, builds a prefix/token index **once**,
+  **caches it in memory**, and returns the top matches. The client fetches *matches*, not the corpus.
+- **Picker change:** the two-step picker's step 2 switches from "filter the in-memory bundled pack" to
+  "query the search endpoint (debounced)." The dictionary *list* (step 1) can still be a tiny static
+  manifest. This keeps the workbench **open** fast (it loads zero dictionary data up front) and search
+  fast (server-indexed, paginated) — reconciling broad coverage with the perf goal.
+- **Reuse the parse-cache discipline** ([perf-parse-cache.md](./perf-parse-cache.md)): the dictionary
+  index is built once and cached, same spirit as the form cache.
+
+### Storage + repo size
+Full-ish dictionaries are tens of MB. Store **compact** (newline-delimited `code\tdisplay\taliases`, or
+minimal JSON; optionally gzip and decompress at index-build). Keep them in a clearly-separated dir so
+diffs/reviews aren't drowned. Note the repo-size cost up front (it's the accepted trade for offline
+completeness). `.gitattributes` (marking them generated/vendored) is worth adding.
+
+### Zero-SNOMED at scale
+The oracle currently scans the whole pack (parsed + raw bytes) every test — over tens of MB that's slow.
+Run the **full** zero-SNOMED scan once **inside the snapshot script** (the build gate), and keep a
+**fast sampled/structural** check in the unit suite so CI stays quick. The filter still strips any SNOMED
+system/OID and SNOMED-sourced CIEL aliases at build time.
+
+## ICD-10 source — confirm with MoH
+WHO **ICD-10** vs US **ICD-10-CM** are different code sets. NLM Clinical Tables gives ICD-10-CM for free;
+WHO ICD-10 is the international standard MoH-Nepal likely expects. **Confirm the coding standard with the
+MoH/clinical owner before snapshotting** — re-pulling later is cheap, but mappings authored against the
+wrong ICD-10 variant are not.
 
 ## Tests
 - Zero-SNOMED oracle green on the expanded pack (parsed + raw + alias).
@@ -70,5 +92,6 @@ redesign.
 - Picker e2e: each dictionary (LOINC/ICD-10/ICD-11/CIEL) shows >1 code and search returns matches;
   ICD-10 renders as "ICD-10", not a URL.
 
-## Open product decision (yours)
-**How much coverage, and online or not?** This sets the script's scope. Options below.
+## Status
+Coverage decision **locked: broad vendored** (above). Remaining input needed before snapshotting:
+the **ICD-10 variant** (WHO vs CM) from the MoH/clinical owner. Everything else is developer-ready.
