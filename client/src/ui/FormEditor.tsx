@@ -970,10 +970,13 @@ function SurveyTab(props: {
     const levels = d === 0
       ? 'the contact link only'
       : `${d} ancestor level${d === 1 ? '' : 's'}`;
-    const hiddenRowCount = rekeyedRows.filter((r) => {
-      const t = r.type.trim().toLowerCase();
-      return t === 'hidden' || t === 'calculate';
-    }).length;
+    // buildHierarchyBlock only emits `hidden` plus begin/end group rows
+    // (no `calculate` — the existing scaffold owns those). Count just the
+    // hidden plumbing rows so the toast's row count reflects what the
+    // user will actually NOT see in the rendered form.
+    const hiddenRowCount = rekeyedRows.filter(
+      (r) => r.type.trim().toLowerCase() === 'hidden',
+    ).length;
     const hiddenSuffix =
       hiddenRowCount > 0
         ? ` (${hiddenRowCount} hidden row${hiddenRowCount === 1 ? '' : 's'} CHT fills in automatically — health workers won't see them)`
