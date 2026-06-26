@@ -59,6 +59,7 @@ import {
   serializeBuilderState,
   fieldsTypicalForOp,
   opsTypicalForKind,
+  detectStaleLineageBlocks,
   type Clause,
   type ClauseOp,
   type ConditionColumn,
@@ -76,6 +77,7 @@ import { FormPreview } from './FormPreview.js';
 import { SaveDiffModal } from './SaveDiffModal.js';
 import { QuestionTypePicker } from './QuestionTypePicker.js';
 import { findTileForRowType } from './QuestionTypeCatalog.js';
+import { LineageBuilder } from './LineageBuilder.js';
 import { InlineChoicesEditor } from './InlineChoicesEditor.js';
 import { useHistory } from '../state/useHistory.js';
 import { showUndoToast } from './UndoToast.js';
@@ -302,6 +304,8 @@ export function FormEditor({ formId }: { formId: string }) {
             contextKeys={contextKeys}
             revealRowId={revealRowId}
             onRevealConsumed={() => setRevealRowId(null)}
+            onRequestReveal={setRevealRowId}
+            formCategory={formId.startsWith('contact:') ? 'contact' : 'app'}
           />
           {showPreview && (
             <div className="preview-pane">
@@ -468,6 +472,15 @@ function SurveyTab(props: {
    *  scroll completes so the same row can be re-clicked. */
   revealRowId: string | null;
   onRevealConsumed: () => void;
+  /** Upward channel — SurveyTab requests a reveal after a multi-row insert
+   *  (e.g. the lineage block) so the existing two-phase mode-flip /
+   *  scroll / flash / focus effect in this component handles the rest. */
+  onRequestReveal: (rowId: string) => void;
+  /** Form category derived from formId (e.g. `app:death_report` → `app`).
+   *  Used to filter form-variant-specific tiles in QuestionTypePicker —
+   *  notably the `lineage_block` tile that is app-only at v1
+   *  (docs/plans/hierarchy-block-generator.md §4.8 + §8.7). */
+  formCategory: 'app' | 'contact';
 }) {
   const { form, patch, violationsByRow, revealRowId, onRevealConsumed } = props;
   const undo = props.undo;
@@ -623,6 +636,114 @@ function SurveyTab(props: {
   // we should insert the new row(s) at. `null` means "append to the end"
   // (the legacy default). Cleared after every commit/cancel.
   const [pendingInsertIndex, setPendingInsertIndex] = useState<number | null>(null);
+  // Lineage builder modal — opened when the user picks the `lineage_block`
+  // tile in QuestionTypePicker. The insert index is captured BEFORE the
+  // picker clears `pendingInsertIndex` (otherwise the lineage block
+  // silently appends to the form end — see docs/plans/hierarchy-block-
+  // generator.md critical gotchas).
+  const [lineageBuilderOpen, setLineageBuilderOpen] = useState(false);
+  const [lineageInsertIndex, setLineageInsertIndex] = useState<number | null>(null);
+  const [lineageHierarchy, setLineageHierarchy] = useState<
+    import('./LineageBuilder.js').LineageBuilderHierarchy | null
+  >(null);
+  const [lineageHierarchyError, setLineageHierarchyError] = useState<string | null>(null);
+  // Fetch the project's hierarchy lazily — only when the lineage builder
+  // opens. Cached after first fetch; the editor doesn't re-fetch on
+  // every open because contact_types rarely change mid-session, and a
+  // stale read is preferable to a flash of nothing. The Hierarchy
+  // editor's own save invalidates by reloading the panel, which mounts
+  // a fresh FormEditor anyway.
+  useEffect(() => {
+    if (!lineageBuilderOpen || lineageHierarchy || lineageHierarchyError) return;
+    let alive = true;
+    api
+      .getHierarchy()
+      .then((h) => {
+        if (!alive) return;
+        setLineageHierarchy({
+          // The API returns contact_types as a loose record; the shape
+          // is structurally compatible with ContactTypeNode (id +
+          // optional parents + person flag). Trust the server schema.
+          contact_types: h.contact_types as unknown as import(
+            '@cht-ui/shared'
+          ).ContactTypeNode[],
+          place_types_display: h.place_types_display,
+        });
+      })
+      .catch((e: Error) => {
+        if (!alive) return;
+        setLineageHierarchyError(e.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [lineageBuilderOpen, lineageHierarchy, lineageHierarchyError]);
+
+  /** Plan §5 — non-destructive staleness detection. Re-runs whenever the
+   *  hierarchy fetch resolves or the survey changes; never auto-rewrites.
+   *  An entry per lineage block whose stored signature disagrees with
+   *  what `buildHierarchyBlock` would emit today. Surfaced as a yellow
+   *  chip on the relevant accordion header. */
+  const staleLineageRowIds = useMemo(() => {
+    if (!lineageHierarchy) return new Set<string>();
+    const drift = detectStaleLineageBlocks(
+      form.survey,
+      lineageHierarchy.contact_types,
+    );
+    return new Set(drift.map((d) => d.rowId));
+  }, [form.survey, lineageHierarchy]);
+
+  // Trigger a one-time hierarchy fetch on mount so the staleness badge
+  // doesn't only appear after the builder modal has been opened. Cached
+  // afterwards — see the modal-open effect for re-use semantics.
+  useEffect(() => {
+    if (lineageHierarchy || lineageHierarchyError) return;
+    let alive = true;
+    api
+      .getHierarchy()
+      .then((h) => {
+        if (!alive) return;
+        setLineageHierarchy({
+          contact_types: h.contact_types as unknown as import(
+            '@cht-ui/shared'
+          ).ContactTypeNode[],
+          place_types_display: h.place_types_display,
+        });
+      })
+      .catch((e: Error) => {
+        if (!alive) return;
+        setLineageHierarchyError(e.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [lineageHierarchy, lineageHierarchyError]);
+
+  /** True when the form has an `inputs/contact` group the lineage block
+   *  can splice into. The LineageBuilder modal uses this to render a
+   *  non-blocking heads-up when the splice will land somewhere else. */
+  const formHasInputsContact = useMemo(() => {
+    // Walk the survey looking for `begin group contact` nested inside
+    // `begin group inputs`. Cheap structural scan — early-exit when
+    // both are found.
+    const stack: string[] = [];
+    for (const r of form.survey) {
+      const t = r.type.trim().toLowerCase();
+      if (t === 'begin group' || t === 'begin repeat') {
+        stack.push(r.name);
+        if (
+          r.name === 'contact' &&
+          stack.length >= 2 &&
+          stack[stack.length - 2] === 'inputs'
+        ) {
+          return true;
+        }
+      } else if (t === 'end group' || t === 'end repeat') {
+        stack.pop();
+      }
+    }
+    return false;
+  }, [form.survey]);
   const existingListNames = useMemo(() => {
     const s = new Set<string>();
     for (const c of form.choices) if (c.list_name) s.add(c.list_name);
@@ -637,6 +758,20 @@ function SurveyTab(props: {
 
   function handlePickerCommit(commit: import('./QuestionTypePicker.js').PickerCommit) {
     setPickerOpen(false);
+    // Lineage handoff — the picker's `lineage_block` tile is a sentinel
+    // that opens a second modal (LineageBuilder) instead of committing a
+    // single row. Capture `pendingInsertIndex` into a dedicated lineage
+    // slot BEFORE clearing it (the picker's normal cleanup would otherwise
+    // wipe the insert position and the lineage block would silently
+    // append to the form end — docs/plans/hierarchy-block-generator.md
+    // critical gotcha).
+    if (commit.tileId === 'lineage_block') {
+      setLineageInsertIndex(pendingInsertIndex);
+      setPendingInsertIndex(null);
+      setPickerEditRowId(null);
+      setLineageBuilderOpen(true);
+      return;
+    }
     if (pickerEditRowId) {
       // Edit mode: re-type an existing row. Preserve everything except
       // type and the appearance extras the new tile dictates. Any unrelated
@@ -731,6 +866,122 @@ function SurveyTab(props: {
       nextChoices = [...form.choices, ...additions];
     }
     patch({ ...form, survey: spliceSurvey([newRow]), choices: nextChoices });
+  }
+
+  /**
+   * Handle the LineageBuilder modal's commit — splice the parent-chain
+   * rows into the form, force the post-insert UX traps from the plan
+   * (docs/plans/hierarchy-block-generator.md §4 + critical gotchas):
+   *   1. Flip mode to Full — rows inside `inputs/` are hidden in Simple.
+   *   2. Force-expand `inputs` (default-COLLAPSED) and `contact` so the
+   *      user can actually see the new block.
+   *   3. Reuse the existing `revealRowId` channel to scroll + flash +
+   *      focus the outermost begin-group.
+   *   4. Show an UndoToast with a single Undo for the whole splice.
+   *
+   * Atomicity: one `patch()` call carries the entire splice so undo
+   * treats the block as one operation (the §4.1 contract).
+   */
+  function handleLineageCommit(commit: import('./LineageBuilder.js').LineageCommit) {
+    const insertAt = lineageInsertIndex;
+    setLineageInsertIndex(null);
+    setLineageBuilderOpen(false);
+
+    // Re-key the deterministic rowIds emitted by buildHierarchyBlock
+    // (`lineage_0_begin`, `lineage_0_id`, …) so a second insert of the
+    // same configuration doesn't collide with rows already on the form.
+    // Plan §6: "the insert path re-keys to avoid collisions with existing
+    // survey rows". A simple session-monotonic stamp keeps rowIds stable
+    // through the rest of this edit session while guaranteeing uniqueness
+    // across multiple inserts. The outermost begin-group's rowId is the
+    // reveal anchor; we look it up in the rekey map so the upward signal
+    // still points at the right row.
+    const stamp = `${form.survey.length + 1}_${Math.floor(form.survey.length / 7) + 1}`;
+    const rekeyMap = new Map<string, string>();
+    const rekeyedRows = commit.rows.map((r) => {
+      const next = `r_lineage_${stamp}_${r.rowId}`;
+      rekeyMap.set(r.rowId, next);
+      return { ...r, rowId: next };
+    });
+    const rekeyedOutermost =
+      commit.outermostBeginRowId && rekeyMap.get(commit.outermostBeginRowId);
+
+    // Snapshot id BEFORE patching, so the toast's Undo jumps back to
+    // exactly that state regardless of edits the user makes before
+    // clicking Undo (matches removeRow's pattern).
+    const snapshotId = props.getSnapshotId();
+
+    const nextSurvey =
+      insertAt === null || insertAt < 0 || insertAt > form.survey.length
+        ? [...form.survey, ...rekeyedRows]
+        : [
+            ...form.survey.slice(0, insertAt),
+            ...rekeyedRows,
+            ...form.survey.slice(insertAt),
+          ];
+    patch({ ...form, survey: nextSurvey });
+
+    // Post-insert UX — every step is mandated by the plan's critical
+    // gotchas list.
+    //
+    // (a) Mode flip — rows in `inputs/` are hidden in Simple. Without
+    //     this, the user sees nothing change on click and reads it as
+    //     a broken button.
+    if (mode === 'simple') setMode('full');
+    // (b) Force-expand `inputs` (in DEFAULT_COLLAPSED_GROUP_NAMES so its
+    //     default state is COLLAPSED) and `contact` (default-expanded,
+    //     but the user may have toggled it shut earlier). The collapse
+    //     state stores "flip from default" intent: adding a default-
+    //     collapsed group's begin-rowId expands it; removing a default-
+    //     expanded group's begin-rowId restores its default expanded
+    //     state. The lineage block lives inside `inputs/contact`, so
+    //     surface both.
+    setCollapsedGroupIds((prev) => {
+      const next = new Set(prev);
+      for (const r of nextSurvey) {
+        const t = r.type.trim().toLowerCase();
+        if (t !== 'begin group') continue;
+        const isDefaultCollapsed = DEFAULT_COLLAPSED_GROUP_NAMES.has(r.name);
+        if (r.name === 'inputs') {
+          // Default-collapsed → ADD to flip to expanded.
+          if (isDefaultCollapsed) next.add(r.rowId);
+          else next.delete(r.rowId);
+        } else if (r.name === 'contact') {
+          // Default-expanded → REMOVE from set to ensure expanded.
+          if (isDefaultCollapsed) next.add(r.rowId);
+          else next.delete(r.rowId);
+        }
+      }
+      return next;
+    });
+    // (c) Reveal the outermost begin-group — the existing `revealRowId`
+    //     channel handles two-phase scroll/flash/focus (and force-flips
+    //     mode to Full if (a) didn't already). Use the RE-KEYED rowId
+    //     so the querySelector matches the row actually in the DOM.
+    if (rekeyedOutermost) props.onRequestReveal(rekeyedOutermost);
+    // (d) Toast — plan §4.1 mandates: "Added contact + N ancestor levels
+    //     (N hidden linking rows CHT fills in automatically — health
+    //     workers won't see them)." The hidden-row explanation is the
+    //     load-bearing copy that prevents Bhishan's cold-start
+    //     abandonment trigger ("I clicked the button and nothing
+    //     changed"). Undo restores via `props.jumpTo(snapshotId)` so the
+    //     stored snapshot wins over any later edits — matches removeRow.
+    const d = commit.summary.depth;
+    const levels = d === 0
+      ? 'the contact link only'
+      : `${d} ancestor level${d === 1 ? '' : 's'}`;
+    const hiddenRowCount = rekeyedRows.filter((r) => {
+      const t = r.type.trim().toLowerCase();
+      return t === 'hidden' || t === 'calculate';
+    }).length;
+    const hiddenSuffix =
+      hiddenRowCount > 0
+        ? ` (${hiddenRowCount} hidden row${hiddenRowCount === 1 ? '' : 's'} CHT fills in automatically — health workers won't see them)`
+        : '';
+    showUndoToast({
+      message: `Added "${commit.summary.leafLabel}" lineage — ${levels}${hiddenSuffix}`,
+      onUndo: () => props.jumpTo(snapshotId),
+    });
   }
 
   function openTypePickerFor(rowId: string) {
@@ -869,6 +1120,7 @@ function SurveyTab(props: {
         addQuestion={addQuestion}
         ungroup={ungroup}
         formSurvey={form.survey}
+        staleLineageRowIds={staleLineageRowIds}
       />
     );
   }
@@ -952,6 +1204,7 @@ function SurveyTab(props: {
           title={pickerEditRowId ? 'Change question type' : 'Add question'}
           commitLabel={pickerEditRowId ? 'Change type' : 'Add question'}
           mode={mode}
+          formCategory={props.formCategory}
           existingLists={existingListNames}
           hideNameField={Boolean(pickerEditRowId)}
           initialName={
@@ -976,6 +1229,53 @@ function SurveyTab(props: {
           onCommit={handlePickerCommit}
         />
       )}
+
+      {lineageBuilderOpen && (
+        <>
+          {lineageHierarchyError && (
+            <div className="qtype-backdrop">
+              <div className="qtype-modal lineage-builder-modal" role="dialog">
+                <div className="qtype-header">
+                  <h2>Couldn't load hierarchy</h2>
+                </div>
+                <p className="error-banner">{lineageHierarchyError}</p>
+                <div className="qtype-actions">
+                  <button
+                    onClick={() => {
+                      setLineageBuilderOpen(false);
+                      setLineageInsertIndex(null);
+                      setLineageHierarchyError(null);
+                    }}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {!lineageHierarchyError && lineageHierarchy && (
+            <LineageBuilder
+              hierarchy={lineageHierarchy}
+              formHasInputsContact={formHasInputsContact}
+              onCancel={() => {
+                setLineageBuilderOpen(false);
+                setLineageInsertIndex(null);
+              }}
+              onCommit={handleLineageCommit}
+            />
+          )}
+          {!lineageHierarchyError && !lineageHierarchy && (
+            <div className="qtype-backdrop">
+              <div className="qtype-modal lineage-builder-modal" role="dialog">
+                <div className="qtype-header">
+                  <h2>Add contact + ancestor lineage</h2>
+                </div>
+                <p className="muted">Loading project hierarchy…</p>
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -988,6 +1288,23 @@ function SurveyTab(props: {
  * group header.
  */
 const DEFAULT_COLLAPSED_GROUP_NAMES = new Set(['inputs']);
+
+/**
+ * Recursively count every `kind: 'group'` DisplayItem under a given
+ * subtree. Used by the lineage-block header to derive "N levels" from
+ * the structural shape (rather than parsing the signature string).
+ * Counts every nested begin/end pair — for a depth-3 lineage chain this
+ * returns 2 (the 2 inner `parent` groups; the outermost itself is the
+ * one calling this helper, so it adds itself externally).
+ */
+function countBeginGroups(items: DisplayItem[], acc: number): number {
+  for (const i of items) {
+    if (i.kind === 'group') {
+      acc = countBeginGroups(i.children, acc + 1);
+    }
+  }
+  return acc;
+}
 
 /** True for select_one / select_multiple / rank rows (list-bearing types). */
 function isSelectRow(row: SurveyRow): boolean {
@@ -1036,6 +1353,14 @@ type DisplayItem =
       innerRowCount: number;
       children: DisplayItem[];
       collapsed: boolean;
+      /** Set on lineage-generated outermost begin-groups (the ones
+       *  buildHierarchyBlock stamps with `extras['cht-ui-lineage']`).
+       *  When present the accordion renders with a friendly
+       *  "Contact lineage (auto-generated)" label + a level count, and
+       *  defaults to collapsed so the user sees "one tidy thing, not 21
+       *  scary rows" (plan §4.4). The stored signature value lets us
+       *  surface staleness drift downstream (§5). */
+      lineageSignature?: string;
     };
 
 /**
@@ -1147,6 +1472,13 @@ function walkChildren(ctx: WalkCtx, depth: number): DisplayItem[] {
         const endT = endRow.type.trim().toLowerCase();
         if (endT === 'end group' || endT === 'end repeat') ctx.index++;
       }
+      // Plan §4.4 — the outermost `begin group parent` of a lineage block
+      // is stamped with `extras['cht-ui-lineage']`. When that stamp is
+      // present, the accordion is rendered as one tidy collapsed unit
+      // labeled "Contact lineage (auto-generated)" rather than the bare
+      // `parent` name. The signature also lets a later staleness check
+      // surface drift (§5).
+      const lineageSignature = beginRow.extras['cht-ui-lineage'];
       items.push({
         kind: 'group',
         name: beginRow.name,
@@ -1158,15 +1490,17 @@ function walkChildren(ctx: WalkCtx, depth: number): DisplayItem[] {
         children,
         // Collapse-state convention: a group is collapsed by default iff
         // its `name` is in DEFAULT_COLLAPSED_GROUP_NAMES (the CHT `inputs`
-        // plumbing block). The user-toggled set FLIPS that default —
-        // toggling an `inputs` group EXPANDS it, toggling a plain group
-        // COLLAPSES it. Storing only the flip means a freshly-added
-        // group keeps the default behavior with no Set entry needed.
+        // plumbing block) OR it carries a lineage signature (plan §4.4 —
+        // "render as one collapsible unit"). The user-toggled set FLIPS
+        // that default — toggling an `inputs` or lineage group EXPANDS
+        // it, toggling a plain group COLLAPSES it.
         collapsed: (() => {
-          const defaultCollapsed = DEFAULT_COLLAPSED_GROUP_NAMES.has(beginRow.name);
+          const defaultCollapsed =
+            DEFAULT_COLLAPSED_GROUP_NAMES.has(beginRow.name) || Boolean(lineageSignature);
           const userToggled = ctx.collapsedGroupIds.has(beginRow.rowId);
           return userToggled ? !defaultCollapsed : defaultCollapsed;
         })(),
+        lineageSignature,
       });
       continue;
     }
@@ -1191,6 +1525,11 @@ function SurveyGroupAccordion(props: {
   addQuestion: (insertIndex?: number) => void;
   ungroup: (beginRowId: string) => void;
   formSurvey: SurveyRow[];
+  /** RowIds of lineage-stamped begin-groups whose stored signature
+   *  disagrees with the current hierarchy (plan §5). The header renders
+   *  a non-destructive yellow chip on these rows so the author knows to
+   *  re-open the LineageBuilder to regenerate. */
+  staleLineageRowIds: Set<string>;
 }) {
   const { item } = props;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -1203,11 +1542,24 @@ function SurveyGroupAccordion(props: {
   const isCollapsed = item.collapsed;
   const kindLabel =
     item.structuralType === 'repeat' ? 'begin repeat → end repeat' : 'begin group → end group';
+  // Plan §4.4 — when this group is the outermost row of a lineage block
+  // (carries `cht-ui-lineage` extras stamp), render it with a friendly
+  // label + a level count and treat it as one tidy collapsible unit. The
+  // underlying `name` is still `parent` for pyxform — only the displayed
+  // header changes.
+  const isLineageBlock = Boolean(item.lineageSignature);
+  // Count nested `parent` group depth — equal to the lineage chain length
+  // the author originally requested. The signature would be the canonical
+  // source, but it's encoded; counting structurally avoids decoding the
+  // signature format here.
+  const lineageLevels = isLineageBlock
+    ? countBeginGroups(item.children, 0) + 1
+    : 0;
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`survey-group-accordion depth-${item.depth}`}
+      className={`survey-group-accordion depth-${item.depth}${isLineageBlock ? ' lineage-block' : ''}`}
       data-structural-type={item.structuralType}
       data-row-id={item.beginRowId}
       tabIndex={-1}
@@ -1234,10 +1586,32 @@ function SurveyGroupAccordion(props: {
           <span className="caret" aria-hidden="true">
             {isCollapsed ? '▸' : '▾'}
           </span>
-          <code>{item.name || '(unnamed)'}</code>
-          <span className="muted small">
-            {item.innerRowCount} row{item.innerRowCount === 1 ? '' : 's'} inside ({kindLabel})
-          </span>
+          {isLineageBlock ? (
+            <>
+              <span className="lineage-block-label">
+                🌳 Contact lineage <span className="muted small">(auto-generated)</span>
+              </span>
+              <span className="muted small">
+                {lineageLevels} level{lineageLevels === 1 ? '' : 's'} — {item.innerRowCount}{' '}
+                hidden row{item.innerRowCount === 1 ? '' : 's'}
+              </span>
+              {props.staleLineageRowIds.has(item.beginRowId) && (
+                <span
+                  className="lineage-stale-badge"
+                  title="Hierarchy changed since this block was generated — re-open the lineage builder to refresh."
+                >
+                  ⚠ may be stale
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <code>{item.name || '(unnamed)'}</code>
+              <span className="muted small">
+                {item.innerRowCount} row{item.innerRowCount === 1 ? '' : 's'} inside ({kindLabel})
+              </span>
+            </>
+          )}
         </button>
         {/* §A5 Ungroup — removes the begin/end shell, keeping children
             at the parent depth. Hidden behind a low-emphasis link so it

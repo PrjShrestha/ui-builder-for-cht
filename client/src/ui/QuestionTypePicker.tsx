@@ -51,6 +51,11 @@ interface Props {
    * are filtered out of the grid (calculate, hidden, structural).
    */
   mode?: 'simple' | 'full';
+  /** Form category — used to filter tiles that don't apply to the
+   *  current form variant. Per docs/plans/hierarchy-block-generator.md
+   *  §4.8 + §8.7 the lineage block is **app/report only** (variant A);
+   *  variant B for contact-edit forms is deferred. */
+  formCategory?: 'app' | 'contact';
   /**
    * Existing `list_name`s in this form, used to offer "reuse existing list"
    * for select_one / select_multiple. Empty array hides the reuse UI.
@@ -111,12 +116,17 @@ export function QuestionTypePicker(props: Props) {
     return QUESTION_TYPE_TILES.filter((t) => {
       if (mode === 'simple' && t.hiddenInSimple) return false;
       if (filter === 'cht' && !t.chtOnly) return false;
+      // Plan §4.8 + §8.7 — `lineage_block` is app/report-only (variant A).
+      // The contact-edit variant (B) was DEFERRED at v1; hide the tile
+      // when authoring a contact form so the user can't pick a tile that
+      // would generate an invalid block for their form category.
+      if (t.id === 'lineage_block' && props.formCategory === 'contact') return false;
       if (q && !t.label.toLowerCase().includes(q) && !t.description.toLowerCase().includes(q)) {
         return false;
       }
       return true;
     });
-  }, [mode, filter, search]);
+  }, [mode, filter, search, props.formCategory]);
 
   const byCategory = useMemo(() => {
     const map = new Map<TileCategory, QuestionTypeTile[]>();

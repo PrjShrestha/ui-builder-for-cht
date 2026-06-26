@@ -286,6 +286,22 @@ export const QUESTION_TYPE_TILES: QuestionTypeTile[] = [
     defaultExtras: { appearance: 'mrdt-verify' },
     chtOnly: true,
   },
+  {
+    // Sentinel tile — picking it doesn't commit a single row. FormEditor
+    // intercepts on `tileId === 'lineage_block'` and opens the
+    // LineageBuilder modal (see docs/plans/hierarchy-block-generator.md
+    // v0.3 §4.7). The xlsformType + name field are ignored on this path.
+    id: 'lineage_block',
+    label: 'Contact + ancestor lineage',
+    description: 'Hidden plumbing that hydrates the contact + N ancestor places.',
+    icon: '🌳',
+    category: 'cht',
+    xlsformType: '__lineage_block__',
+    chtOnly: true,
+    // Hidden plumbing — Simple mode shouldn't surface this tile. The
+    // resulting block lives inside `inputs/` anyway, which Simple hides.
+    hiddenInSimple: true,
+  },
 
   // ---- Advanced / plumbing ----
   {
