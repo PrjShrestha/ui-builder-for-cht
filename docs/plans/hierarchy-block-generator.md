@@ -85,16 +85,17 @@ Share ONE pure generator (`buildHierarchyBlock(hierarchy, opts) → SurveyRow[]`
   hierarchy" (replace the parent chain, preserve any user-added fields). Flag, don't
   silently rewrite.
 
-## Decisions to lock
-1. **Anchor for depth.** App forms: the contact-in-context can be any type, but the
-   standard pattern declares the **full place chain** (leaf → root). Default to the
-   full configured depth; optionally let the author pick the leaf contact type.
-2. **Fields per level.** `_id` is always emitted (it's what links lineage). `name`
-   and `phone` are common but not universal — default to **`_id` only**, with a
-   checkbox to also emit `name`/`phone` per level (the tutorial's CHW example uses
-   name+phone at the CHW level).
-3. **field-list / hidden.** Match the tutorial: `inputs` is `field-list` + hidden
-   parent fields; the whole block is gated `relevant = ./source = 'user'`.
+## Decisions (locked 2026-06-26)
+1. **Depth: full by default + leaf picker.** Generate the **full configured place
+   chain** (leaf → root) by default — NSSD's 7 levels → 7 nested `parent` groups.
+   The author can **pick which leaf contact type the form starts from**, so a form
+   targeting a place type emits a shorter chain than one targeting a person.
+2. **Fields per level: `_id` only by default; opt-in `name` + `phone`.** `_id` is
+   always emitted (it links lineage). A per-level **toggle adds `name` + `phone`**
+   when the author wants them (e.g. the CHW level). Default off — `_id` alone.
+3. **field-list / hidden / source gate (locked convention).** `inputs` is
+   `field-list` with hidden parent fields; the whole block is gated
+   `relevant = ./source = 'user'`, matching the App-Forms tutorial.
 
 ## Persona notes
 - **Bhishan (PO/PM):** the win — "add the whole lineage" instead of hand-nesting 7
