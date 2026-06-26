@@ -43,6 +43,32 @@ export default [
     },
   },
   {
+    // Node-only ESM scripts (scripts/**/*.mjs) — developer-run from the
+    // command line, not bundled. Declare the Node globals they legitimately
+    // use so each new script doesn't add to the per-line `// eslint-disable`
+    // tax. Mirrors the .ts/.tsx config block above.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+      },
+    },
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', caughtErrors: 'none' }],
+    },
+  },
+  {
     ignores: [
       '**/dist/**',
       '**/node_modules/**',

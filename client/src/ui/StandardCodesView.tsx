@@ -18,15 +18,17 @@
  * dealbreaker §D). The "Custom code…" escape hatch is intentionally
  * present but secondary.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   encodeChoiceKey,
   encodeQuestionKey,
   mappableQuestions,
   formCoverage,
   SELECT_TYPE_RE,
+  DICTIONARY_LABELS,
   type ChoiceMapping,
   type ChoiceRow,
+  type DictionarySystemId,
   type FhirMapping,
   type QuestionMapping,
   type StarterPack,
@@ -667,53 +669,122 @@ function ChoiceMappingRow(props: {
 
 /* ============================ two-step picker ============================ */
 
+interface DictionaryAvailability {
+  systemId: DictionarySystemId;
+  system: string;
+  available: boolean;
+  count: number | null;
+  version: string | null;
+}
+
+interface SearchResult {
+  total: number;
+  entries: Array<{ code: string; display: string; aliases: string[] }>;
+  dictionaryVersion: string | null;
+  available: boolean;
+}
+
+const DICT_ORDER: DictionarySystemId[] = ['loinc', 'icd-10-who', 'icd-11-who', 'ciel'];
+const DEBOUNCE_MS = 180;
+
+/**
+ * Two-step dictionary→code picker. Step-2 used to filter the bundled
+ * starter pack's `concepts[]` in memory (~10 entries per system) — see
+ * docs/plans/fhir-pack-population.md. PR4 switched it to debounced
+ * `GET /api/fhir/dictionary/search` against the vendored dictionaries:
+ * LOINC, ICD-10 (WHO), ICD-11 (WHO), CIEL. The picker stays usable when
+ * a dictionary file is missing (shows "(no vendored data yet)"); it
+ * doesn't gate the button row on availability, so the user sees the same
+ * shape as planned even mid-snapshot-refresh.
+ *
+ * The `pack` prop is unused for search but retained — its `system` URLs
+ * still seed which system the picker should default to when a question
+ * already has a suggested concept (PR2 behaviour).
+ */
 function TwoStepPicker(props: {
   pack: StarterPack;
   onPick: (picked: { code: string; system: string; display: string; dictionaryVersion: string }) => void;
   onCancel: () => void;
 }) {
-  // Enumerate dictionaries from the pack — every distinct `system` URL.
-  // The plan's locked set is LOINC + ICD-10 + ICD-11 + CIEL; today the
-  // pack carries LOINC + ICD-11. PR3 backfills the other two.
-  const dictionaries = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const c of props.pack.concepts) {
-      if (!seen.has(c.system)) seen.set(c.system, systemLabel(c.system));
-    }
-    return Array.from(seen.entries()).map(([url, label]) => ({ url, label }));
-  }, [props.pack]);
-
-  const [activeDict, setActiveDict] = useState<string>(dictionaries[0]?.url ?? '');
+  const [dictionaries, setDictionaries] = useState<DictionaryAvailability[]>([]);
+  const [activeDict, setActiveDict] = useState<DictionarySystemId>('loinc');
   const [search, setSearch] = useState('');
+  const [results, setResults] = useState<SearchResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const debounceRef = useRef<number | null>(null);
 
-  const matches = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return props.pack.concepts.filter((c) => {
-      if (c.system !== activeDict) return false;
-      if (!q) return true;
-      return (
-        c.display.toLowerCase().includes(q) ||
-        c.code.toLowerCase().includes(q) ||
-        c.aliases.some((a) => a.toLowerCase().includes(q))
-      );
-    });
-  }, [props.pack, activeDict, search]);
+  useEffect(() => {
+    void api.listFhirDictionaries().then((r) => setDictionaries(r.systems));
+  }, []);
+
+  // Debounced server search: every keystroke schedules a fetch ~180ms out;
+  // the latest active dictionary + query "win" so an in-flight stale call
+  // can't overwrite a fresh one (we compare the system+q on resolve).
+  useEffect(() => {
+    if (debounceRef.current !== null) {
+      // eslint-disable-next-line no-undef
+      window.clearTimeout(debounceRef.current);
+    }
+    setLoading(true);
+    const q = search;
+    const sys = activeDict;
+    // eslint-disable-next-line no-undef
+    debounceRef.current = window.setTimeout(() => {
+      void api
+        .searchFhirDictionary({ system: sys, q, limit: 100 })
+        .then((r) => {
+          // Guard against out-of-order responses: only commit if the request
+          // matches today's active state.
+          if (sys === activeDict && q === search) {
+            setResults({
+              total: r.total,
+              entries: r.entries,
+              dictionaryVersion: r.dictionaryVersion,
+              available: r.available,
+            });
+          }
+        })
+        .catch(() => {
+          if (sys === activeDict && q === search) {
+            setResults({ total: 0, entries: [], dictionaryVersion: null, available: false });
+          }
+        })
+        .finally(() => {
+          if (sys === activeDict && q === search) setLoading(false);
+        });
+    }, DEBOUNCE_MS) as unknown as number;
+    return () => {
+      if (debounceRef.current !== null) {
+        // eslint-disable-next-line no-undef
+        window.clearTimeout(debounceRef.current);
+      }
+    };
+  }, [activeDict, search]);
+
+  const activeMeta = dictionaries.find((d) => d.systemId === activeDict) ?? null;
 
   return (
     <div className="two-step-picker">
       <div className="picker-step">
         <strong>1. Dictionary:</strong>
         <div className="row gap dict-buttons">
-          {dictionaries.map((d) => (
-            <button
-              key={d.url}
-              type="button"
-              className={activeDict === d.url ? 'active' : 'link'}
-              onClick={() => setActiveDict(d.url)}
-            >
-              {d.label}
-            </button>
-          ))}
+          {DICT_ORDER.map((id) => {
+            const meta = dictionaries.find((d) => d.systemId === id);
+            const label = DICTIONARY_LABELS[id];
+            const count = meta?.count ?? null;
+            return (
+              <button
+                key={id}
+                type="button"
+                className={activeDict === id ? 'active' : 'link'}
+                onClick={() => setActiveDict(id)}
+                title={meta?.version ?? 'not yet vendored'}
+              >
+                {label}
+                {count !== null && <span className="muted small"> ({count})</span>}
+              </button>
+            );
+          })}
         </div>
       </div>
       <div className="picker-step">
@@ -727,30 +798,46 @@ function TwoStepPicker(props: {
           autoFocus
         />
         <ul className="picker-results">
-          {matches.length === 0 ? (
-            <li className="muted">No matches in this dictionary.</li>
+          {!results ? (
+            <li className="muted">Loading…</li>
+          ) : !results.available ? (
+            <li className="muted">
+              {DICTIONARY_LABELS[activeDict]} dictionary not vendored yet — run{' '}
+              <code>node scripts/build-terminology-pack.mjs</code> to snapshot.
+            </li>
+          ) : results.entries.length === 0 ? (
+            <li className="muted">
+              {loading ? 'Searching…' : `No matches in ${DICTIONARY_LABELS[activeDict]}.`}
+            </li>
           ) : (
-            matches.map((c) => (
-              <li key={`${c.system}-${c.code}`}>
-                <button
-                  type="button"
-                  className="picker-result"
-                  onClick={() =>
-                    props.onPick({
-                      code: c.code,
-                      system: c.system,
-                      display: c.display,
-                      dictionaryVersion: c.dictionaryVersion,
-                    })
-                  }
-                >
-                  <code>{c.code}</code> — {c.display}
-                  {c.aliases.length > 0 && (
-                    <span className="muted small"> (also: {c.aliases.slice(0, 3).join(', ')})</span>
-                  )}
-                </button>
-              </li>
-            ))
+            <>
+              {results.total > results.entries.length && (
+                <li className="muted small">
+                  Showing first {results.entries.length} of {results.total} matches — narrow your search to see the rest.
+                </li>
+              )}
+              {results.entries.map((c) => (
+                <li key={`${activeDict}-${c.code}`}>
+                  <button
+                    type="button"
+                    className="picker-result"
+                    onClick={() =>
+                      props.onPick({
+                        code: c.code,
+                        system: activeMeta?.system ?? activeDict,
+                        display: c.display,
+                        dictionaryVersion: results.dictionaryVersion ?? activeDict,
+                      })
+                    }
+                  >
+                    <code>{c.code}</code> — {c.display}
+                    {c.aliases.length > 0 && (
+                      <span className="muted small"> (also: {c.aliases.slice(0, 3).join(', ')})</span>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </>
           )}
         </ul>
       </div>
@@ -778,11 +865,32 @@ function statusLabel(s: 'confirmed' | 'suggested' | 'skipped' | 'unmapped'): str
   }
 }
 
-/** Friendly label for a system URL. Falls back to the URL when unknown. */
+/** Friendly label for a system URL. Falls back to "Other code system" rather
+ *  than a bare URL — bare URLs in the picker / code chip read as a broken
+ *  data layer to a non-technical owner. See docs/plans/fhir-pack-population.md
+ *  (H1 fix). The hl7 spellings of ICD-10/11 are the FHIR-canonical
+ *  `http://hl7.org/fhir/sid/icd-10` form; both spellings ship in vendored
+ *  dictionaries and saved sidecars in the wild, so recognize both. */
 function systemLabel(system: string): string {
   if (system === 'http://loinc.org') return 'LOINC';
-  if (system.startsWith('http://id.who.int/icd/release/10')) return 'ICD-10';
-  if (system.startsWith('http://id.who.int/icd/release/11')) return 'ICD-11';
-  if (system.startsWith('https://app.openconceptlab.org')) return 'CIEL';
-  return system;
+  if (
+    system.startsWith('http://id.who.int/icd/release/10') ||
+    system === 'http://hl7.org/fhir/sid/icd-10' ||
+    system === 'http://hl7.org/fhir/sid/icd-10-cm'
+  ) {
+    return 'ICD-10';
+  }
+  if (
+    system.startsWith('http://id.who.int/icd/release/11') ||
+    system === 'http://hl7.org/fhir/sid/icd-11'
+  ) {
+    return 'ICD-11';
+  }
+  if (
+    system.startsWith('https://app.openconceptlab.org') ||
+    system.startsWith('https://api.openconceptlab.org')
+  ) {
+    return 'CIEL';
+  }
+  return 'Other code system';
 }

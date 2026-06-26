@@ -18,6 +18,7 @@ import { parseFhirMapping } from './parse.js';
 import { serializeFhirMapping } from './serialize.js';
 import { reconcileFhirMapping } from './reconcile.js';
 import { encodeQuestionKey } from './key.js';
+import { scanForSnomed } from './snomedFilter.js';
 import { FhirMappingError, type FhirMapping, type QuestionMapping } from './types.js';
 
 /* --------------------------- path resolution ----------------------------- */
@@ -59,64 +60,6 @@ function bundledPackPath(): string {
     }
   }
   throw new Error('Bundled pack file not found');
-}
-
-/* ----------------------- zero-SNOMED oracle ------------------------------ */
-
-/**
- * Three-mode SNOMED predicate (plan §4.10 #7):
- *   (i)  recursive structural scan flagging any node where
- *        `system === 'http://snomed.info/sct'` or the OID appears,
- *   (ii) substring scan over ALL stringified leaf values for any of
- *        `snomed.info`, `/sct`, the OID, or a case-insensitive `snomed`
- *        token (catches free-text aliases / cross-map attributes),
- *   (iii) substring scan over the RAW committed file bytes (catches a
- *        token living in formatting/whitespace positions outside parsed
- *        values).
- */
-function scanForSnomed(
-  parsed: unknown,
-  rawBytes: string,
-): { found: boolean; reason?: string } {
-  const NEEDLES_CASE_SENSITIVE = ['snomed.info', '/sct', '2.16.840.1.113883.6.96'];
-  const NEEDLE_CASE_INSENSITIVE = 'snomed';
-
-  function checkString(s: string, path: string): string | null {
-    for (const needle of NEEDLES_CASE_SENSITIVE) {
-      if (s.includes(needle)) return `${path}: contains ${JSON.stringify(needle)}`;
-    }
-    if (s.toLowerCase().includes(NEEDLE_CASE_INSENSITIVE)) {
-      return `${path}: contains case-insensitive 'snomed'`;
-    }
-    return null;
-  }
-
-  function walk(v: unknown, path: string): string | null {
-    if (typeof v === 'string') return checkString(v, path);
-    if (Array.isArray(v)) {
-      for (let i = 0; i < v.length; i++) {
-        const r = walk(v[i], `${path}[${i}]`);
-        if (r) return r;
-      }
-      return null;
-    }
-    if (v !== null && typeof v === 'object') {
-      for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-        const r = walk(val, path === '' ? k : `${path}.${k}`);
-        if (r) return r;
-      }
-      return null;
-    }
-    return null;
-  }
-
-  const structuralOrLeaf = walk(parsed, '');
-  if (structuralOrLeaf) return { found: true, reason: structuralOrLeaf };
-
-  const rawCheck = checkString(rawBytes, '<raw bytes>');
-  if (rawCheck) return { found: true, reason: rawCheck };
-
-  return { found: false };
 }
 
 /* ------------------------------ 10 test cases ----------------------------- */

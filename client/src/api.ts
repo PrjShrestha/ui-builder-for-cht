@@ -241,4 +241,40 @@ export const api = {
    *  suggestions in the two-step picker. */
   getFhirPack: () =>
     jsonFetch<{ pack: import('@cht-ui/shared').StarterPack }>('/api/fhir-mapping/pack'),
+
+  /** List the vendored terminology dictionaries with their entry counts +
+   *  version pins. Backs the picker's step-1 button row — buttons render
+   *  regardless of `available`; an unavailable dictionary just searches
+   *  to empty. See docs/plans/fhir-pack-population.md. */
+  listFhirDictionaries: () =>
+    jsonFetch<{
+      systems: Array<{
+        systemId: import('@cht-ui/shared').DictionarySystemId;
+        system: string;
+        available: boolean;
+        count: number | null;
+        version: string | null;
+      }>;
+    }>('/api/fhir/dictionary/list'),
+
+  /** Debounced search over one dictionary. The picker calls this on every
+   *  keystroke (after a debounce window); sub-50 ms per call by design. */
+  searchFhirDictionary: (params: {
+    system: import('@cht-ui/shared').DictionarySystemId;
+    q: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const qs = new URLSearchParams({ system: params.system, q: params.q });
+    if (params.limit !== undefined) qs.set('limit', String(params.limit));
+    if (params.offset !== undefined) qs.set('offset', String(params.offset));
+    return jsonFetch<{
+      system: string;
+      systemId: import('@cht-ui/shared').DictionarySystemId;
+      dictionaryVersion: string | null;
+      total: number;
+      entries: Array<{ code: string; display: string; aliases: string[] }>;
+      available: boolean;
+    }>(`/api/fhir/dictionary/search?${qs.toString()}`);
+  },
 };

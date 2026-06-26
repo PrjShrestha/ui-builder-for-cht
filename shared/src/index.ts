@@ -26,6 +26,8 @@ export * from './fhir/serialize.js';
 export * from './fhir/reconcile.js';
 export * from './fhir/starterPack.js';
 export * from './fhir/coverage.js';
+export * from './fhir/dictionary.js';
+export * from './fhir/snomedFilter.js';
 export * from './conditionBuilder/conditionReducer.js';
 // NOTE: ./fhir/loadStarterPack.ts is intentionally NOT re-exported. It
 // imports `node:fs` and is Node-only — re-exporting would break the client

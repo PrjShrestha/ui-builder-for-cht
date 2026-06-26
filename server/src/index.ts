@@ -15,6 +15,7 @@ import { registerContactSummaryRoutes } from './routes/contactSummary.js';
 import { registerChtConfRoutes } from './routes/cht-conf.js';
 import { registerTemplateRoutes } from './routes/templates.js';
 import { registerFhirMappingRoutes } from './routes/fhirMapping.js';
+import { registerDictionaryRoutes } from './routes/dictionaries.js';
 
 const PORT = Number(process.env.PORT ?? 5174);
 const HOST = process.env.HOST ?? '127.0.0.1';
@@ -38,6 +39,7 @@ async function main() {
   await registerChtConfRoutes(app);
   await registerTemplateRoutes(app);
   await registerFhirMappingRoutes(app);
+  await registerDictionaryRoutes(app);
 
   await app.listen({ port: PORT, host: HOST });
   app.log.info(`UI Builder server listening on http://${HOST}:${PORT}`);
