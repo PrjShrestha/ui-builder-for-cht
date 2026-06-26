@@ -7,12 +7,16 @@ The v0.1 depth premise ("depth = configured-hierarchy length") was WRONG; see Ch
 
 # Plan: One-click hierarchy-block generator ("Add lineage")
 
-**Version:** v0.2 — 2026-06-26 · **Status:** PLANNER-LOCKED, developer-ready.
+**Version:** v0.3 — 2026-06-26 · **Status:** PLANNER-LOCKED, developer-ready.
 **Builds on:** `scaffolds.ts` (inputs/contact scaffold), the Hierarchy editor +
 `deriveHierarchyOrder`, group authoring (balanced insert + `structuralBalance`),
 and the `StructuralIssuesBadge` reveal/flip-to-Full precedent.
 
 > **Changelog**
+> - **v0.3** — reframed around the real requirement: capture *who submitted it*
+>   (`inputs/user`) + *who it's about* (`inputs/contact` + optional ancestors),
+>   configurably (§0). Locked the two open decisions — anchor on the `contact_types`
+>   parent tree; **defer** the contact-edit variant B (ship app/report variant A first).
 > - **v0.2** — verified (6-agent workflow). Fixed the depth model (it is **not**
 >   the configured-hierarchy length — it's an author choice computed by re-walking
 >   `parentOf` and **reversing**); re-grounded the contact-edit variant against real
@@ -20,6 +24,24 @@ and the `StructuralIssuesBadge` reveal/flip-to-Full precedent.
 >   repeated-`parent`-name nesting is **safe** through `structuralBalance`; added the
 >   UX contract (invisible-on-insert is the #1 trap) and a mandated test matrix.
 > - **v0.1** — initial scope (depth premise later found wrong).
+
+## 0. Intent — capture "who submitted it" + "who it's about" (configurable)
+The real requirement (user, 2026-06-26): a form should configurably capture —
+- **Who submitted it** (the logged-in CHW/user) → the `inputs/user` block
+  (`contact_id`, `name`, `phone`, `facility_id`) + metadata calculates (`created_by`,
+  `created_by_person_uuid`, `created_by_place_uuid`). The scaffold already emits
+  `inputs/user`; this surfaces it as an explicit, **toggleable** block.
+- **Who it's about** (the contact in context / selected) → the `inputs/contact` block
+  (`_id` via select-contact, `patient_id`) + linking calculates (`patient_uuid`,
+  `patient_id`) + **optionally** the ancestor lineage (the nested `parent` chain, §2-3),
+  sized by the leaf picker.
+
+**Configurable** = the author picks: ☑ submitter, ☑ subject, the subject leaf ("who is
+this about?"), how many ancestor levels (default full, editable), and name/phone per
+named level. **Most report forms want submitter + subject + the linking calculates; the
+deep ancestor chain is the configurable add-on, not the default headline** (real forms
+rarely nest the whole hierarchy — §2). Net reframe: this feature is "capture submitter +
+subject, with optional ancestors," not "nest the whole hierarchy."
 
 ## 1. Feasibility (verified)
 - **Runtime depth discovery is NOT possible.** The **group-nesting depth** (number
@@ -193,11 +215,21 @@ A shared, deterministic `buildHierarchyBlock` unit suite (no browser/server/fixt
    the preview ladder. (Avoids two drifting entry points.)
 5. **Re-sync = staleness badge in v1** (stamp marker + flag, never silently rewrite);
    auto-regenerate is a follow-up.
+6. **Source of depth = the `contact_types` parent tree** (`parentOf` walk), not
+   `place_hierarchy_types` — so the chain never silently skips a household-level place
+   the forms need. (Resolves §9.)
+7. **Contact-edit variant B is DEFERRED.** Ship variant A (app/report forms) first;
+   re-scope the contact-form version later. The user's need is the app/report case.
+8. **Two configurable blocks (the headline):** "who submitted it" (`inputs/user`) and
+   "who it's about" (`inputs/contact` + optional ancestors), each independently
+   toggleable; the linking calculates ride with whichever block is included. Deep
+   ancestor nesting is opt-in, not the default (§0).
 
-## 9. Open question
-Source-of-depth wording: confirm the generator anchors on the **`contact_types` parent
-tree** (true nesting) and treats `place_hierarchy_types` as a display hint only — vs
-honoring `place_hierarchy_types` exactly (which excludes household-level places like
-`clinic`). Recommend the parent-tree walk (it's what produces correct nesting); flag the
-divergence to the clinical owner if a project's `place_hierarchy_types` deliberately omits
-levels they'd still want hydrated.
+## 9. Resolved (was open)
+- **Source of depth →** the `contact_types` **parent tree** (Decision 6). Treat
+  `place_hierarchy_types` as a display-order hint only; never let it silently drop a
+  household-level place. If a project's `place_hierarchy_types` deliberately omits levels
+  the author still wants hydrated, the parent-tree walk includes them — which is the safe
+  direction.
+- **Variant B →** deferred (Decision 7). Ship app/report variant A first.
+No open questions remain for v1.
