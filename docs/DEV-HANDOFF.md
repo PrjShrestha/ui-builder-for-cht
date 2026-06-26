@@ -4,6 +4,16 @@
 
 This consolidates four audits run against the live repo at HEAD. The audits are ground truth: where they say something is built, it is built — **do not rebuild it.** The lineage feature in particular is fully wired end-to-end (see "Done — don't redo"). I re-verified the highest-impact claims (tree state, empty dictionary dir, the Phase-0 one-liner, lineage import/mount) directly against the source.
 
+## ▶ Do next (in order)
+
+1. **Commit the lineage WIP** — it's complete but uncommitted (`LineageBuilder.tsx`, `buildHierarchyBlock.ts` + the FormEditor/catalog/index edits). `git add` everything **except** `client/vite.config.run.mjs`; commit on a clean base so later fixes land cleanly.
+2. **Rebuild + restart the dev server** — `pnpm build` (shared→server→client) then `pnpm dev` in the Project-runner tab. Clears the stale `dist/` causing the ~8s Standard-codes load and the `/api/fhir/dictionary/*` 404s.
+3. **Snapshot the dictionaries** — `node scripts/build-terminology-pack.mjs --systems=loinc,ciel` (free, no auth); commit the JSON. This is what makes the picker return real codes ("only a few codes" → fixed). ICD-10/11 wait on free WHO creds **and** the WHO-vs-CM variant decision (clinical owner).
+4. **Phase-0 one-liner** — pass `summaryFlags={contextKeys}` into `PropertiesEditor` (§3 P1; ~3 lines) so form-eligibility flags validate.
+5. **Lint cleanup** — fix `eslint.config.js` client globals (92 problems → green) + add a `.gitattributes` for the CRLF test gate, then re-add `pnpm lint` to CI.
+
+Then work the **P1** queue (FHIR B2/B3/H3, H2 e2e, helper-builder fixture). Full detail below.
+
 ---
 
 ## 1. Start here
