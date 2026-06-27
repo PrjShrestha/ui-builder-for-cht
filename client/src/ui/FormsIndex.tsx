@@ -8,6 +8,12 @@ export function FormsIndex() {
   const setView = useApp((s) => s.setView);
   const setError = useApp((s) => s.setError);
   const [loading, setLoading] = useState(false);
+  // Onboarding §5 — when contact_types is empty, surface a non-blocking
+  // nudge above the form lists so the author knows their `select-contact
+  // type-X` / lineage / task `appliesToType` references will have no
+  // types to bind to. Guide, don't gate (a fresh project can still build
+  // forms — CHT just falls back to the legacy default hierarchy).
+  const [contactTypesCount, setContactTypesCount] = useState<number | null>(null);
   const [creating, setCreating] = useState<{
     category: 'app' | 'contact';
     basename: string;
@@ -31,6 +37,21 @@ export function FormsIndex() {
   useEffect(() => {
     void reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void api
+      .getHierarchy()
+      .then((h) => {
+        if (alive) setContactTypesCount(h.contact_types.length);
+      })
+      .catch(() => {
+        if (alive) setContactTypesCount(null);
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   async function doCreate() {
@@ -77,6 +98,29 @@ export function FormsIndex() {
           </button>
         </div>
       </header>
+
+      {/* Onboarding §5 — non-blocking empty-contact_types nudge. Shown
+          only when the hierarchy fetch resolved with zero types (null =
+          unknown, treated as silent). The author can still build forms;
+          this surfaces the silent failure mode (select-contact / lineage
+          / tasks bind to undefined types) before they hit it at runtime. */}
+      {contactTypesCount === 0 && (
+        <div className="onboarding-nudge">
+          <strong>⚠ No contact types defined yet</strong>
+          <p>
+            Your contact selectors (<code>select-contact type-X</code>), lineage blocks, and
+            task <code>appliesToType</code> rules have no types to bind to — these will
+            <strong> silently fail</strong> at runtime, not at build/deploy.
+          </p>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => setView({ kind: 'hierarchy' })}
+          >
+            Define your hierarchy first →
+          </button>
+        </div>
+      )}
 
       {creating && (
         <div className="card create-form">

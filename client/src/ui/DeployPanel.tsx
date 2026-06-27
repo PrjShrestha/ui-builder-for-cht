@@ -9,6 +9,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { api, type DeployConfig } from '../api.js';
+import { useApp } from '../state/store.js';
 
 interface FriendlyHint {
   patternId: string;
@@ -316,6 +317,14 @@ export function DeployPanel() {
           if (a) void runAction(a);
         }}
       />
+
+      {/* Onboarding §5 — deploy-readiness checklist. Non-blocking; the
+          deploy buttons stay enabled regardless. The point is to flag
+          the silent-failure mode (hierarchy empty / contact form missing
+          for a defined type / no app forms shipped) BEFORE the author
+          pushes to the instance. The checklist + the user's "I see it,
+          deploy anyway" is the gate. */}
+      <DeployReadinessChecklist allForms={allForms} hasGit={hasGit} />
 
       <DeployMacros
         running={running}
@@ -867,5 +876,157 @@ function DeployFormPicker(props: {
         <button className="link" onClick={props.onCancel}>cancel</button>
       </div>
     </div>
+  );
+}
+
+/* --------------------- Deploy-readiness checklist --------------------- */
+
+/**
+ * Onboarding §5 — pre-deploy readiness checklist. NON-BLOCKING by design:
+ * CHT will run on the legacy default hierarchy if `contact_types` is
+ * empty, and a missing contact form / app form / task isn't a deploy
+ * error — it's a silent runtime drift. The checklist surfaces these
+ * before the author pushes, so they're seen-and-acknowledged rather
+ * than discovered in field.
+ *
+ * Checks (each cheap; we fetch hierarchy once on mount):
+ *   1. Hierarchy: ≥1 contact_type defined.
+ *   2. Contact form per place type: every non-person type has a
+ *      `<type>-create.xlsx`. (`-edit` is optional in v1.)
+ *   3. ≥1 app form exists.
+ *   4. `tasks.js` present.
+ *
+ * Deeper checks (do app-form `select-contact type-X` references
+ * resolve to defined types?) are deferred — they'd need a survey
+ * scan per form, which is too much for the checklist phase.
+ */
+function DeployReadinessChecklist(props: {
+  allForms: FormListItem[];
+  hasGit: boolean;
+}) {
+  const project = useApp((s) => s.project);
+  type ContactTypeRow = { id: string; person?: boolean };
+  const [contactTypes, setContactTypes] = useState<ContactTypeRow[] | null>(null);
+  const [hierarchyError, setHierarchyError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void api
+      .getHierarchy()
+      .then((h) => {
+        if (!alive) return;
+        setContactTypes(h.contact_types as unknown as ContactTypeRow[]);
+      })
+      .catch((e: Error) => {
+        if (alive) setHierarchyError(e.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (!project) return null;
+
+  const hierarchyKnown = contactTypes !== null;
+  const placeTypes = (contactTypes ?? []).filter((t) => !t.person);
+  const contactFormBasenames = new Set(
+    props.allForms
+      .filter((f) => f.category === 'contact')
+      .map((f) => f.basename.toLowerCase()),
+  );
+  const missingCreateForms = placeTypes.filter(
+    (t) => !contactFormBasenames.has(`${t.id.toLowerCase()}-create`),
+  );
+
+  type CheckState = 'pass' | 'fail' | 'unknown' | 'info';
+  interface Check {
+    label: string;
+    state: CheckState;
+    detail?: string;
+  }
+
+  const checks: Check[] = [
+    {
+      label: 'Hierarchy defined (≥1 contact type)',
+      state: hierarchyError
+        ? 'unknown'
+        : !hierarchyKnown
+          ? 'unknown'
+          : (contactTypes ?? []).length > 0
+            ? 'pass'
+            : 'fail',
+      detail: hierarchyError
+        ? hierarchyError
+        : !hierarchyKnown
+          ? 'loading…'
+          : (contactTypes ?? []).length === 0
+            ? 'CHT will fall back to the legacy default hierarchy. Forms referencing undefined types fail silently at runtime.'
+            : `${(contactTypes ?? []).length} types defined.`,
+    },
+    {
+      label: 'Contact create-form per place type',
+      state: !hierarchyKnown
+        ? 'unknown'
+        : placeTypes.length === 0
+          ? 'info'
+          : missingCreateForms.length === 0
+            ? 'pass'
+            : 'fail',
+      detail: !hierarchyKnown
+        ? 'loading…'
+        : placeTypes.length === 0
+          ? 'No place types yet — add them in Hierarchy.'
+          : missingCreateForms.length === 0
+            ? `${placeTypes.length} place types, all have a create form.`
+            : `Missing: ${missingCreateForms.map((t) => `${t.id}-create.xlsx`).join(', ')}.`,
+    },
+    {
+      label: 'App forms exist',
+      state: project.hasAppForms ? 'pass' : 'info',
+      detail: project.hasAppForms
+        ? `${props.allForms.filter((f) => f.category === 'app').length} app forms.`
+        : 'No app forms yet — the user-facing reports/visits live here.',
+    },
+    {
+      label: 'tasks.js present',
+      state: project.hasTasks ? 'pass' : 'info',
+      detail: project.hasTasks
+        ? 'tasks.js is defined.'
+        : 'No tasks defined — tasks.js controls follow-up reminders + workflows.',
+    },
+    {
+      label: 'Git project (for "Select changed" + deploy traceability)',
+      state: props.hasGit ? 'pass' : 'info',
+      detail: props.hasGit
+        ? 'Working tree is a git repo — targeted deploys can use changed-only.'
+        : 'Not a git repo — Select-changed is unavailable.',
+    },
+  ];
+
+  const fails = checks.filter((c) => c.state === 'fail').length;
+  const passes = checks.filter((c) => c.state === 'pass').length;
+  const totalGated = checks.filter((c) => c.state === 'pass' || c.state === 'fail').length;
+
+  return (
+    <section className="card deploy-readiness">
+      <header className="row gap" style={{ alignItems: 'baseline' }}>
+        <strong>Deploy-readiness checklist</strong>
+        <span className="muted small">
+          {passes}/{totalGated} passing{fails > 0 ? `, ${fails} need attention` : ''} —
+          non-blocking; deploy buttons stay enabled.
+        </span>
+      </header>
+      <ul className="deploy-readiness-list">
+        {checks.map((c, i) => (
+          <li key={i} className={`deploy-readiness-row state-${c.state}`}>
+            <span className="deploy-readiness-glyph" aria-hidden="true">
+              {c.state === 'pass' ? '✓' : c.state === 'fail' ? '✗' : c.state === 'unknown' ? '…' : 'ⓘ'}
+            </span>
+            <span className="deploy-readiness-label">{c.label}</span>
+            {c.detail && <span className="muted small">— {c.detail}</span>}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

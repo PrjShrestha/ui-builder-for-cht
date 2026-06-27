@@ -482,6 +482,63 @@ code {
 }
 .orphans-table th { background: #fef3c7; color: #78350f; }
 .orphans-table code { background: #fef3c7; color: #78350f; padding: 0 4px; border-radius: 2px; }
+
+/* Onboarding guardrails (docs/plans/onboarding-order.md §5/§6).
+   Non-blocking nudge banner — yellow-orange left-bar, dismissable only
+   by acting on the underlying state (define hierarchy, etc.). */
+.onboarding-nudge {
+  margin: 14px 0;
+  padding: 14px 16px;
+  background: #fffbeb;
+  border-left: 4px solid #f59e0b;
+  border-radius: 6px;
+}
+.onboarding-nudge strong { font-size: 15px; display: block; margin-bottom: 4px; }
+.onboarding-nudge p { margin: 6px 0; font-size: 13px; }
+.onboarding-nudge code { background: #fef3c7; color: #78350f; padding: 0 4px; border-radius: 2px; }
+.onboarding-nudge button.primary { margin-top: 6px; }
+
+/* "Start here →" recommended badge on the overview card. */
+.overview-card.recommended {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+.overview-card.recommended:hover:not(:disabled) {
+  border-color: #b45309;
+  background: #fef3c7;
+}
+.recommended-badge {
+  color: #b45309;
+  font-style: italic;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Deploy-readiness checklist — 5 row checks, glyph + label + detail. */
+.deploy-readiness ul.deploy-readiness-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.deploy-readiness-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.deploy-readiness-glyph {
+  display: inline-block;
+  min-width: 1em;
+  text-align: center;
+  font-weight: 600;
+}
+.deploy-readiness-row.state-pass .deploy-readiness-glyph { color: #047857; }
+.deploy-readiness-row.state-fail .deploy-readiness-glyph { color: #b45309; }
+.deploy-readiness-row.state-unknown .deploy-readiness-glyph { color: #6b7280; }
+.deploy-readiness-row.state-info .deploy-readiness-glyph { color: #6b7280; }
+.deploy-readiness-row.state-fail { background: #fffbeb; padding-left: 6px; border-radius: 3px; }
+.deploy-readiness-label { font-weight: 500; }
 .picker-row td { background: #f9fafb; padding: 12px; }
 .two-step-picker { display: flex; flex-direction: column; gap: 10px; }
 .picker-step { display: flex; flex-direction: column; gap: 6px; }
