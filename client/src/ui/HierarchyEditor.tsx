@@ -48,6 +48,10 @@ export function HierarchyEditor() {
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  // Contact-form generator modal (docs/plans/contact-form-generator.md
+  // Decision B). Offered, never auto — opens when the author clicks
+  // "Generate contact forms…" in the header.
+  const [generatorOpen, setGeneratorOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -109,6 +113,18 @@ export function HierarchyEditor() {
         <h1>Hierarchy</h1>
         <div className="row gap">
           <button onClick={() => setAdding(true)}>+ Type</button>
+          <button
+            className="secondary"
+            onClick={() => setGeneratorOpen(true)}
+            disabled={data.contact_types.length === 0}
+            title={
+              data.contact_types.length === 0
+                ? 'Add at least one contact type first'
+                : 'Generate minimal-valid contact create/edit forms for the defined types — skips existing files.'
+            }
+          >
+            Generate contact forms…
+          </button>
           <button
             className="link"
             onClick={history.undo}
@@ -292,6 +308,14 @@ export function HierarchyEditor() {
             setSelectedId(newType.id);
             setAdding(false);
           }}
+        />
+      )}
+
+      {generatorOpen && (
+        <ContactFormGenerator
+          contactTypes={data.contact_types}
+          displayMap={data.place_types_display}
+          onClose={() => setGeneratorOpen(false)}
         />
       )}
     </div>
@@ -566,6 +590,299 @@ function AddTypeForm(props: {
             Add type
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ======================= contact-form generator ======================= */
+
+/**
+ * Offered, never-auto contact-form generator (docs/plans/contact-form-
+ * generator.md Decision B, plan §4). Mirrors the LineageBuilder modal
+ * SHAPE — checklist of types, per-type create/edit toggles, live
+ * preview — but writes to the filesystem (no snapshot-undo); the
+ * result toast reports written/skipped counts.
+ *
+ * Existing files for `(type, variant)` are shown disabled "exists —
+ * will skip" so the author understands the hard skip-not-overwrite
+ * contract (plan §3 #4). Re-running after adding a new type only fills
+ * the gaps.
+ */
+function ContactFormGenerator(props: {
+  contactTypes: ContactType[];
+  displayMap: Record<string, string>;
+  onClose: () => void;
+}) {
+  // Per-(type,variant) check state. Default: every (type,variant) checked
+  // ON so a fresh project gets every form with one click; existing
+  // files are disabled but still rendered, with the checkbox checked +
+  // disabled (so the user can SEE that yes, it would have been written
+  // but a file's already there).
+  const initialChecks = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const t of props.contactTypes) {
+      m.set(`${t.id}:create`, true);
+      m.set(`${t.id}:edit`, true);
+    }
+    return m;
+  }, [props.contactTypes]);
+  const [checks, setChecks] = useState<Map<string, boolean>>(initialChecks);
+  const [existingBasenames, setExistingBasenames] = useState<Set<string>>(new Set());
+  const [running, setRunning] = useState(false);
+  const [report, setReport] = useState<
+    | null
+    | {
+        written: number;
+        skipped: number;
+        invalid: number;
+        failed: number;
+        rows: Array<{
+          type: string;
+          variant: 'create' | 'edit';
+          basename: string;
+          status: 'written' | 'skipped' | 'invalid' | 'failed';
+          message?: string;
+          warnings: string[];
+        }>;
+      }
+  >(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Pull the existing contact-form basenames so we can mark which
+  // (type, variant) pairs are already on disk (and will skip).
+  useEffect(() => {
+    let alive = true;
+    void api
+      .listForms()
+      .then((r) => {
+        if (!alive) return;
+        const set = new Set<string>();
+        for (const f of r.forms) {
+          if (f.category === 'contact') {
+            set.add(f.filename.replace(/\.xlsx$/i, '').toLowerCase());
+          }
+        }
+        setExistingBasenames(set);
+      })
+      .catch(() => {
+        /* listing failure is non-blocking — fall back to "none exist" */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  function toggle(key: string) {
+    setChecks((prev) => {
+      const next = new Map(prev);
+      next.set(key, !next.get(key));
+      return next;
+    });
+  }
+
+  function friendly(typeId: string): string {
+    return props.displayMap[typeId] ?? typeId;
+  }
+
+  // Preview state. Filter to checked AND not-yet-existing for "will
+  // write"; checked AND existing → "will skip"; unchecked → not in
+  // either list. Computed every render so the toggle is immediate.
+  const willWrite: Array<{ type: string; variant: 'create' | 'edit' }> = [];
+  const willSkip: Array<{ type: string; variant: 'create' | 'edit' }> = [];
+  for (const t of props.contactTypes) {
+    for (const variant of ['create', 'edit'] as const) {
+      if (!checks.get(`${t.id}:${variant}`)) continue;
+      const basename = `${t.id}-${variant}`.toLowerCase();
+      if (existingBasenames.has(basename)) {
+        willSkip.push({ type: t.id, variant });
+      } else {
+        willWrite.push({ type: t.id, variant });
+      }
+    }
+  }
+
+  async function runGenerate() {
+    setRunning(true);
+    setError(null);
+    try {
+      const requests: Array<{ type: string; variant: 'create' | 'edit'; displayName?: string }> = [];
+      for (const t of props.contactTypes) {
+        for (const variant of ['create', 'edit'] as const) {
+          if (!checks.get(`${t.id}:${variant}`)) continue;
+          requests.push({
+            type: t.id,
+            variant,
+            displayName: props.displayMap[t.id],
+          });
+        }
+      }
+      if (requests.length === 0) {
+        setError('Nothing selected — check at least one (type, variant) row.');
+        setRunning(false);
+        return;
+      }
+      const res = await api.generateContactForms({
+        requests,
+        contactTypes: props.contactTypes.map((t) => ({
+          id: t.id,
+          person: t.person,
+          parents: t.parents,
+        })),
+      });
+      setReport({
+        written: res.written,
+        skipped: res.skipped,
+        invalid: res.invalid,
+        failed: res.failed,
+        rows: res.report,
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="qtype-backdrop" onMouseDown={(e) => {
+      if (e.target === e.currentTarget) props.onClose();
+    }}>
+      <div
+        className="qtype-modal lineage-builder-modal"
+        role="dialog"
+        aria-label="Generate contact forms"
+      >
+        <div className="qtype-header">
+          <h2>Generate contact forms</h2>
+          <button className="link" onClick={props.onClose} aria-label="Close">
+            ✕
+          </button>
+        </div>
+
+        <p className="muted small lineage-builder-intro">
+          Generates minimal-valid <code>create</code> + <code>edit</code> forms for the
+          contact types you've defined. The new files land in{' '}
+          <code>forms/contact/</code> as <code>&lt;type&gt;-create.xlsx</code> /{' '}
+          <code>&lt;type&gt;-edit.xlsx</code>. <strong>Existing files are NEVER overwritten</strong> —
+          a (type, variant) that already has a file is shown as "will skip".
+        </p>
+
+        {error && <div className="error-banner">{error}</div>}
+
+        {report === null ? (
+          <>
+            {props.contactTypes.length === 0 ? (
+              <p className="muted">No contact types defined yet.</p>
+            ) : (
+              <table className="codes-table">
+                <thead>
+                  <tr>
+                    <th>Type</th>
+                    <th style={{ width: 80 }}>Kind</th>
+                    <th style={{ width: 110 }}>Create</th>
+                    <th style={{ width: 110 }}>Edit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {props.contactTypes.map((t) => (
+                    <tr key={t.id}>
+                      <td>
+                        <strong>{friendly(t.id)}</strong>{' '}
+                        <code className="muted small">{t.id}</code>
+                      </td>
+                      <td className="muted small">{t.person ? 'Person' : 'Place'}</td>
+                      {(['create', 'edit'] as const).map((variant) => {
+                        const key = `${t.id}:${variant}`;
+                        const basename = `${t.id}-${variant}`.toLowerCase();
+                        const exists = existingBasenames.has(basename);
+                        return (
+                          <td key={variant}>
+                            <label className="row gap" style={{ alignItems: 'center', cursor: 'pointer' }}>
+                              <input
+                                type="checkbox"
+                                checked={checks.get(key) ?? false}
+                                onChange={() => toggle(key)}
+                                disabled={exists}
+                              />
+                              {exists ? (
+                                <span className="muted small">exists — will skip</span>
+                              ) : (
+                                <span className="muted small">{basename}.xlsx</span>
+                              )}
+                            </label>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            <div className="lineage-builder-preview">
+              <div className="muted small">Preview:</div>
+              <pre className="lineage-builder-ladder">
+                {willWrite.length === 0 && willSkip.length === 0
+                  ? '(nothing selected)'
+                  : [
+                      `→ Will write ${willWrite.length} file${willWrite.length === 1 ? '' : 's'}:`,
+                      ...willWrite.map((w) => `   ${w.type}-${w.variant}.xlsx`),
+                      willSkip.length > 0 ? `→ Will skip ${willSkip.length} existing file${willSkip.length === 1 ? '' : 's'}:` : '',
+                      ...willSkip.map((w) => `   ${w.type}-${w.variant}.xlsx  (already on disk)`),
+                    ]
+                      .filter(Boolean)
+                      .join('\n')}
+              </pre>
+            </div>
+
+            <div className="qtype-actions">
+              <button className="link" onClick={props.onClose}>
+                Cancel
+              </button>
+              <button
+                onClick={() => void runGenerate()}
+                disabled={running || willWrite.length === 0}
+              >
+                {running ? 'Generating…' : `Generate ${willWrite.length} file${willWrite.length === 1 ? '' : 's'}`}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="lineage-builder-preview">
+              <div className="muted small">Result:</div>
+              <pre className="lineage-builder-ladder">
+                {[
+                  `✓ Written: ${report.written}`,
+                  `→ Skipped (already existed): ${report.skipped}`,
+                  report.invalid > 0 ? `✗ Invalid: ${report.invalid}` : '',
+                  report.failed > 0 ? `✗ Failed: ${report.failed}` : '',
+                  '',
+                  ...report.rows.map((row) => {
+                    const glyph =
+                      row.status === 'written' ? '✓' :
+                      row.status === 'skipped' ? '→' : '✗';
+                    return `${glyph} ${row.basename}.xlsx  (${row.status}${row.message ? ' — ' + row.message : ''})`;
+                  }),
+                  ...report.rows
+                    .filter((r) => r.warnings.length > 0)
+                    .flatMap((r) => [
+                      '',
+                      `⚠ ${r.basename} warnings:`,
+                      ...r.warnings.map((w) => `   ${w}`),
+                    ]),
+                ]
+                  .filter(Boolean)
+                  .join('\n')}
+              </pre>
+            </div>
+
+            <div className="qtype-actions">
+              <button onClick={props.onClose}>Close</button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

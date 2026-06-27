@@ -13,6 +13,9 @@ import {
   buildAppFormScaffold,
   buildBlankFormScaffold,
   buildContactFormScaffold,
+  buildContactForm,
+  contactFormBasename,
+  type ContactTypeNode,
   type XLSForm,
 } from '@cht-ui/shared';
 
@@ -361,6 +364,109 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
       return { ok: true, id: formId(category, basename) };
     },
   );
+
+  /**
+   * Batch generator: offered from the Hierarchy editor. Per `(type,
+   * variant)` request: compute the hyphen basename, call
+   * `buildContactForm` (set settings.form_id = 'contact:<type>:<variant>'
+   * via the colon convention — already done by the shared builder),
+   * skip if a file with that basename already exists (HARD rule from
+   * plan §3 — we NEVER clobber a contact form), otherwise stamp
+   * `version`, serialize, write, invalidate the parsed-form cache.
+   *
+   * Returns a per-file report so the modal can show "written: N,
+   * skipped: M (already existed)" + per-entry warnings from the
+   * builder (root place, orphan person, unknown type).
+   *
+   * Deliberately does NOT call `maintainFormConstants` — that helper is
+   * app-report-form specific (FORMS.<UPPER> + APP_FORMS), and contact
+   * forms have their own runtime convention (CHT looks them up by
+   * filename / form_id, not via a constants module).
+   */
+  app.post<{
+    Body: {
+      requests: Array<{ type: string; variant: 'create' | 'edit'; displayName?: string }>;
+      contactTypes: ContactTypeNode[];
+      locales?: string[];
+    };
+  }>('/api/forms/generate-contact', async (req, reply) => {
+    const { requests, contactTypes, locales } = req.body;
+    if (!Array.isArray(requests) || requests.length === 0) {
+      return reply.code(400).send({ error: 'requests must be a non-empty array' });
+    }
+    if (!Array.isArray(contactTypes)) {
+      return reply.code(400).send({ error: 'contactTypes must be an array' });
+    }
+
+    // Ensure the contact-forms dir exists exactly once for the batch.
+    const dir = await resolveInsideProject(path.join('forms', 'contact'));
+    await fs.mkdir(dir, { recursive: true });
+    // The route stamps the version once per batch so a multi-file
+    // generate-run produces uniform metadata.
+    const versionStamp = new Date().toISOString().slice(0, 10);
+
+    interface GenReport {
+      type: string;
+      variant: 'create' | 'edit';
+      basename: string;
+      status: 'written' | 'skipped' | 'invalid' | 'failed';
+      message?: string;
+      warnings: string[];
+    }
+    const report: GenReport[] = [];
+
+    for (const req of requests) {
+      const basename = contactFormBasename(req.type, req.variant);
+      const entry: GenReport = {
+        type: req.type,
+        variant: req.variant,
+        basename,
+        status: 'written',
+        warnings: [],
+      };
+      if (!/^[a-zA-Z0-9_-]+$/.test(basename)) {
+        entry.status = 'invalid';
+        entry.message = `Invalid basename "${basename}" — contact type id must be alphanumeric (plus _, -).`;
+        report.push(entry);
+        continue;
+      }
+      const paths = await pathsForForm('contact', basename);
+      // Skip-not-overwrite (plan §3 hard rule). NEVER clobber an
+      // existing contact form — the author may have customised it.
+      if (await fileExists(paths.xlsx)) {
+        entry.status = 'skipped';
+        entry.message = 'File already exists — left untouched.';
+        report.push(entry);
+        continue;
+      }
+      try {
+        const built = buildContactForm(contactTypes, {
+          type: req.type,
+          variant: req.variant,
+          displayName: req.displayName,
+          locales,
+        });
+        entry.warnings = built.warnings;
+        built.form.settings.version = versionStamp;
+        const buf = await serializeXlsForm(built.form);
+        await fs.writeFile(paths.xlsx, buf);
+        invalidateParsedForm(paths.xlsx);
+      } catch (e) {
+        entry.status = 'failed';
+        entry.message = (e as Error).message;
+      }
+      report.push(entry);
+    }
+
+    return {
+      ok: true,
+      report,
+      written: report.filter((r) => r.status === 'written').length,
+      skipped: report.filter((r) => r.status === 'skipped').length,
+      invalid: report.filter((r) => r.status === 'invalid').length,
+      failed: report.filter((r) => r.status === 'failed').length,
+    };
+  });
 
   app.delete<{ Params: { id: string } }>('/api/forms/:id', async (req, reply) => {
     let parts;

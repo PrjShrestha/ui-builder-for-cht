@@ -178,6 +178,34 @@ export const api = {
       body: JSON.stringify({ category, basename, scaffold }),
     }),
 
+  /** Batch contact-form generator (offered from the Hierarchy editor).
+   *  See docs/plans/contact-form-generator.md. Skip-not-overwrite is a
+   *  hard contract on the server; the client submits the (type,variant)
+   *  list + the current contact_types snapshot. */
+  generateContactForms: (body: {
+    requests: Array<{ type: string; variant: 'create' | 'edit'; displayName?: string }>;
+    contactTypes: Array<{ id: string; person?: boolean; parents?: string[] }>;
+    locales?: string[];
+  }) =>
+    jsonFetch<{
+      ok: true;
+      written: number;
+      skipped: number;
+      invalid: number;
+      failed: number;
+      report: Array<{
+        type: string;
+        variant: 'create' | 'edit';
+        basename: string;
+        status: 'written' | 'skipped' | 'invalid' | 'failed';
+        message?: string;
+        warnings: string[];
+      }>;
+    }>('/api/forms/generate-contact', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   deleteForm: (id: string) =>
     jsonFetch<{ ok: true }>(`/api/forms/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
