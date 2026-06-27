@@ -6,13 +6,13 @@ This consolidates four audits run against the live repo at HEAD. The audits are 
 
 ## ▶ Do next (in order)
 
-1. **Commit the lineage WIP** — it's complete but uncommitted (`LineageBuilder.tsx`, `buildHierarchyBlock.ts` + the FormEditor/catalog/index edits). `git add` everything **except** `client/vite.config.run.mjs`; commit on a clean base so later fixes land cleanly.
-2. **Rebuild + restart the dev server** — `pnpm build` (shared→server→client) then `pnpm dev` in the Project-runner tab. Clears the stale `dist/` causing the ~8s Standard-codes load and the `/api/fhir/dictionary/*` 404s.
-3. **Snapshot the dictionaries** — `node scripts/build-terminology-pack.mjs --systems=loinc,ciel` (free, no auth); commit the JSON. This is what makes the picker return real codes ("only a few codes" → fixed). ICD-10/11 wait on free WHO creds **and** the WHO-vs-CM variant decision (clinical owner).
-4. **Phase-0 one-liner** — pass `summaryFlags={contextKeys}` into `PropertiesEditor` (§3 P1; ~3 lines) so form-eligibility flags validate.
-5. **Lint cleanup** — fix `eslint.config.js` client globals (92 problems → green) + add a `.gitattributes` for the CRLF test gate, then re-add `pnpm lint` to CI.
+> **Refreshed 2026-06-28** after the `after_hierarchy_and_contacts` audit (HEAD `3126a01`). Items 1–4 of the 2026-06-26 list are **DONE** — lineage committed, LOINC/CIEL snapshotted, Phase-0 wired, contact-form generator shipped (`6d65502`). The §2 table and §3 detail below are from 2026-06-26 and **partly superseded**; trust `docs/reviews/after_hierarchy_and_contacts.md` where they conflict.
 
-Then work the **P1** queue (FHIR B2/B3/H3, H2 e2e, helper-builder fixture). Full detail below.
+1. **Quick hierarchy creator** (NEW — greenlit 2026-06-28). Guided empty→deployable quick-start for the **empty** template: name your place levels (biggest→smallest) + the person at the bottom → scaffold the chain → **offer** to generate the contact forms. Full spec: **`docs/plans/quick-hierarchy-creator.md`**. Composes existing audited primitives (the hierarchy write path + the contact-form generator) — **no new parser surface**. Don't skip the §7 validation rules (slug-collision = block, never auto-suffix) or the §11 round-trip/idempotency tests. Watch the four headline risks: gate on *actually-parsed* empty `contact_types`; person leaf `parents:[last place]`; non-destructive re-run (only the 4 owned files); write nothing until final commit.
+2. **Phase-1 UI wiring gap** (the one real open finding from the audit). In `FormEditor.tsx`, the **relevant / constraint / choice_filter** `ExpressionField` mounts (~1757 / 1777 / 1786) don't pass `inputContactFields` / `contextKeys` — only the `calculation` mount does. **Mirror that two-prop pass.** The parser layer is already complete + round-trip-safe (27 probes, 0 drift); this is the last mile so users can actually pick their project's cross-form keys. (`3126a01` also hid the "+ contact-summary" button when `contextKeys` is empty — it un-hides once wired.)
+3. **Lint + `.gitattributes`** — lint RED (~90: mostly the `eslint.config.js` browser-globals gap + 17 real `no-useless-escape`); add `.gitattributes` (`*.json eol=lf`) so the 3 FHIR CRLF tests pass on a fresh clone; then re-add `pnpm lint` to CI.
+
+Then work the remaining **P1/P2** queue below (FHIR B2/B3/H3, H2 e2e, helper-builder fixture, Phase 2b). Trust the audit over stale entries.
 
 ---
 
