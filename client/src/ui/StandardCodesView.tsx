@@ -188,6 +188,12 @@ function Workbench(props: {
         onPick={setActiveFormId}
       />
 
+      {/* §H3 — orphans block. Project-wide (not per-form): a single
+          form-question rename anywhere produces an orphan, so surfacing
+          per-form would hide cross-form drift. Read-only here; the MOH
+          audit-trail rendering lives in DecisionsView. */}
+      <OrphansSection orphans={props.mapping.orphans} mode="workbench" />
+
       {loadingForm ? (
         <p className="muted">Loading {activeFormId}…</p>
       ) : !survey ? (
@@ -202,6 +208,84 @@ function Workbench(props: {
         />
       )}
     </>
+  );
+}
+
+/* ============================ orphans ============================ */
+
+/**
+ * §H3 — non-destructive orphans surface. An orphan is a confirmed (or
+ * suggested) mapping whose question no longer appears in the survey at
+ * read time — usually because the row was renamed or deleted. We
+ * never auto-rewrite; we surface so the author / MOH reviewer can
+ * decide. Rendered in two contexts:
+ *   - `mode='workbench'` — collapsible details block above the columns
+ *     table; the author can spot drift before they save.
+ *   - `mode='decisions'` — a flat audit-trail section in DecisionsView
+ *     (MVP §7 MOH gate "orphans logged in DecisionsView").
+ *
+ * Empty list is the happy path; rendered as a small "no orphans" line
+ * in `decisions` mode (so the gate is explicitly satisfied) and as
+ * nothing at all in `workbench` mode (so it doesn't add visual weight
+ * to projects that don't need it).
+ */
+export function OrphansSection(props: {
+  orphans: import('@cht-ui/shared').OrphanEntry[];
+  mode: 'workbench' | 'decisions';
+}) {
+  const count = props.orphans.length;
+  if (count === 0 && props.mode === 'workbench') return null;
+  return (
+    <section className={`card orphans-section orphans-${props.mode}`}>
+      <details open={props.mode === 'decisions' && count > 0}>
+        <summary>
+          <strong>
+            {count === 0
+              ? '✓ No orphaned mappings'
+              : `⚠ ${count} orphaned mapping${count === 1 ? '' : 's'}`}
+          </strong>{' '}
+          <span className="muted small">
+            {count === 0
+              ? 'every prior mapping still links to a live question.'
+              : 'mappings whose question disappeared (rename or delete).'}
+          </span>
+        </summary>
+        {count > 0 && (
+          <table className="orphans-table">
+            <thead>
+              <tr>
+                <th>Question (was)</th>
+                <th>Code</th>
+                <th>Display</th>
+                <th>Source</th>
+                <th>Confirmed</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {props.orphans.map((o) => (
+                <tr key={o.originalKey}>
+                  <td>
+                    <code>{o.originalKey}</code>
+                  </td>
+                  <td>
+                    <code>{o.code}</code>
+                  </td>
+                  <td>{o.display}</td>
+                  <td className="muted small">{o.source}</td>
+                  <td className="muted small">
+                    {o.confirmedAt
+                      ? `${o.confirmedAt}${o.confirmedBy ? ` by ${o.confirmedBy}` : ''}`
+                      : '(unconfirmed)'}
+                  </td>
+                  <td className="muted small">{o.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </details>
+    </section>
   );
 }
 

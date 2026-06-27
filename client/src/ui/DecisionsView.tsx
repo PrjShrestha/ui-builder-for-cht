@@ -28,6 +28,8 @@ import {
 } from '@cht-ui/shared';
 import { api } from '../api.js';
 import { useApp } from '../state/store.js';
+import { OrphansSection } from './StandardCodesView.js';
+import type { OrphanEntry } from '@cht-ui/shared';
 
 interface Decision {
   id: string;
@@ -52,6 +54,11 @@ export function DecisionsView() {
   const setError = useApp((s) => s.setError);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(true);
+  // §H3 + MVP §7 MOH gate — orphaned FHIR mappings must be logged on
+  // the sign-off view so the clinical reviewer can audit them. Loads
+  // in parallel with the decisions feed; failure is non-blocking (we
+  // still render the rest of the page rather than blanking out).
+  const [orphans, setOrphans] = useState<OrphanEntry[]>([]);
 
   useEffect(() => {
     let alive = true;
@@ -68,6 +75,14 @@ export function DecisionsView() {
           setError(e.message);
           setLoading(false);
         }
+      });
+    void api
+      .getFhirMapping()
+      .then((res) => {
+        if (alive) setOrphans(res.mapping.orphans ?? []);
+      })
+      .catch(() => {
+        /* Sidecar missing on a fresh project — leave orphans=[]. */
       });
     return () => {
       alive = false;
@@ -123,6 +138,15 @@ export function DecisionsView() {
         decisions={byCategory['task_resolves'] ?? []}
         emptyHint="No tasks with structured resolvedIf found."
       />
+
+      {/* §H3 + MVP §7 MOH gate — orphaned FHIR mappings on the sign-off
+          view. Always rendered (even when empty) so the gate is
+          satisfied explicitly: an empty list says "audited, none
+          drifted," not "we didn't look." */}
+      <section className="decision-group">
+        <h2>FHIR mapping — orphaned decisions</h2>
+        <OrphansSection orphans={orphans} mode="decisions" />
+      </section>
     </div>
   );
 }

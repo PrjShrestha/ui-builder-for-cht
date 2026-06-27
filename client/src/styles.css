@@ -457,6 +457,31 @@ code {
 .row-status-suggested > td:first-child { border-left: 3px solid #f59e0b; }
 .row-status-skipped   > td:first-child { border-left: 3px solid #9ca3af; }
 .row-status-unmapped  > td:first-child { border-left: 3px solid #ef4444; }
+
+/* §H3 — orphaned-mappings section. Read-only audit surface; same shell
+   in the workbench (above the columns table) and in DecisionsView
+   (MOH sign-off). Yellow left-bar matches the staleness chip language. */
+.orphans-section { padding: 10px 12px; }
+.orphans-section.orphans-workbench {
+  border-left: 3px solid #f59e0b;
+  background: #fffbeb;
+}
+.orphans-section summary { cursor: pointer; padding: 2px 0; }
+.orphans-section summary:hover { color: var(--primary, #3877f5); }
+.orphans-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.orphans-table th, .orphans-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #f3f4f6;
+  text-align: left;
+  vertical-align: top;
+}
+.orphans-table th { background: #fef3c7; color: #78350f; }
+.orphans-table code { background: #fef3c7; color: #78350f; padding: 0 4px; border-radius: 2px; }
 .picker-row td { background: #f9fafb; padding: 12px; }
 .two-step-picker { display: flex; flex-direction: column; gap: 10px; }
 .picker-step { display: flex; flex-direction: column; gap: 6px; }
