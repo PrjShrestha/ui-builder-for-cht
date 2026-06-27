@@ -438,6 +438,25 @@ code {
 .status-chip.status-suggested { background: #fef3c7; color: #b45309; }
 .status-chip.status-skipped { background: #e5e7eb; color: #6b7280; }
 .status-chip.status-unmapped { background: #fee2e2; color: #991b1b; }
+/* §B3 — glyph per chip (✓ / ⏳ / — / ○) so state is conveyed by shape,
+   not color alone. The glyph element is aria-hidden so AT consumers
+   still get the clean `statusLabel` text. */
+.status-glyph {
+  display: inline-block;
+  font-weight: 600;
+  font-variant-emoji: text;
+  min-width: 1em;
+  text-align: center;
+}
+/* §B3 — per-row left-border accent so the row's status is readable in
+   greyscale (color-blind users + projector lighting). Kept narrow so it
+   reinforces the existing chip without restyling the whole table cell.
+   Falls through to a no-op when status === 'unmapped' has no row, since
+   unmapped rows aren't rendered. */
+.row-status-confirmed > td:first-child { border-left: 3px solid #10b981; }
+.row-status-suggested > td:first-child { border-left: 3px solid #f59e0b; }
+.row-status-skipped   > td:first-child { border-left: 3px solid #9ca3af; }
+.row-status-unmapped  > td:first-child { border-left: 3px solid #ef4444; }
 .picker-row td { background: #f9fafb; padding: 12px; }
 .two-step-picker { display: flex; flex-direction: column; gap: 10px; }
 .picker-step { display: flex; flex-direction: column; gap: 6px; }

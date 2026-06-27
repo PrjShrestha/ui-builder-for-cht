@@ -462,7 +462,12 @@ function MappableRow(props: {
           )}
         </td>
         <td>
-          <span className={`status-chip status-${status}`}>{statusLabel(status)}</span>
+          <span className={`status-chip status-${status}`}>
+            <span className="status-glyph" aria-hidden="true">
+              {statusGlyph(status)}
+            </span>{' '}
+            {statusLabel(status)}
+          </span>
         </td>
         <td>
           {status === 'suggested' && (
@@ -627,7 +632,12 @@ function ChoiceMappingRow(props: {
           )}
         </td>
         <td>
-          <span className={`status-chip status-${status}`}>{statusLabel(status)}</span>
+          <span className={`status-chip status-${status}`}>
+            <span className="status-glyph" aria-hidden="true">
+              {statusGlyph(status)}
+            </span>{' '}
+            {statusLabel(status)}
+          </span>
         </td>
         <td>
           {status === 'unmapped' && (
@@ -879,6 +889,25 @@ function statusLabel(s: 'confirmed' | 'suggested' | 'skipped' | 'unmapped'): str
       return 'Skipped';
     case 'unmapped':
       return 'Not mapped';
+  }
+}
+
+/**
+ * §B3 — glyph per status chip so the state is also conveyed by SHAPE,
+ * not just color (WCAG 1.4.1 "use of color"). Rendered with
+ * `aria-hidden="true"` so AT consumers still get the clean
+ * `statusLabel` text and don't read the glyph as a noisy character.
+ */
+function statusGlyph(s: 'confirmed' | 'suggested' | 'skipped' | 'unmapped'): string {
+  switch (s) {
+    case 'confirmed':
+      return '✓';
+    case 'suggested':
+      return '⏳';
+    case 'skipped':
+      return '—';
+    case 'unmapped':
+      return '○';
   }
 }
 
