@@ -78,6 +78,11 @@ export default [
       // into user CHT projects on "Create new project" — they're not source
       // code the project authors. Linting them as ESM would never work.
       'server/templates/**',
+      // client/tests/fixtures/** ship CHT-shaped JS files (contact-summary
+      // .templated.js uses top-level `return`, *-extras.js uses CommonJS
+      // `module.exports`) — those are CHT's eval conventions, not ESM.
+      // Linting them as ESM would never work.
+      'client/tests/fixtures/**',
     ],
   },
 ];

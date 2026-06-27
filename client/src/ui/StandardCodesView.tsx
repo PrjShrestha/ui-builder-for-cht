@@ -15,8 +15,10 @@
  * no-op (the route's compare-before-write enforces this).
  *
  * No free-text code/path entry in the default flow (Designer
- * dealbreaker §D). The "Custom code…" escape hatch is intentionally
- * present but secondary.
+ * dealbreaker §D). A `source: 'manual'` "Custom code…" disclosure
+ * escape hatch is in the punchlist (B1) but NOT shipped here yet —
+ * the off-pack search via `searchFhirDictionary` is the primary path,
+ * and once the vendored dictionaries land it covers the dominant case.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {

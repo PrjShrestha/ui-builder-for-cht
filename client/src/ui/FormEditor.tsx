@@ -44,6 +44,7 @@ import {
   findStructuralViolations,
   planSurveyMove,
   planUngroup,
+  defaultInsertIndex,
   type StructuralViolation,
   type FieldKind,
   type OrderingViolation,
@@ -1367,40 +1368,9 @@ type DisplayItem =
       lineageSignature?: string;
     };
 
-/**
- * §B1 — pick the index where a top-level "+ Question" should land. The
- * Part-B Default scaffold ends with linking `calculate` rows at depth 0
- * (`patient_uuid`/`patient_id`/`created_by`/`created_by_person_uuid`);
- * appending past those would silently bury the user's first real
- * question behind invisible plumbing. Insert just before that trailing
- * `calculate` run; on a form with no trailing calculates this returns
- * `survey.length` and the append-to-end behavior is preserved.
- */
-function defaultInsertIndex(survey: SurveyRow[]): number {
-  let depth = 0;
-  let trailingStart = -1;
-  for (let j = 0; j < survey.length; j++) {
-    const t = survey[j]!.type.trim().toLowerCase();
-    if (t === 'begin group' || t === 'begin repeat') {
-      depth++;
-      trailingStart = -1;
-      continue;
-    }
-    if (t === 'end group' || t === 'end repeat') {
-      depth--;
-      trailingStart = -1;
-      continue;
-    }
-    if (depth !== 0) continue;
-    if (t === 'calculate') {
-      if (trailingStart === -1) trailingStart = j;
-    } else {
-      // any other top-level row breaks the trailing-calc run
-      trailingStart = -1;
-    }
-  }
-  return trailingStart === -1 ? survey.length : trailingStart;
-}
+// §B1 — `defaultInsertIndex` was lifted into shared (surveyEdits.ts) so
+// the "insert before trailing linking calculates" contract is unit-
+// testable. See defaultInsertIndex docs there.
 
 /** Walk a `DisplayItem[]` tree and return every row ID currently
  *  visible (expanded). Collapsed groups contribute zero rows — the entire

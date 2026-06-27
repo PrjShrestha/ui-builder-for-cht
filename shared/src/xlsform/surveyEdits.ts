@@ -232,3 +232,47 @@ export function planUngroup(survey: SurveyRow[], beginRowId: string): UngroupPla
   ];
   return { kind: 'ok', next };
 }
+
+/**
+ * §B1 — pick the index where a top-level "+ Question" should land. The
+ * Part-B Default app scaffold ends with linking `calculate` rows at
+ * depth 0 (`patient_uuid` / `patient_id` / `created_by` /
+ * `created_by_person_uuid`); appending past those would silently bury
+ * the user's first real question behind invisible plumbing — Bhishan's
+ * cold-start abandonment trigger.
+ *
+ * Returns the index of the FIRST row in the trailing depth-0 `calculate`
+ * run, so a positional splice at that index lands the new row
+ * immediately BEFORE the linking calculates. On a form with no trailing
+ * calculates this returns `survey.length` and the legacy append-to-end
+ * behaviour is preserved.
+ *
+ * Lives in shared (instead of FormEditor) so the contract is unit-
+ * testable; FormEditor is JSX-rich and not natively node-test-runnable.
+ */
+export function defaultInsertIndex(survey: SurveyRow[]): number {
+  let depth = 0;
+  let trailingStart = -1;
+  for (let j = 0; j < survey.length; j++) {
+    const t = survey[j]!.type.trim().toLowerCase();
+    if (t === 'begin group' || t === 'begin repeat') {
+      depth++;
+      trailingStart = -1;
+      continue;
+    }
+    if (t === 'end group' || t === 'end repeat') {
+      depth--;
+      trailingStart = -1;
+      continue;
+    }
+    if (depth !== 0) continue;
+    if (t === 'calculate') {
+      if (trailingStart === -1) trailingStart = j;
+    } else {
+      // Any other depth-0 row breaks the trailing-calc run — only an
+      // UNBROKEN suffix of calculates at depth 0 counts.
+      trailingStart = -1;
+    }
+  }
+  return trailingStart === -1 ? survey.length : trailingStart;
+}

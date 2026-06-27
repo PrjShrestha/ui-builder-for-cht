@@ -20,8 +20,10 @@ import {
   moveSurveySlice,
   planSurveyMove,
   planUngroup,
+  defaultInsertIndex,
 } from './surveyEdits.js';
 import { findStructuralViolations } from './structuralBalance.js';
+import { buildAppFormScaffold } from './scaffolds.js';
 import { type SurveyRow } from './types.js';
 
 function row(partial: Partial<SurveyRow> & { type: string; rowId: string }): SurveyRow {
@@ -252,4 +254,57 @@ test('planUngroup — refuses when the target row is not a begin row', () => {
   assert.equal(plan.kind, 'rejected');
   if (plan.kind !== 'rejected') return;
   assert.equal(plan.reason, 'not-a-begin');
+});
+
+/* ===================== §B1 — defaultInsertIndex ===================== */
+
+test('§B1 — defaultInsertIndex on the Default app scaffold lands BEFORE the trailing linking calculates', () => {
+  const scaffold = buildAppFormScaffold({ basename: 'pregnancy_visit' });
+  const idx = defaultInsertIndex(scaffold.survey);
+  // The scaffold's trailing calculates start at row 12 (per §B1 layout
+  // in scaffolds.ts: rows 0-11 = inputs block, rows 12-15 = linking
+  // calculates). The first inserted question must land at idx 12 so it
+  // appears above the (invisible-in-Simple-mode) plumbing.
+  assert.equal(idx, 12, 'index must point at the first trailing calculate');
+  const insertedAt = scaffold.survey[idx]!;
+  assert.equal(insertedAt.type, 'calculate', 'idx points at a calculate row');
+  assert.equal(insertedAt.name, 'patient_uuid', 'and specifically the first linking calc');
+});
+
+test('§B1 — on a form with no trailing calculates, returns survey.length (append behaviour)', () => {
+  const survey: SurveyRow[] = [
+    { rowId: 'a', type: 'text', name: 'a', labels: {}, extras: {} },
+    { rowId: 'b', type: 'integer', name: 'b', labels: {}, extras: {} },
+  ];
+  assert.equal(defaultInsertIndex(survey), survey.length);
+});
+
+test('§B1 — calculates INSIDE a group do not count as a trailing suffix', () => {
+  // A calculate nested inside a group is structural metadata for that
+  // group, not part of the trailing depth-0 plumbing run. Insert
+  // should still append after the end group.
+  const survey: SurveyRow[] = [
+    { rowId: 'bg', type: 'begin group', name: 'g', labels: {}, extras: {} },
+    { rowId: 'c1', type: 'calculate', name: 'c1', labels: {}, extras: {} },
+    { rowId: 'eg', type: 'end group', name: 'g', labels: {}, extras: {} },
+  ];
+  assert.equal(defaultInsertIndex(survey), survey.length);
+});
+
+test('§B1 — a non-calculate row at depth 0 BREAKS the trailing run, even mid-suffix', () => {
+  // A `text` after a calc means the run isn't a true trailing-only suffix
+  // — append at end. The function only treats an UNBROKEN suffix of
+  // depth-0 calcs as "trailing."
+  const survey: SurveyRow[] = [
+    { rowId: 'c1', type: 'calculate', name: 'c1', labels: {}, extras: {} },
+    { rowId: 't1', type: 'text', name: 't1', labels: {}, extras: {} },
+    { rowId: 'c2', type: 'calculate', name: 'c2', labels: {}, extras: {} },
+  ];
+  // The trailing run starts at c2; the text at index 1 broke the run
+  // started at c1. So defaultInsertIndex should return 2 (index of c2).
+  assert.equal(defaultInsertIndex(survey), 2);
+});
+
+test('§B1 — empty survey returns 0 (append-to-end semantics)', () => {
+  assert.equal(defaultInsertIndex([]), 0);
 });
