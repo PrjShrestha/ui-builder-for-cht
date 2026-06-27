@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import {
   parseRelevant,
   serializeRelevant,
+  type ContextWrapper,
   type DateOffsetComparator,
   type DateOffsetDirection,
   type DateUnit,
@@ -23,6 +24,15 @@ interface Props {
   fieldOptions: string[];
   /** The current expression text. */
   value: string;
+  /** Phase 1a — contact-form field names. Empty/absent → the contact-input
+   *  comparison branch falls back to a free-text picker; the toolbar
+   *  button stays visible regardless (matches CalculationBuilder's
+   *  `?? []` pattern at lines 334-335). */
+  inputContactFields?: string[];
+  /** Phase 1a — contact-summary context flag keys. Same semantics as
+   *  `inputContactFields`: empty/absent doesn't hide the affordance —
+   *  the author may know a key that the project scan didn't surface. */
+  contextKeys?: string[];
   /** Called when the user clicks save in the modal. */
   onSave: (next: string) => void;
   /** Called when the user dismisses the modal. */
@@ -30,6 +40,33 @@ interface Props {
   /** Label of the column being edited (e.g. "relevant"). */
   column: string;
 }
+
+/** CHT-canonical bare contact-input field names — the safety net when
+ *  the project scan returns nothing (e.g. forms with hidden/collapsed
+ *  contact-input blocks). Mirrors CalculationBuilder.tsx's
+ *  FALLBACK_CONTACT_FIELDS so both builders offer the same baseline. */
+const FALLBACK_CONTACT_FIELDS = [
+  '_id',
+  'patient_id',
+  'name',
+  'sex',
+  'date_of_birth',
+  'phone',
+];
+
+const CONTEXT_WRAPPER_LABELS: Record<ContextWrapper, string> = {
+  none: 'bare',
+  'read-once': 'once(…) (read once)',
+  'fallback-to-current': 'if(…, …, .) (fallback to current)',
+};
+
+const CONTEXT_WRAPPER_HELP: Record<ContextWrapper, string> = {
+  none: 'Read the context-summary flag directly.',
+  'read-once':
+    'Wrap in once(...) so the value is read on form-load only — useful for snapshotting LMP / EDD / measurements that should not flicker as the user edits.',
+  'fallback-to-current':
+    'Read the context value if present, else keep the current form answer (XForms `if(ref, ref, .)`).',
+};
 
 const OPERATORS: Operator[] = ['=', '!=', '>', '<', '>=', '<='];
 
@@ -52,6 +89,8 @@ export function RelevantRuleBuilder(props: Props) {
   }
   function addRule(kind: Rule['kind']) {
     const f0 = props.fieldOptions[0] ?? '';
+    const ci0 = props.inputContactFields?.[0] ?? FALLBACK_CONTACT_FIELDS[0] ?? '_id';
+    const ck0 = props.contextKeys?.[0] ?? '';
     let newRule: Rule;
     switch (kind) {
       case 'comparison':
@@ -75,6 +114,25 @@ export function RelevantRuleBuilder(props: Props) {
         break;
       case 'age':
         newRule = { kind: 'age', field: f0, op: '>', value: '20' };
+        break;
+      case 'contact-input-comparison':
+        newRule = {
+          kind: 'contact-input-comparison',
+          field: ci0,
+          op: '=',
+          value: '',
+          valueIsString: true,
+        };
+        break;
+      case 'contact-summary-comparison':
+        newRule = {
+          kind: 'contact-summary-comparison',
+          contextKey: ck0,
+          wrapper: 'none',
+          op: '=',
+          value: '',
+          valueIsString: true,
+        };
         break;
       default:
         newRule = { kind: 'raw', text: '' };
@@ -144,6 +202,8 @@ export function RelevantRuleBuilder(props: Props) {
                 key={idx}
                 rule={rule}
                 fieldOptions={props.fieldOptions}
+                inputContactFields={props.inputContactFields ?? []}
+                contextKeys={props.contextKeys ?? []}
                 onChange={(r) => updateRule(idx, r)}
                 onRemove={() => removeRule(idx)}
               />
@@ -164,6 +224,20 @@ export function RelevantRuleBuilder(props: Props) {
               </button>
               <button className="link" onClick={() => addRule('date_offset')}>
                 + date check
+              </button>
+              <button
+                className="link"
+                onClick={() => addRule('contact-input-comparison')}
+                title="Compare against a value the contact carries (../inputs/contact/...) — Phase 1a"
+              >
+                + contact input
+              </button>
+              <button
+                className="link"
+                onClick={() => addRule('contact-summary-comparison')}
+                title="Compare against a contact-summary context flag (instance('contact-summary')/context/...) — Phase 1a"
+              >
+                + contact-summary
               </button>
               <button className="link" onClick={() => addRule('raw')}>
                 + raw expression
@@ -198,6 +272,10 @@ export function RelevantRuleBuilder(props: Props) {
 function RuleRow(props: {
   rule: Rule;
   fieldOptions: string[];
+  /** Phase 1a — passed through from parent. Empty array is fine; the
+   *  datalist degrades to a free-text input. */
+  inputContactFields: string[];
+  contextKeys: string[];
   onChange: (r: Rule) => void;
   onRemove: () => void;
 }) {
@@ -352,6 +430,111 @@ function RuleRow(props: {
           <option value="answered">is answered</option>
           <option value="not_answered">is not answered</option>
         </select>
+        <button className="link danger" onClick={props.onRemove}>×</button>
+      </div>
+    );
+  }
+  if (rule.kind === 'contact-input-comparison') {
+    // Mirrors the ComparisonRule shape but with a datalist on the LHS
+    // backed by the project's contact-input field list ∪ the CHT-canonical
+    // fallback set. Keeping it a plain <input list=…> instead of a native
+    // <select> means an author can hand-type a field name that the project
+    // scan missed (e.g. a custom contact-summary key) — the parser
+    // round-trips whatever they type as long as it's a single identifier.
+    const ciOptions = Array.from(
+      new Set([...props.inputContactFields, ...FALLBACK_CONTACT_FIELDS]),
+    );
+    return (
+      <div className="row gap rule-row">
+        <span className="muted small">../inputs/contact/</span>
+        <input
+          list="rule-builder-contact-input-fields"
+          value={rule.field}
+          onChange={(e) => props.onChange({ ...rule, field: e.target.value })}
+          placeholder="field name"
+          style={{ minWidth: 140 }}
+        />
+        <datalist id="rule-builder-contact-input-fields">
+          {ciOptions.map((o) => (
+            <option key={o} value={o} />
+          ))}
+        </datalist>
+        <select
+          value={rule.op}
+          onChange={(e) => props.onChange({ ...rule, op: e.target.value as Operator })}
+        >
+          {OPERATORS.map((o) => (
+            <option key={o}>{o}</option>
+          ))}
+        </select>
+        <input
+          value={rule.value}
+          onChange={(e) => props.onChange({ ...rule, value: e.target.value })}
+          placeholder={rule.valueIsString ? 'text value' : 'number / expression'}
+        />
+        <label className="row gap">
+          <input
+            type="checkbox"
+            checked={rule.valueIsString}
+            onChange={(e) => props.onChange({ ...rule, valueIsString: e.target.checked })}
+          />
+          string
+        </label>
+        <button className="link danger" onClick={props.onRemove}>×</button>
+      </div>
+    );
+  }
+  if (rule.kind === 'contact-summary-comparison') {
+    return (
+      <div className="row gap rule-row">
+        <select
+          value={rule.wrapper}
+          onChange={(e) =>
+            props.onChange({ ...rule, wrapper: e.target.value as ContextWrapper })
+          }
+          title={CONTEXT_WRAPPER_HELP[rule.wrapper]}
+          aria-label="Reference wrapper"
+        >
+          {(Object.keys(CONTEXT_WRAPPER_LABELS) as ContextWrapper[]).map((w) => (
+            <option key={w} value={w}>
+              {CONTEXT_WRAPPER_LABELS[w]}
+            </option>
+          ))}
+        </select>
+        <span className="muted small">contact-summary /context/</span>
+        <input
+          list="rule-builder-context-keys"
+          value={rule.contextKey}
+          onChange={(e) => props.onChange({ ...rule, contextKey: e.target.value })}
+          placeholder="context key"
+          style={{ minWidth: 140 }}
+        />
+        <datalist id="rule-builder-context-keys">
+          {props.contextKeys.map((k) => (
+            <option key={k} value={k} />
+          ))}
+        </datalist>
+        <select
+          value={rule.op}
+          onChange={(e) => props.onChange({ ...rule, op: e.target.value as Operator })}
+        >
+          {OPERATORS.map((o) => (
+            <option key={o}>{o}</option>
+          ))}
+        </select>
+        <input
+          value={rule.value}
+          onChange={(e) => props.onChange({ ...rule, value: e.target.value })}
+          placeholder={rule.valueIsString ? 'text value' : 'number / expression'}
+        />
+        <label className="row gap">
+          <input
+            type="checkbox"
+            checked={rule.valueIsString}
+            onChange={(e) => props.onChange({ ...rule, valueIsString: e.target.checked })}
+          />
+          string
+        </label>
         <button className="link danger" onClick={props.onRemove}>×</button>
       </div>
     );

@@ -17,6 +17,12 @@
  * and saves, the raw text is preserved.
  */
 
+import {
+  recognizeReference,
+  emitContactInput,
+  emitContactSummary,
+} from './calcReference.js';
+
 export type Operator = '=' | '!=' | '>' | '<' | '>=' | '<=';
 export type Combinator = 'and' | 'or';
 
@@ -84,7 +90,57 @@ export interface AgeRule {
   value: string;
 }
 
-export type Rule = ComparisonRule | SelectedRule | AnsweredRule | DateOffsetRule | AgeRule | RawRule;
+/**
+ * Comparison of a contact-form input field (`../inputs/contact/<field>`)
+ * against a literal — Phase 1b of form-data-passing.md §3. Mirrors the
+ * calc builder's `contact-input` kind so the relevant/constraint/
+ * choice_filter cells can gate on data hydrated from the contact.
+ *
+ * The LHS is recognized via the same regex calcReference's
+ * recognizeReference() uses; valueIsString preserves the original
+ * quote semantics (real production CHT uses both `!= ''` and `!= 0`
+ * variants — preserving the flag exactly is what keeps round-trip
+ * byte-stable).
+ */
+export interface ContactInputComparisonRule {
+  kind: 'contact-input-comparison';
+  /** Contact-input field name (the `<field>` in `../inputs/contact/<field>`). */
+  field: string;
+  op: Operator;
+  value: string;
+  valueIsString: boolean;
+}
+
+/**
+ * Comparison of a contact-summary context flag
+ * (`instance('contact-summary')/context/<key>`, optionally wrapped in
+ * `once(...)` or `if(ref, ref, .)`) against a literal — also Phase 1b.
+ * Wrapper is the same `ContextWrapper` the calc builder uses; the
+ * fallback-to-current wrapper requires BOTH refs to be identical
+ * (calcReference.ts:126), and anything spacing-divergent is demoted
+ * to raw by the §3.1 self-check.
+ */
+export interface ContactSummaryComparisonRule {
+  kind: 'contact-summary-comparison';
+  /** Context-summary key (the `<key>` in
+   *  `instance('contact-summary')/context/<key>`). */
+  contextKey: string;
+  /** Wrapper around the reference — `none` is the bare ref. */
+  wrapper: import('./calcReference.js').ContextWrapper;
+  op: Operator;
+  value: string;
+  valueIsString: boolean;
+}
+
+export type Rule =
+  | ComparisonRule
+  | SelectedRule
+  | AnsweredRule
+  | DateOffsetRule
+  | AgeRule
+  | ContactInputComparisonRule
+  | ContactSummaryComparisonRule
+  | RawRule;
 
 const UNIT_DAYS: Record<DateUnit, number> = {
   days: 1,
@@ -302,6 +358,68 @@ function parseSinglePart(part: string): Rule {
     }
     return { kind: 'comparison', field: cmp[1], op, value: valueRaw, valueIsString: false };
   }
+
+  // Phase 1b — contact-input / contact-summary comparison. The LHS is
+  // recognized via the SAME `recognizeReference()` the calc builder
+  // uses, so a clause like `../inputs/contact/sex = 'female'` or
+  // `instance('contact-summary')/context/show_pregnancy = 'true'`
+  // surfaces as a structured rule and round-trips back to identical
+  // bytes via emitContactInput / emitContactSummary. Anything spacing-
+  // divergent is demoted to raw by the §3.1 self-check upstream — DO
+  // NOT loosen the recognizer here.
+  //
+  // Strategy: split on the operator (longest first so `>=`/`<=`/`!=`
+  // beat the prefix `>`/`<`/`=`), feed the LHS into recognizeReference,
+  // route the value through the same string-quote/literal logic as
+  // ComparisonRule above.
+  const opSplit = /^(.+?)\s*(>=|<=|!=|=|>|<)\s*(.+)$/.exec(t);
+  if (opSplit && opSplit[1] && opSplit[2] && opSplit[3] !== undefined) {
+    const lhsRaw = opSplit[1].trim();
+    const op: Operator = opSplit[2] as Operator;
+    const valueRaw = opSplit[3].trim();
+    const recognized = recognizeReference(lhsRaw);
+    if (recognized && recognized.kind === 'contact-input') {
+      const m = /^'([^']*)'$/.exec(valueRaw);
+      if (m && m[1] !== undefined) {
+        return {
+          kind: 'contact-input-comparison',
+          field: recognized.argument,
+          op,
+          value: m[1],
+          valueIsString: true,
+        };
+      }
+      return {
+        kind: 'contact-input-comparison',
+        field: recognized.argument,
+        op,
+        value: valueRaw,
+        valueIsString: false,
+      };
+    }
+    if (recognized && recognized.kind === 'contact-summary') {
+      const m = /^'([^']*)'$/.exec(valueRaw);
+      if (m && m[1] !== undefined) {
+        return {
+          kind: 'contact-summary-comparison',
+          contextKey: recognized.argument,
+          wrapper: recognized.wrapper,
+          op,
+          value: m[1],
+          valueIsString: true,
+        };
+      }
+      return {
+        kind: 'contact-summary-comparison',
+        contextKey: recognized.argument,
+        wrapper: recognized.wrapper,
+        op,
+        value: valueRaw,
+        valueIsString: false,
+      };
+    }
+  }
+
   return { kind: 'raw', text: t };
 }
 
@@ -331,6 +449,17 @@ function ruleToString(rule: Rule): string {
     }
     case 'age': {
       return `floor((today() - \${${rule.field}}) div 365.25) ${rule.op} ${rule.value}`;
+    }
+    case 'contact-input-comparison': {
+      // Mirrors ComparisonRule's RHS quoting exactly so valueIsString
+      // round-trips on both `!= ''` (string) and `!= 0` (numeric)
+      // variants used in real production CHT forms.
+      const v = rule.valueIsString ? `'${rule.value.replace(/'/g, "\\'")}'` : rule.value;
+      return `${emitContactInput(rule.field)} ${rule.op} ${v}`;
+    }
+    case 'contact-summary-comparison': {
+      const v = rule.valueIsString ? `'${rule.value.replace(/'/g, "\\'")}'` : rule.value;
+      return `${emitContactSummary(rule.contextKey, rule.wrapper)} ${rule.op} ${v}`;
     }
     case 'raw':
       return rule.text;

@@ -475,6 +475,23 @@ function relevantToHumanLines(cond: import('@cht-ui/shared').ParsedExpression): 
         return `age of ${r.field} ${r.op} ${r.value} years`;
       case 'date_offset':
         return `${r.field} is ${r.comparator === 'more_than' ? 'more than' : 'less than'} ${r.amount} ${r.unit} ${r.direction === 'ago' ? 'ago' : 'from now'}`;
+      case 'contact-input-comparison': {
+        // Phase 1b — make the cross-form source explicit in the audit
+        // trail (MOH sign-off readers need to know the value came from
+        // the contact, not from a form answer).
+        const v = r.valueIsString ? `"${r.value}"` : r.value;
+        return `contact.${r.field} ${r.op} ${v}`;
+      }
+      case 'contact-summary-comparison': {
+        const v = r.valueIsString ? `"${r.value}"` : r.value;
+        const lhs =
+          r.wrapper === 'read-once'
+            ? `once(summary.${r.contextKey})`
+            : r.wrapper === 'fallback-to-current'
+              ? `summary.${r.contextKey} (fallback to current)`
+              : `summary.${r.contextKey}`;
+        return `${lhs} ${r.op} ${v}`;
+      }
       case 'raw':
         return r.text;
     }

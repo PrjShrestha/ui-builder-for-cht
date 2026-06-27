@@ -2006,6 +2006,8 @@ function ExpressionField(props: {
           column={props.label}
           value={props.value}
           fieldOptions={props.fieldOptions}
+          inputContactFields={props.inputContactFields}
+          contextKeys={props.contextKeys}
           onCancel={() => setShowBuilder(false)}
           onSave={(v) => {
             props.onChange(v);

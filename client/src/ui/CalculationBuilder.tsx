@@ -1034,6 +1034,23 @@ function conditionProse(cond: ParsedExpression): string {
     if (r.kind === 'date_offset') {
       return `\${${r.field}} ${r.comparator === 'more_than' ? '>' : '<'} ${r.amount} ${r.unit} ${r.direction === 'ago' ? 'ago' : 'from now'}`;
     }
+    // Phase 1b — contact-input / contact-summary cross-form comparison
+    // rules. Render with a human-readable LHS that makes the source of
+    // the value obvious in the decisions sign-off view.
+    if (r.kind === 'contact-input-comparison') {
+      const v = r.valueIsString ? `'${r.value}'` : r.value;
+      return `contact.${r.field} ${r.op} ${v}`;
+    }
+    if (r.kind === 'contact-summary-comparison') {
+      const v = r.valueIsString ? `'${r.value}'` : r.value;
+      const lhs =
+        r.wrapper === 'read-once'
+          ? `once(summary.${r.contextKey})`
+          : r.wrapper === 'fallback-to-current'
+            ? `summary.${r.contextKey} or current`
+            : `summary.${r.contextKey}`;
+      return `${lhs} ${r.op} ${v}`;
+    }
     return r.text;
   });
   return parts.join(` ${cond.combinator} `);
