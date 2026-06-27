@@ -1762,6 +1762,8 @@ function SurveyRowCard(props: {
               value={row.extras['relevant'] ?? ''}
               onChange={(v) => setExtra('relevant', v)}
               fieldOptions={props.fieldOptions}
+              inputContactFields={props.inputContactFields}
+              contextKeys={props.contextKeys}
             />
             <ExpressionField
               label="calculation"
@@ -1782,6 +1784,8 @@ function SurveyRowCard(props: {
               value={row.extras['constraint'] ?? ''}
               onChange={(v) => setExtra('constraint', v)}
               fieldOptions={props.fieldOptions}
+              inputContactFields={props.inputContactFields}
+              contextKeys={props.contextKeys}
             />
             {isSelectRow(row) && (
               <ExpressionField
@@ -1792,6 +1796,8 @@ function SurveyRowCard(props: {
                 value={row.extras['choice_filter'] ?? ''}
                 onChange={(v) => setExtra('choice_filter', v)}
                 fieldOptions={props.fieldOptions}
+                inputContactFields={props.inputContactFields}
+                contextKeys={props.contextKeys}
               />
             )}
             <AppearanceField
