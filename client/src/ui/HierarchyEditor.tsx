@@ -11,6 +11,8 @@ import { api } from '../api.js';
 import { useApp } from '../state/store.js';
 import { useHistory } from '../state/useHistory.js';
 import { showUndoToast } from './UndoToast.js';
+import { QuickHierarchyCreator } from './QuickHierarchyCreator.js';
+import type { QuickHierarchyResult } from '@cht-ui/shared';
 
 interface ContactType extends Record<string, unknown> {
   id: string;
@@ -52,6 +54,10 @@ export function HierarchyEditor() {
   // Decision B). Offered, never auto — opens when the author clicks
   // "Generate contact forms…" in the header.
   const [generatorOpen, setGeneratorOpen] = useState(false);
+  // Quick hierarchy creator (docs/plans/quick-hierarchy-creator.md).
+  // Surfaces as the empty-state CTA when the parsed contact_types is
+  // empty (plan §6 — gate on actually-parsed state, NOT a wizard flag).
+  const [quickOpen, setQuickOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -92,6 +98,40 @@ export function HierarchyEditor() {
       history.reset(data);
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setSaving('hierarchy', false);
+    }
+  }
+
+  /**
+   * Atomic save path for the Quick Hierarchy Creator wizard. Writes the
+   * full scaffolded triple to disk, then reseeds the editor's history.
+   * Distinct from `save()` because the wizard writes from a fresh build,
+   * not from the editor's in-memory state — and per plan §8 it MUST
+   * write nothing until this single final commit.
+   */
+  async function quickCommit(result: QuickHierarchyResult): Promise<boolean> {
+    setSaving('hierarchy', true);
+    try {
+      // The wizard's contact_types satisfy this editor's ContactType shape
+      // (its index signature is a superset of the wizard's strict shape) —
+      // cast at the API boundary rather than widen the wizard's return.
+      const contactTypes = result.contact_types as ContactType[];
+      await api.saveHierarchy({
+        place_hierarchy_types: result.place_hierarchy_types,
+        contact_types: contactTypes,
+        place_types_display: result.place_types_display,
+      });
+      history.reset({
+        place_hierarchy_types: result.place_hierarchy_types,
+        contact_types: contactTypes,
+        place_types_display: result.place_types_display,
+      });
+      setDirty('hierarchy', false);
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
     } finally {
       setSaving('hierarchy', false);
     }
@@ -201,16 +241,20 @@ export function HierarchyEditor() {
       <div className="hierarchy-grid">
         <section className="tree-pane">
           <h3>Contact types ({data.contact_types.length})</h3>
-          <ul className="tree">
-            {treeRoots.map((node) => (
-              <TreeNode
-                key={node.id}
-                node={node}
-                onSelect={setSelectedId}
-                selectedId={selectedId}
-              />
-            ))}
-          </ul>
+          {data.contact_types.length === 0 ? (
+            <QuickHierarchyEmptyCTA onStart={() => setQuickOpen(true)} />
+          ) : (
+            <ul className="tree">
+              {treeRoots.map((node) => (
+                <TreeNode
+                  key={node.id}
+                  node={node}
+                  onSelect={setSelectedId}
+                  selectedId={selectedId}
+                />
+              ))}
+            </ul>
+          )}
         </section>
         <section className="detail-pane">
           {selected ? (
@@ -318,6 +362,45 @@ export function HierarchyEditor() {
           onClose={() => setGeneratorOpen(false)}
         />
       )}
+
+      {quickOpen && (
+        <QuickHierarchyCreator
+          existingContactTypes={data.contact_types}
+          onCommit={quickCommit}
+          onRequestGenerator={() => {
+            setQuickOpen(false);
+            // Open the existing ContactFormGenerator against the freshly
+            // saved contact_types — the editor's state now holds them
+            // because quickCommit reseeded history.
+            setGeneratorOpen(true);
+          }}
+          onClose={() => setQuickOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Empty-state CTA shown in the Hierarchy tree pane when `contact_types`
+ * is empty on disk (plan §6 — gate on PARSED state, not a wizard flag).
+ * The user can also fall back to "+ Type" at the top, but the quick
+ * start is the recommended path for the empty template.
+ */
+function QuickHierarchyEmptyCTA(props: { onStart: () => void }) {
+  return (
+    <div className="qhc-empty-cta">
+      <h4>No contact types yet.</h4>
+      <p className="muted">
+        Set up your place levels in a guided list — biggest to smallest, with
+        the people you care for at the bottom.
+      </p>
+      <button className="primary" onClick={props.onStart}>
+        Quick start
+      </button>
+      <p className="muted small">
+        Or use <strong>+ Type</strong> above to add one type at a time.
+      </p>
     </div>
   );
 }

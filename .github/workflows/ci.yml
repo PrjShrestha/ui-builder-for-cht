@@ -79,8 +79,8 @@ jobs:
       - name: Install Playwright browser
         run: pnpm --filter @cht-ui/client exec playwright install --with-deps chromium
 
-      - name: Run e2e (condition-builder + form-editing + fhir-mapping + form-data-passing)
-        run: pnpm --filter @cht-ui/client exec playwright test condition-builder.spec.ts form-editing.spec.ts fhir-mapping.spec.ts form-data-passing.spec.ts
+      - name: Run e2e (condition-builder + form-editing + fhir-mapping + form-data-passing + quick-hierarchy)
+        run: pnpm --filter @cht-ui/client exec playwright test condition-builder.spec.ts form-editing.spec.ts fhir-mapping.spec.ts form-data-passing.spec.ts quick-hierarchy.spec.ts
 
       - name: Upload Playwright report on failure
         if: failure()

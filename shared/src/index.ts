@@ -13,6 +13,7 @@ export * from './xlsform/calculationBuilder.js';
 export * from './xlsform/calcReference.js';
 export * from './xlsform/renameList.js';
 export * from './hierarchy/hierarchyOrder.js';
+export * from './hierarchy/buildLinearHierarchy.js';
 export * from './tasks/jsParser.js';
 export * from './tasks/contactSummaryParser.js';
 export * from './tasks/appliesIfParser.js';
