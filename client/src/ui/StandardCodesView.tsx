@@ -766,26 +766,43 @@ function TwoStepPicker(props: {
   return (
     <div className="two-step-picker">
       <div className="picker-step">
-        <strong>1. Dictionary:</strong>
-        <div className="row gap dict-buttons">
-          {DICT_ORDER.map((id) => {
-            const meta = dictionaries.find((d) => d.systemId === id);
-            const label = DICTIONARY_LABELS[id];
-            const count = meta?.count ?? null;
-            return (
-              <button
-                key={id}
-                type="button"
-                className={activeDict === id ? 'active' : 'link'}
-                onClick={() => setActiveDict(id)}
-                title={meta?.version ?? 'not yet vendored'}
-              >
-                {label}
-                {count !== null && <span className="muted small"> ({count})</span>}
-              </button>
-            );
-          })}
-        </div>
+        {/* §B2 — native radio fieldset for the dictionary selector (mirrors
+            the A2 fix in CalculationBuilder.tsx:491-504). The previous
+            color-only `<button className={active?'active':'link'}>` row
+            wasn't reachable by screen readers as a radio group and failed
+            contrast guidelines for state-by-color-alone. The visually-
+            hidden legend keeps the existing visible heading + carries the
+            group semantics for AT. */}
+        <fieldset className="dict-fieldset">
+          <legend className="visually-hidden">Pick a dictionary</legend>
+          <strong>1. Dictionary:</strong>
+          <div className="row gap dict-radios">
+            {DICT_ORDER.map((id) => {
+              const meta = dictionaries.find((d) => d.systemId === id);
+              const label = DICTIONARY_LABELS[id];
+              const count = meta?.count ?? null;
+              return (
+                <label
+                  key={id}
+                  className={`kind-radio dict-radio${activeDict === id ? ' active' : ''}`}
+                  title={meta?.version ?? 'not yet vendored'}
+                >
+                  <input
+                    type="radio"
+                    name="fhir-dictionary"
+                    value={id}
+                    checked={activeDict === id}
+                    onChange={() => setActiveDict(id)}
+                  />
+                  <span>
+                    {label}
+                    {count !== null && <span className="muted small"> ({count})</span>}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </fieldset>
       </div>
       <div className="picker-step">
         <strong>2. Pick a code:</strong>

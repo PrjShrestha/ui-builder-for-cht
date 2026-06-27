@@ -441,11 +441,28 @@ code {
 .picker-row td { background: #f9fafb; padding: 12px; }
 .two-step-picker { display: flex; flex-direction: column; gap: 10px; }
 .picker-step { display: flex; flex-direction: column; gap: 6px; }
-.dict-buttons button.active {
+/* §B2 — native radio fieldset for the FHIR dictionary picker. Mirrors the
+   .kind-radio shape from CalculationBuilder; fieldset reset + scoped
+   layout so the legend slot doesn't interfere with the existing
+   "1. Dictionary:" heading inside. */
+.dict-fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dict-radios {
+  flex-wrap: wrap;
+}
+.dict-radio.active {
   background: #6366f1;
   color: white;
   font-weight: 600;
 }
+.dict-radio.active .muted { color: #c7d2fe; }
 .picker-search { padding: 6px 8px; font-size: 14px; }
 .picker-results {
   list-style: none;
