@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   parseActions,
   serializeActions,
+  type ModifyContentMapping,
   type ParsedActions,
   type TaskAction,
 } from '@cht-ui/shared';
@@ -177,7 +178,16 @@ function ActionCard(props: {
         <input
           type="checkbox"
           checked={a.passesVisitWindow}
-          onChange={(e) => props.onChange({ ...a, passesVisitWindow: e.target.checked })}
+          onChange={(e) =>
+            props.onChange({
+              ...a,
+              passesVisitWindow: e.target.checked,
+              // Toggling visit-window on clears the other two paths so
+              // the serializer doesn't have to break ties.
+              modifyContentMappings: e.target.checked ? undefined : a.modifyContentMappings,
+              customModifyContent: e.target.checked ? undefined : a.customModifyContent,
+            })
+          }
         />
         <span>
           <strong>Pass visit window into the form</strong>{' '}
@@ -187,12 +197,150 @@ function ActionCard(props: {
           </em>
         </span>
       </label>
-      {a.customModifyContent && !a.passesVisitWindow && (
-        <details>
-          <summary className="muted">Custom modifyContent (read-only here; edit in Raw JS)</summary>
-          <pre className="small muted">{a.customModifyContent}</pre>
-        </details>
+
+      {/* Phase 2a — three-way modifyContent editor. Order matters:
+          visit-window > structured mappings > opaque raw. The user
+          toggles between them deliberately; no auto-detection beyond
+          the parser's initial classify(). */}
+      {!a.passesVisitWindow && (
+        <ModifyContentEditor action={a} onChange={props.onChange} />
       )}
+    </div>
+  );
+}
+
+/**
+ * Phase 2a — the structured modifyContent editor + the raw-fallback
+ * surface for actions that need conditional logic the structured editor
+ * can't express.
+ *
+ * Three branches by data shape:
+ *   - mappings non-empty → structured per-row editor with add/delete.
+ *   - customModifyContent set → read-only details (escape hatch — edit
+ *     in Raw JS at the editor level).
+ *   - neither set → "+ Add field mapping" button initializes the
+ *     structured editor with one empty row.
+ *
+ * When the user deletes the last mapping, the parent action's
+ * `modifyContentMappings` is set to `undefined` (NOT `[]`) so the
+ * serializer routes back to the clean fallback. The parser's empty-
+ * array guard is belt-and-braces.
+ */
+function ModifyContentEditor(props: {
+  action: TaskAction;
+  onChange: (a: TaskAction) => void;
+}) {
+  const a = props.action;
+  const mappings = a.modifyContentMappings;
+  const hasMappings = mappings !== undefined && mappings.length > 0;
+  const hasRaw = !!a.customModifyContent;
+
+  function updateMappings(next: ModifyContentMapping[]): void {
+    // Empty-array convention: collapse to `undefined` so the serializer
+    // path is unambiguous (plan §3 Phase 2a + the parser's belt-and-
+    // braces guard in actionsParser.ts).
+    props.onChange({
+      ...a,
+      modifyContentMappings: next.length > 0 ? next : undefined,
+      customModifyContent: undefined,
+    });
+  }
+
+  function addMapping(): void {
+    updateMappings([
+      ...(mappings ?? []),
+      { targetField: '', sourceExpr: '' },
+    ]);
+  }
+
+  function patchRow(idx: number, patch: Partial<ModifyContentMapping>): void {
+    const current = mappings ?? [];
+    updateMappings(current.map((m, i) => (i === idx ? { ...m, ...patch } : m)));
+  }
+
+  function removeRow(idx: number): void {
+    const current = mappings ?? [];
+    updateMappings(current.filter((_, i) => i !== idx));
+  }
+
+  if (hasMappings) {
+    return (
+      <div className="modify-content-editor">
+        <div className="row gap" style={{ alignItems: 'baseline' }}>
+          <strong>Copy report fields into the new form</strong>
+          <em className="muted small">
+            Each row writes <code>content.<i>target</i> = <i>source</i>;</code> into
+            the task's <code>modifyContent</code>.
+          </em>
+        </div>
+        <table className="modify-content-table">
+          <thead>
+            <tr>
+              <th>target field (content.X)</th>
+              <th>source expression</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {mappings!.map((m, idx) => (
+              <tr key={idx}>
+                <td>
+                  <input
+                    value={m.targetField}
+                    onChange={(e) => patchRow(idx, { targetField: e.target.value })}
+                    placeholder="e.g. patient_id"
+                  />
+                </td>
+                <td>
+                  <input
+                    value={m.sourceExpr}
+                    onChange={(e) => patchRow(idx, { sourceExpr: e.target.value })}
+                    placeholder="e.g. report.patient_id  /  event.id  /  'literal'"
+                  />
+                </td>
+                <td>
+                  <button
+                    className="link danger"
+                    onClick={() => removeRow(idx)}
+                    aria-label="Remove mapping"
+                  >
+                    ×
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="row gap">
+          <button className="link" onClick={addMapping}>
+            + Add mapping
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (hasRaw) {
+    return (
+      <details>
+        <summary className="muted">
+          Custom modifyContent (read-only here; edit in Raw JS) — uses control flow
+          or helper calls the structured editor can't express
+        </summary>
+        <pre className="small muted">{a.customModifyContent}</pre>
+      </details>
+    );
+  }
+
+  return (
+    <div className="row gap">
+      <button className="link" onClick={addMapping}>
+        + Add field mapping
+      </button>
+      <em className="muted small">
+        Copies a value from the triggering report into the new form
+        (e.g. <code>content.patient_id = report.patient_id</code>).
+      </em>
     </div>
   );
 }

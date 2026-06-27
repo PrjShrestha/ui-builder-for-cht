@@ -20,12 +20,35 @@
  * verbatim in `customModifyContent`.
  */
 
+/** One structured mapping in a modifyContent body — `content.<target> =
+ *  <sourceExpr>;`. The `sourceExpr` is kept as a literal string (e.g.
+ *  `report.field_name`, `event.id`, `'literal'`) so the UI can render
+ *  it without re-parsing. See form-data-passing.md §3 Phase 2a. */
+export interface ModifyContentMapping {
+  /** The `<field>` in `content.<field> = …;` — must be a JS identifier. */
+  targetField: string;
+  /** The RHS expression as written — usually `report.X`, `event.Y`, or
+   *  a literal. The parser preserves bytes verbatim so the round-trip is
+   *  byte-stable for any expression `tryParseSimpleMappings` accepts. */
+  sourceExpr: string;
+}
+
 export interface TaskAction {
   type?: 'report' | 'contact';
   form: string;
   /** True when modifyContent matches the canonical visit-window pattern. */
   passesVisitWindow: boolean;
-  /** Raw modifyContent function source when it doesn't match the canonical pattern. */
+  /** Phase 2a — when modifyContent is a function whose body is a flat
+   *  sequence of `content.<field> = <expr>;` assignments and NOTHING
+   *  else (no if/forEach/ternary/Object.entries/function-calls), it
+   *  parses to this structured mapping. Precedence in `classify`:
+   *  visit-window > mappings > custom raw. When the UI deletes the last
+   *  mapping it MUST set this to `undefined` (not `[]`) so the
+   *  serializer routes back to a clean fallback path. */
+  modifyContentMappings?: ModifyContentMapping[];
+  /** Raw modifyContent function source when it doesn't match either of
+   *  the structured patterns above. The §3.1-style raw-fallback escape
+   *  hatch — user code is never lost on save. */
   customModifyContent?: string;
   /** Any other keys preserved verbatim. */
   extras: Record<string, string>;
@@ -39,6 +62,89 @@ export interface ParsedActions {
 
 const CANONICAL_VISIT_WINDOW_RE =
   /content\.visit\s*=\s*event\.id\s*;[\s\S]*?content\.current_period_start[\s\S]*?content\.current_period_end/;
+
+/**
+ * Phase 2a — recognize a modifyContent function body whose every
+ * statement is `content.<identifier> = <safe-expr>;` and nothing else.
+ *
+ * Patterns accepted (case-insensitive function/arrow):
+ *   function (content, contact, report, event) { content.X = report.x; }
+ *   function (content, contact, report)        { content.X = event.id; }
+ *   (content, contact, report, event) => { content.X = report.x; ... }
+ *
+ * Returns null (the caller falls through to `customModifyContent`) when
+ * the body contains any of:
+ *   - `if`, `else`, `for`, `while`, `switch`, `return`
+ *   - `forEach`, `Object.entries`, `Object.assign`, `.map(`
+ *   - ternaries (`?` outside a string)
+ *   - function-call statements that aren't a simple identifier-or-
+ *     member-access RHS of `content.X = <expr>;`
+ *
+ * The conservative-by-default reject-list is the load-bearing safety net
+ * documented in the critical-gotchas list: real config-nssd / cht-default
+ * tasks use ALL of these patterns at production scale (lines 205-228,
+ * 495-500, 638-641 in the real corpus); misclassifying any of them as
+ * structured would destroy user code on save.
+ */
+export function tryParseSimpleMappings(raw: string): ModifyContentMapping[] | null {
+  const trimmed = raw.trim();
+  // Match function-decl or arrow body; capture the body bytes.
+  // Function-decl:  `function (...) { BODY }`
+  // Arrow:          `(...) => { BODY }`  (with or without parens — but
+  //                   without parens we can't get args, so require parens
+  //                   to match the canonical CHT spelling).
+  let body: string | null = null;
+  const funcMatch =
+    /^function\s*\(([^)]*)\)\s*\{([\s\S]*)\}\s*$/.exec(trimmed);
+  if (funcMatch) {
+    body = funcMatch[2] ?? '';
+  } else {
+    const arrowMatch = /^\(([^)]*)\)\s*=>\s*\{([\s\S]*)\}\s*$/.exec(trimmed);
+    if (arrowMatch) body = arrowMatch[2] ?? '';
+  }
+  if (body === null) return null;
+
+  // Reject keyword/control-flow tokens at any position. Word-boundary
+  // matches keep us from rejecting `if_` (unlikely but defensive).
+  // The .map( pattern uses no word boundary since `.` ends the word.
+  if (
+    /\b(if|else|for|while|switch|return|do)\b/.test(body) ||
+    /\bforEach\b/.test(body) ||
+    /\bObject\.(entries|assign|keys|values)\b/.test(body) ||
+    /\.map\(/.test(body) ||
+    // Ternary `?` outside a string. The body's strings are
+    // tokenized below; here we do a cheap regex check on the body
+    // stripped of strings. If there are no quotes the check is exact.
+    /\?[^']/.test(body.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, ''))
+  ) {
+    return null;
+  }
+
+  // Split body into top-level statements at semicolons. We don't allow
+  // multi-line expressions, so each non-empty trimmed segment must be a
+  // `content.<id> = <expr>` assignment.
+  const mappings: ModifyContentMapping[] = [];
+  const statements = body
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  for (const stmt of statements) {
+    const m = /^content\.([a-zA-Z_$][\w$]*)\s*=\s*(.+)$/.exec(stmt);
+    if (!m) return null;
+    const targetField = m[1]!;
+    const sourceExpr = m[2]!.trim();
+    // The RHS must NOT contain function-call parens unless they're a
+    // helper that the v1 reject-list above already allows through.
+    // Cheap heuristic: reject any `(` that isn't immediately preceded
+    // by a `.` chain that we explicitly know is safe. v1 plays it safe
+    // and rejects all `(` — real configs use `report.field` /
+    // `event.id` / literals, not helper calls inline.
+    if (/\(/.test(sourceExpr)) return null;
+    mappings.push({ targetField, sourceExpr });
+  }
+  if (mappings.length === 0) return null;
+  return mappings;
+}
 
 export function parseActions(source: string): ParsedActions {
   const trimmed = source.trim();
@@ -78,6 +184,17 @@ function serializeOne(a: TaskAction): string {
         content.current_period_start = addDays(dueDate, -event.start);
         content.current_period_end = addDays(dueDate, event.end);
       }`);
+  } else if (a.modifyContentMappings && a.modifyContentMappings.length > 0) {
+    // Phase 2a structured mappings. Indentation matches the visit-
+    // window literal above EXACTLY (8 spaces for the body, 6 for the
+    // closing brace) so round-trip is byte-stable against forms that
+    // were authored by hand and saved through this serializer.
+    const lines = a.modifyContentMappings
+      .map((m) => `        content.${m.targetField} = ${m.sourceExpr};`)
+      .join('\n');
+    parts.push(
+      `modifyContent: function (content, contact, report, event) {\n${lines}\n      }`,
+    );
   } else if (a.customModifyContent) {
     parts.push(`modifyContent: ${a.customModifyContent}`);
   }
@@ -143,11 +260,21 @@ function classify(action: TaskAction, key: string, raw: string): void {
     return;
   }
   if (k === 'modifycontent') {
+    // Precedence (load-bearing — flipping the order risks the canonical
+    // visit-window pattern being misread as 4 simple assignments):
+    //   1. Visit-window canonical pattern wins.
+    //   2. Phase 2a structured mappings (flat content.X = expr; sequence).
+    //   3. Fall through to opaque customModifyContent.
     if (CANONICAL_VISIT_WINDOW_RE.test(raw)) {
       action.passesVisitWindow = true;
-    } else {
-      action.customModifyContent = raw;
+      return;
     }
+    const mappings = tryParseSimpleMappings(raw);
+    if (mappings) {
+      action.modifyContentMappings = mappings;
+      return;
+    }
+    action.customModifyContent = raw;
     return;
   }
   action.extras[key] = raw;

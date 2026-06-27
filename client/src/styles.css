@@ -539,6 +539,29 @@ code {
 .deploy-readiness-row.state-info .deploy-readiness-glyph { color: #6b7280; }
 .deploy-readiness-row.state-fail { background: #fffbeb; padding-left: 6px; border-radius: 3px; }
 .deploy-readiness-label { font-weight: 500; }
+
+/* Phase 2a — structured modifyContent mappings editor. */
+.modify-content-editor {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-left: 3px solid #6366f1;
+  background: #eef2ff;
+  border-radius: 4px;
+}
+.modify-content-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+  font-size: 13px;
+}
+.modify-content-table th, .modify-content-table td {
+  padding: 3px 6px;
+  text-align: left;
+  vertical-align: middle;
+}
+.modify-content-table th { font-size: 11px; color: #4338ca; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.modify-content-table td input { width: 100%; }
+.modify-content-table td:last-child { width: 28px; text-align: right; }
 .picker-row td { background: #f9fafb; padding: 12px; }
 .two-step-picker { display: flex; flex-direction: column; gap: 10px; }
 .picker-step { display: flex; flex-direction: column; gap: 6px; }
