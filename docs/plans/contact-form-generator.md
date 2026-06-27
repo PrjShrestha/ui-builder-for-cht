@@ -46,9 +46,24 @@ calculator, place **primary-contact** selection + inline new-person, re-parent l
   choice lists those rows reference**. The author extends from there. Lower risk, fits custom
   hierarchies, doesn't force CHW-creation/ephemeral-DOB on projects that don't use them.
 
-**Recommendation: B** (with the §1 faithful structures kept as the reference for fields an author
-may add). This pairs with the "configurable, not forced" stance and keeps generated forms legible.
-**Confirm A vs B before build.**
+**DECISION (2026-06-26): B — minimal-valid + extensible.** Build target = the **minimal spec**
+below; the §1 faithful structures are the REFERENCE for fields/blocks an author may add, and for a
+possible future **Hybrid** follow-up (opt-in rich blocks: DOB calculator, CHW user creation, place
+primary-contact, re-parenting). Keeps generated forms legible and avoids imposing cht-default's
+opinions on every type.
+
+**Minimal-valid spec (the build target), per type:**
+- **create** (`<type>-create.xlsx`): `inputs/user{contact_id,facility_id,name}` (relevant=false());
+  doc group **named for the type** → `hidden parent` (default = resolved parent id),
+  `hidden type` (default=`<type>`), `string name` (required), `string _id` appearance=`select-contact`
+  (placement; person → `select-contact`, place → its primary-contact selector or omit for v1),
+  `select_one sex` (required, **person only**), `meta{ calculate created_by/created_by_person_uuid/
+  created_by_place_uuid }`. Choices sheet: **only** the lists these rows use (`male_female`, `yes_no`),
+  in all project locales.
+- **edit** (`<type>-edit.xlsx`): same doc group, hydrated — add `hidden _id` (read_only), carried
+  `parent`/`type` (read_only), `meta` with carried `created_by*` (hidden, read_only) +
+  `last_edited_by*` calculates. **No re-parent UI, no primary-contact, no DOB calculator in v1**
+  (those are the Hybrid follow-up; §1 has their shape).
 
 ## 3. Non-negotiables (verified — true under EITHER A or B)
 1. **Choices sheets are load-bearing and PROJECT-SPECIFIC.** Every `select_one`/`select_multiple`
@@ -112,10 +127,14 @@ basename passes `/^[a-zA-Z0-9_-]+$/`, `settings.form_id==='contact:<type>:create
 **Locked:** offered-not-auto (onboarding §Decision 4); both create+edit per type by default (per-type
 toggle); skip-not-overwrite; new batch filesystem route (no false undo); colon `form_id` set in the
 route; derive `place_type`/`generated_name`/`roles` from config; offered in the Hierarchy editor.
-**Open (need your call):**
-- **§2 faithful-clone (A) vs minimal-valid (B)** — recommend B.
-- Choice-list provenance for the static lists: copy verbatim from shipped templates (preserves 7
-  locales) vs hand-author minimal — recommend copy-verbatim for the static lists, derive the
-  project-specific ones.
-- Person-edit re-parent: one selector per place type (matches template) vs per the person's
-  permitted parents — recommend match-template (all place types) unless a reason to narrow.
+**Also locked:** generation depth = **minimal-valid + extensible** (§2); copy the static choice
+lists (`male_female`, `yes_no`) **verbatim from the shipped templates** to preserve their 7 locales
+(the only project-specific lists the minimal spec needs are none beyond those — `place_type`/`roles`/
+`generated_name` are only required by the faithful/Hybrid blocks, so the project-derivation
+requirement applies if/when those blocks ship).
+
+**Deferred to the Hybrid follow-up (out of v1 scope under Decision B):** place primary-contact +
+inline new-person, person-edit re-parent selectors, the ephemeral-DOB calculator, inline CHW
+user-creation. The §1 reference + §3 non-negotiables (project-derived `place_type`/`roles`,
+per-variant init appearance, all-place-type re-parent selectors) apply to those blocks when built,
+not to v1.
