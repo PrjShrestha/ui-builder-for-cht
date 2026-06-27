@@ -81,7 +81,7 @@ Then commit the produced JSON. **ICD-10/ICD-11** are blocked on free WHO API cre
 | Lineage e2e | ◑ partial | P2 | Optional fixture-gated tile→modal→splice test | hierarchy-block-generator.md §7 (best-effort) |
 | `vite.config.run.mjs` untracked | ☐ open | P2 | Delete, fold into vite.config.ts, or .gitignore | repo root |
 | Targeted deploy §4 one-click | ◑ defer | P2 | convert→upload sequence endpoint | deploy-targeted-forms.md §4 (deferred per Decision 2) |
-| Onboarding order + start-point | ☐ open | P2 | Default new projects to `blank` (not cht-default/`empty`); Hierarchy-first guidance; Forms-tab empty-`contact_types` nudge; deploy-readiness checklist | onboarding-order.md; `NewProjectWizard.tsx`, `ProjectOverview.tsx`, `DeployPanel.tsx` |
+| Onboarding guardrails | ☐ open | P2 | **Keep the new-project picker as-is** (user); add Hierarchy-first guidance + Forms-tab empty-`contact_types` nudge + deploy-readiness checklist | onboarding-order.md; `ProjectOverview.tsx`, `DeployPanel.tsx` |
 | Contact-form generator (offered) | ☐ open | P2 | Offer in Hierarchy editor: generate **minimal-valid** create/edit per type (skip-existing); closes the `AddTypeForm` dangling `create_form`/`edit_form` contract | contact-form-generator.md (Decision B); new `buildContactForm.ts` + `POST /api/forms/generate-contact` |
 
 ---

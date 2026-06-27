@@ -38,12 +38,13 @@ What each template actually ships (verified):
 | `malaria` | 5 (district…chw…patient) | 0 | 0 | opt-in deeper hierarchy starter |
 | `cht-default` | 4 | 11 | 4 | the heavy baseline — opt-in "learn from an example", **not the default** |
 
-**Decision:** new projects default to **`blank`** — a starter hierarchy with **zero example
-forms**, which the author renames/extends in the Hierarchy editor to match their program.
-A new developer wants the *foundation* without inheriting the full CHT demo (11 app forms is
-confusing, not helpful). Offer `cht-default`/`malaria` as clearly-labelled
-"start from an example" options; surface `empty` only behind a "truly blank (advanced)"
-affordance with a warning.
+**Decision (user, 2026-06-26): keep the existing new-project picker AS-IS — do not change it.**
+The author already chooses `blank` / `cht-default` (etc.) at project creation, and that UX is
+good — `blank` gives the foundation-without-baggage path, `cht-default` gives the learn-from-an-
+example path. **No change to `NewProjectWizard` / the template list / the default selection.**
+The no-hierarchy risk is handled entirely by the **post-pick guardrails** below (which work no
+matter which template was chosen), so we don't need to touch the picker. (The table above is just
+context for *why* the choice matters.)
 
 ## 4. Guided new-project flow
 1. **Pick a starting point** — default `blank` (hierarchy seed); examples opt-in.
@@ -69,9 +70,8 @@ affordance with a warning.
   has the empty-hierarchy test).
 
 ## 6. UI hooks
-- **`NewProjectWizard.tsx`** — default selection = `blank`; reorder the template list
-  (blank first; cht-default/malaria labelled "examples"); `empty` behind an advanced toggle
-  with a warning. (Templates via `GET /api/templates` + `createFromTemplate`.)
+- **`NewProjectWizard.tsx`** — **no change** (per user): the existing `blank` / `cht-default`
+  template picker stays as-is. (Listed only to say explicitly: leave it alone.)
 - **`ProjectOverview.tsx`** — show the recommended order / a "next step" hint; the overview
   already disables sections by file presence — add a "start with Hierarchy" cue on a fresh
   project.
@@ -80,8 +80,9 @@ affordance with a warning.
 
 ## 7. Decisions (locked 2026-06-26)
 1. **Order:** Hierarchy → contact forms → app forms → tasks (§1).
-2. **Default new-project template = `blank`** (hierarchy, no example forms); cht-default/
-   malaria are opt-in examples; `empty` de-emphasized + warned (§3).
+2. **Keep the new-project picker AS-IS** (user, 2026-06-26) — `blank` / `cht-default` choice at
+   creation stays unchanged. The no-hierarchy risk is covered by the post-pick guardrails (§5),
+   not by changing the picker.
 3. **Guide, don't gate** — warnings + readiness checklist, no hard blocks (§5), because the
    no-hierarchy failure mode is silent, not a crash (§2).
 4. **Contact-form generation is OFFERED, not auto** (user decision 2026-06-26). After the
