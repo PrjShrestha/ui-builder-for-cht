@@ -42,6 +42,10 @@ interface Props {
   locales: string[];
   /** Optional contact forms whose fields populate the context-expression picker. */
   contactForms?: ContactFormFields[];
+  /** Contact-summary context keys (the `summary.<flag>` namespace) — threaded
+   *  through to the context-expression key picker so form-eligibility flags
+   *  validate. Plan: form-data-passing.md §3 Phase 0. */
+  summaryFlags?: string[];
   onChange: (next: FormProperties) => void;
   onClose: () => void;
 }
@@ -152,6 +156,7 @@ export function PropertiesEditor(props: Props) {
             value={draft.context?.expression ?? ''}
             onChange={(v) => setContext('expression', v)}
             contactForms={props.contactForms}
+            summaryFlags={props.summaryFlags}
             disabled={draft.context?.expression === 'false'}
           />
         </label>

@@ -330,6 +330,7 @@ export function FormEditor({ formId }: { formId: string }) {
           value={properties}
           locales={form.locales.length > 0 ? form.locales : ['en']}
           contactForms={contactForms}
+          summaryFlags={contextKeys}
           onChange={(p) => {
             setProperties(p);
             setDirty(formId, true);
