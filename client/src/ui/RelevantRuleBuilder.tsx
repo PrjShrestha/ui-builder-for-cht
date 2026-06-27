@@ -232,13 +232,22 @@ export function RelevantRuleBuilder(props: Props) {
               >
                 + contact input
               </button>
-              <button
-                className="link"
-                onClick={() => addRule('contact-summary-comparison')}
-                title="Compare against a contact-summary context flag (instance('contact-summary')/context/...) — Phase 1a"
-              >
-                + contact-summary
-              </button>
+              {/* §Trap1 fix — contact-summary requires at least one
+                  known context key to be useful. Without keys the
+                  initial rule would emit an invalid path
+                  (`instance('contact-summary')/context/`) on save.
+                  Hide the button when the project has no
+                  contact-summary keys; the author can switch to the
+                  raw editor for an exotic case. */}
+              {(props.contextKeys?.length ?? 0) > 0 && (
+                <button
+                  className="link"
+                  onClick={() => addRule('contact-summary-comparison')}
+                  title="Compare against a contact-summary context flag (instance('contact-summary')/context/...) — Phase 1a"
+                >
+                  + contact-summary
+                </button>
+              )}
               <button className="link" onClick={() => addRule('raw')}>
                 + raw expression
               </button>

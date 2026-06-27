@@ -170,6 +170,85 @@ test('§C1 — canonical visit-window pattern still parses to passesVisitWindow 
 
 /* ============================ structural — UI deletion contract ============================ */
 
+/* ============================ adversarial bug-fixes ============================ */
+
+test('BUG#2 — semicolons inside string literals do NOT split statements', () => {
+  // Pre-fix this misclassified the second segment as a non-content
+  // assignment and demoted to raw. Post-fix the string-aware tokenizer
+  // sees ONE statement.
+  const src = `function (content) { content.text = 'hello; world'; }`;
+  const mappings = tryParseSimpleMappings(src);
+  assert.ok(mappings, 'string-aware split should accept this');
+  assert.equal(mappings!.length, 1);
+  assert.equal(mappings![0]!.targetField, 'text');
+  assert.equal(mappings![0]!.sourceExpr, "'hello; world'");
+});
+
+test('BUG#3 — control-flow keywords inside string literals do NOT trigger reject', () => {
+  // Pre-fix the bare `/\b(if|else|for|...|do)\b/` test matched `do` in
+  // 'do not delete' and rejected the whole body.
+  const src = `function (content) { content.note = 'do not delete'; }`;
+  const mappings = tryParseSimpleMappings(src);
+  assert.ok(mappings, 'string-aware reject-check should accept this');
+  assert.equal(mappings![0]!.sourceExpr, "'do not delete'");
+});
+
+test('BUG#4 — `?` inside backtick template strings does NOT trigger ternary reject', () => {
+  const src = `function (content) { content.label = \`is_this_ok?\`; }`;
+  const mappings = tryParseSimpleMappings(src);
+  assert.ok(mappings, 'backtick strings should be stripped before ternary check');
+  assert.equal(mappings![0]!.sourceExpr, '`is_this_ok?`');
+});
+
+test('BUG#7 — function arg list is preserved on round-trip (1-arg form)', () => {
+  const src = `[{ form: 'f', modifyContent: function (content) { content.x = report.x; } }]`;
+  const parsed = parseActions(src);
+  const a = parsed.actions[0]!;
+  assert.equal(a.modifyContentArgs, 'content', 'arg list captured');
+  const out = serializeActions(parsed);
+  assert.match(out, /function \(content\)/, 'serializer must emit the original 1-arg form, not auto-inflate');
+  assert.doesNotMatch(out, /function \(content, contact, report, event\)/);
+});
+
+test('BUG#7 — 4-arg canonical form also round-trips', () => {
+  const src = `[{ form: 'f', modifyContent: function (content, contact, report, event) { content.x = report.x; } }]`;
+  const parsed = parseActions(src);
+  assert.equal(parsed.actions[0]!.modifyContentArgs, 'content, contact, report, event');
+  const out = serializeActions(parsed);
+  assert.match(out, /function \(content, contact, report, event\)/);
+});
+
+test('BUG#7 — arrow function arg list also preserved', () => {
+  const src = `[{ form: 'f', modifyContent: (content, contact, report, event) => { content.x = report.x; } }]`;
+  const parsed = parseActions(src);
+  assert.equal(parsed.actions[0]!.modifyContentArgs, 'content, contact, report, event');
+  // Note: arrow → function-decl conversion on serialize is intentional
+  // (the serializer canonicalizes to function form). The arg list is
+  // what we preserve.
+  const out = serializeActions(parsed);
+  assert.match(out, /function \(content, contact, report, event\)/);
+});
+
+test('Trap#4-defense — empty-row mapping is dropped on serialize, not emitted as invalid JS', () => {
+  // The UI may transiently hold an empty row before the user types into
+  // it; the serializer must NOT emit `content. = ;` (invalid JS).
+  const a: TaskAction = {
+    form: 'foo',
+    passesVisitWindow: false,
+    modifyContentMappings: [
+      { targetField: 'real', sourceExpr: 'report.real' },
+      { targetField: '', sourceExpr: '' },
+      { targetField: '  ', sourceExpr: 'report.x' }, // whitespace-only also dropped
+    ],
+    extras: {},
+  };
+  const out = serializeActions({ shape: 'array', actions: [a], raw: '' });
+  // Only the "real" row should appear; empty rows silently dropped.
+  assert.match(out, /content\.real = report\.real;/);
+  assert.doesNotMatch(out, /content\. = /);
+  assert.doesNotMatch(out, /content\. {2}= /);
+});
+
 test('§D1 — empty mappings array on serialize falls through to customModifyContent path', () => {
   // The UI contract is: when the last mapping is deleted, set
   // modifyContentMappings = undefined (not []). But defensively, the

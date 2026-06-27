@@ -178,16 +178,29 @@ function ActionCard(props: {
         <input
           type="checkbox"
           checked={a.passesVisitWindow}
-          onChange={(e) =>
+          onChange={(e) => {
+            // §Trap7 fix — toggling visit-window ON would clear any
+            // existing structured mappings or custom JS, silently. If
+            // the action carries work, confirm before clobbering it.
+            if (e.target.checked) {
+              const hasWork =
+                (a.modifyContentMappings && a.modifyContentMappings.length > 0) ||
+                !!a.customModifyContent;
+              if (hasWork) {
+                // eslint-disable-next-line no-undef
+                const ok = window.confirm(
+                  'Pass-visit-window will replace the existing modifyContent body (mappings or custom JS). Continue?',
+                );
+                if (!ok) return;
+              }
+            }
             props.onChange({
               ...a,
               passesVisitWindow: e.target.checked,
-              // Toggling visit-window on clears the other two paths so
-              // the serializer doesn't have to break ties.
               modifyContentMappings: e.target.checked ? undefined : a.modifyContentMappings,
               customModifyContent: e.target.checked ? undefined : a.customModifyContent,
-            })
-          }
+            });
+          }}
         />
         <span>
           <strong>Pass visit window into the form</strong>{' '}
@@ -260,6 +273,19 @@ function ModifyContentEditor(props: {
 
   function removeRow(idx: number): void {
     const current = mappings ?? [];
+    // §Trap5 fix — deleting the LAST mapping silently flips the editor
+    // back to "+ Add field mapping" empty state AND clears
+    // customModifyContent. That's a destructive UI action with no
+    // visual breadcrumb, so confirm. Global Ctrl+Z still works for
+    // recovery, but the confirm makes the irreversible-on-save nature
+    // explicit. Single-row deletes mid-list are routine — no confirm.
+    if (current.length === 1) {
+      // eslint-disable-next-line no-undef
+      const ok = window.confirm(
+        'Delete the last mapping? This clears the action\'s modifyContent entirely (Ctrl+Z restores).',
+      );
+      if (!ok) return;
+    }
     updateMappings(current.filter((_, i) => i !== idx));
   }
 
@@ -312,9 +338,30 @@ function ModifyContentEditor(props: {
           </tbody>
         </table>
         <div className="row gap">
-          <button className="link" onClick={addMapping}>
-            + Add mapping
-          </button>
+          {/* §Trap4 fix — block adding a new row until the last existing
+              one is filled. The serializer already drops empty rows
+              defensively, but blocking the add at the UI level means a
+              user can't accidentally accumulate a row of blanks the
+              parser would later misclassify on re-open. */}
+          {(() => {
+            const last = mappings![mappings!.length - 1]!;
+            const lastIncomplete =
+              last.targetField.trim() === '' || last.sourceExpr.trim() === '';
+            return (
+              <button
+                className="link"
+                onClick={addMapping}
+                disabled={lastIncomplete}
+                title={
+                  lastIncomplete
+                    ? 'Fill the current row before adding another'
+                    : 'Add another mapping'
+                }
+              >
+                + Add mapping
+              </button>
+            );
+          })()}
         </div>
       </div>
     );

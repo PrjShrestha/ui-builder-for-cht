@@ -46,6 +46,14 @@ export interface TaskAction {
    *  mapping it MUST set this to `undefined` (not `[]`) so the
    *  serializer routes back to a clean fallback path. */
   modifyContentMappings?: ModifyContentMapping[];
+  /** Original function argument list, captured during parsing so the
+   *  serializer can emit the same arity on round-trip. Real configs use
+   *  both `function (content)` (1 arg) and the canonical
+   *  `function (content, contact, report, event)` (4 args); auto-
+   *  inflating the short form would silently rewrite the bytes on save.
+   *  Only populated when modifyContentMappings is set; ignored
+   *  otherwise. */
+  modifyContentArgs?: string;
   /** Raw modifyContent function source when it doesn't match either of
    *  the structured patterns above. The §3.1-style raw-fallback escape
    *  hatch — user code is never lost on save. */
@@ -86,64 +94,140 @@ const CANONICAL_VISIT_WINDOW_RE =
  * 495-500, 638-641 in the real corpus); misclassifying any of them as
  * structured would destroy user code on save.
  */
-export function tryParseSimpleMappings(raw: string): ModifyContentMapping[] | null {
-  const trimmed = raw.trim();
-  // Match function-decl or arrow body; capture the body bytes.
-  // Function-decl:  `function (...) { BODY }`
-  // Arrow:          `(...) => { BODY }`  (with or without parens — but
-  //                   without parens we can't get args, so require parens
-  //                   to match the canonical CHT spelling).
-  let body: string | null = null;
-  const funcMatch =
-    /^function\s*\(([^)]*)\)\s*\{([\s\S]*)\}\s*$/.exec(trimmed);
-  if (funcMatch) {
-    body = funcMatch[2] ?? '';
-  } else {
-    const arrowMatch = /^\(([^)]*)\)\s*=>\s*\{([\s\S]*)\}\s*$/.exec(trimmed);
-    if (arrowMatch) body = arrowMatch[2] ?? '';
+/**
+ * Replace every string literal (single, double, backtick) in `src` with
+ * an equal-length run of `_` so positions stay stable and downstream
+ * regex / split logic never sees content that's actually inside strings.
+ * Handles backslash-escapes inside quotes. Template-string ${…}
+ * interpolations are NOT followed (rare in tasks.js; if a real config
+ * uses them in modifyContent we'd reject for safety via the leftover
+ * keyword check, which is the desired conservative outcome).
+ *
+ * Used by `tryParseSimpleMappings` to keep BUGs #2/#3/#4 from the
+ * adversarial review fixed:
+ *   - semicolons inside strings no longer split statements
+ *   - `do` / `if` / `for` / `?` inside strings no longer trigger reject
+ */
+function stripStringContents(src: string): string {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === "'" || c === '"' || c === '`') {
+      out += c;
+      let j = i + 1;
+      while (j < src.length) {
+        const ch = src[j];
+        if (ch === '\\' && j + 1 < src.length) {
+          out += '__';
+          j += 2;
+          continue;
+        }
+        if (ch === c) {
+          out += ch;
+          j++;
+          break;
+        }
+        out += '_';
+        j++;
+      }
+      i = j;
+      continue;
+    }
+    out += c;
+    i++;
   }
-  if (body === null) return null;
+  return out;
+}
 
-  // Reject keyword/control-flow tokens at any position. Word-boundary
-  // matches keep us from rejecting `if_` (unlikely but defensive).
-  // The .map( pattern uses no word boundary since `.` ends the word.
+/** Result of recognizing a function/arrow modifyContent shape, with
+ *  the original arg list preserved for byte-stable round-trip. */
+interface ParsedMappingFn {
+  body: string;
+  /** Verbatim argument list, e.g. `'content'` or
+   *  `'content, contact, report, event'`. The serializer emits this
+   *  unchanged so a hand-written `function (content)` doesn't get
+   *  inflated to 4 args on save. */
+  args: string;
+}
+
+function recognizeMappingFn(trimmed: string): ParsedMappingFn | null {
+  const funcMatch = /^function\s*\(([^)]*)\)\s*\{([\s\S]*)\}\s*$/.exec(trimmed);
+  if (funcMatch) {
+    return { args: (funcMatch[1] ?? '').trim(), body: funcMatch[2] ?? '' };
+  }
+  const arrowMatch = /^\(([^)]*)\)\s*=>\s*\{([\s\S]*)\}\s*$/.exec(trimmed);
+  if (arrowMatch) {
+    return { args: (arrowMatch[1] ?? '').trim(), body: arrowMatch[2] ?? '' };
+  }
+  return null;
+}
+
+export function tryParseSimpleMappings(raw: string): ModifyContentMapping[] | null {
+  const result = tryParseSimpleMappingsFull(raw);
+  return result ? result.mappings : null;
+}
+
+/** Internal entry that also returns the original arg list so the caller
+ *  can stash it on the action for byte-stable serialization. */
+export function tryParseSimpleMappingsFull(
+  raw: string,
+): { mappings: ModifyContentMapping[]; args: string } | null {
+  const trimmed = raw.trim();
+  const fn = recognizeMappingFn(trimmed);
+  if (!fn) return null;
+  const { body } = fn;
+
+  // Strip string CONTENTS (positions preserved) so every regex below
+  // sees code only. Bug #2/#3/#4 — keywords / semicolons / ternaries
+  // inside strings should never trigger control-flow rejection or
+  // mis-split a statement.
+  const stripped = stripStringContents(body);
+
+  // Reject keyword/control-flow tokens (now safe — strings stripped).
+  // `.map(` has no word boundary since `.` ends the word.
   if (
-    /\b(if|else|for|while|switch|return|do)\b/.test(body) ||
-    /\bforEach\b/.test(body) ||
-    /\bObject\.(entries|assign|keys|values)\b/.test(body) ||
-    /\.map\(/.test(body) ||
-    // Ternary `?` outside a string. The body's strings are
-    // tokenized below; here we do a cheap regex check on the body
-    // stripped of strings. If there are no quotes the check is exact.
-    /\?[^']/.test(body.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, ''))
+    /\b(if|else|for|while|switch|return|do)\b/.test(stripped) ||
+    /\bforEach\b/.test(stripped) ||
+    /\bObject\.(entries|assign|keys|values)\b/.test(stripped) ||
+    /\.map\(/.test(stripped) ||
+    /\?/.test(stripped)
   ) {
     return null;
   }
 
-  // Split body into top-level statements at semicolons. We don't allow
-  // multi-line expressions, so each non-empty trimmed segment must be a
-  // `content.<id> = <expr>` assignment.
+  // Split body into top-level statements at semicolons. Use the
+  // STRIPPED body for the split points but slice from the ORIGINAL
+  // body so sourceExpr string literals are preserved verbatim.
   const mappings: ModifyContentMapping[] = [];
-  const statements = body
-    .split(';')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  for (const stmt of statements) {
-    const m = /^content\.([a-zA-Z_$][\w$]*)\s*=\s*(.+)$/.exec(stmt);
+  let cursor = 0;
+  for (let i = 0; i < stripped.length; i++) {
+    if (stripped[i] !== ';') continue;
+    const segment = body.slice(cursor, i).trim();
+    cursor = i + 1;
+    if (segment.length === 0) continue;
+    const m = /^content\.([a-zA-Z_$][\w$]*)\s*=\s*(.+)$/s.exec(segment);
     if (!m) return null;
     const targetField = m[1]!;
     const sourceExpr = m[2]!.trim();
-    // The RHS must NOT contain function-call parens unless they're a
-    // helper that the v1 reject-list above already allows through.
-    // Cheap heuristic: reject any `(` that isn't immediately preceded
-    // by a `.` chain that we explicitly know is safe. v1 plays it safe
-    // and rejects all `(` — real configs use `report.field` /
-    // `event.id` / literals, not helper calls inline.
-    if (/\(/.test(sourceExpr)) return null;
+    // RHS may NOT contain any function-call parens. v1 stays
+    // conservative — real configs use `report.field` / `event.id` /
+    // literals, never inline helper calls. Check on the stripped form
+    // so a string like `'name(value)'` doesn't false-trigger.
+    if (/\(/.test(stripStringContents(sourceExpr))) return null;
     mappings.push({ targetField, sourceExpr });
   }
+  // Trailing segment after the last semicolon (allow a body without a
+  // terminal `;`).
+  const tail = body.slice(cursor).trim();
+  if (tail.length > 0) {
+    const m = /^content\.([a-zA-Z_$][\w$]*)\s*=\s*(.+)$/s.exec(tail);
+    if (!m) return null;
+    if (/\(/.test(stripStringContents(m[2]!.trim()))) return null;
+    mappings.push({ targetField: m[1]!, sourceExpr: m[2]!.trim() });
+  }
   if (mappings.length === 0) return null;
-  return mappings;
+  return { mappings, args: fn.args };
 }
 
 export function parseActions(source: string): ParsedActions {
@@ -189,12 +273,32 @@ function serializeOne(a: TaskAction): string {
     // window literal above EXACTLY (8 spaces for the body, 6 for the
     // closing brace) so round-trip is byte-stable against forms that
     // were authored by hand and saved through this serializer.
-    const lines = a.modifyContentMappings
-      .map((m) => `        content.${m.targetField} = ${m.sourceExpr};`)
-      .join('\n');
-    parts.push(
-      `modifyContent: function (content, contact, report, event) {\n${lines}\n      }`,
+    //
+    // Drop rows whose targetField is empty — the UI can leave incomplete
+    // "+ Add mapping" rows in state; emitting `content. = …` would be
+    // syntactically invalid JS. The UI prevents this in v1 (the new
+    // mapping doesn't reach onChange until both fields have content),
+    // but the serializer also defends in depth.
+    const usable = a.modifyContentMappings.filter(
+      (m) => m.targetField.trim() !== '' && m.sourceExpr.trim() !== '',
     );
+    if (usable.length === 0) {
+      // All rows were empty — fall through to customModifyContent (or
+      // emit nothing if neither is set). Defensive: keeps a round-trip
+      // through a transient blank-row state from silently corrupting.
+      if (a.customModifyContent) parts.push(`modifyContent: ${a.customModifyContent}`);
+    } else {
+      const lines = usable
+        .map((m) => `        content.${m.targetField} = ${m.sourceExpr};`)
+        .join('\n');
+      // Preserve the original function arg list — real configs use
+      // both `function (content)` and the canonical 4-arg form;
+      // auto-inflating the short form rewrites bytes silently.
+      const args = a.modifyContentArgs ?? 'content, contact, report, event';
+      parts.push(
+        `modifyContent: function (${args}) {\n${lines}\n      }`,
+      );
+    }
   } else if (a.customModifyContent) {
     parts.push(`modifyContent: ${a.customModifyContent}`);
   }
@@ -269,9 +373,10 @@ function classify(action: TaskAction, key: string, raw: string): void {
       action.passesVisitWindow = true;
       return;
     }
-    const mappings = tryParseSimpleMappings(raw);
-    if (mappings) {
-      action.modifyContentMappings = mappings;
+    const parsed = tryParseSimpleMappingsFull(raw);
+    if (parsed) {
+      action.modifyContentMappings = parsed.mappings;
+      action.modifyContentArgs = parsed.args;
       return;
     }
     action.customModifyContent = raw;
