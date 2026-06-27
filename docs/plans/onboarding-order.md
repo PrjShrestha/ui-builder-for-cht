@@ -84,9 +84,15 @@ affordance with a warning.
    malaria are opt-in examples; `empty` de-emphasized + warned (§3).
 3. **Guide, don't gate** — warnings + readiness checklist, no hard blocks (§5), because the
    no-hierarchy failure mode is silent, not a crash (§2).
+4. **Contact-form generation is OFFERED, not auto** (user decision 2026-06-26). After the
+   author defines/edits their hierarchy, the editor offers — never forces — to generate the
+   create/edit contact forms for the defined types (configurable, per-type). The exact
+   generated structure + affordance are scoped + adversarially verified in
+   `contact-form-generator.md` (must match real CHT contact forms — contact_type-named top
+   group + init-group `select-contact` placement, NOT a nested parent chain).
 
-## 8. Open question
-Should step 3 (generate contact forms per type) be **automatic** on hierarchy-define, or an
-**offered** action ("Generate contact forms for your 3 types →")? Recommend *offered* — keeps
-the author in control and avoids surprising form generation, consistent with the "configurable,
-not forced" stance from the scaffold/lineage plans.
+## 8. Resolved (was open)
+Step 3 (generate contact forms per type) is **OFFERED, not automatic** (Decision 4) — keeps
+the author in control, consistent with the configurable-not-forced stance of the scaffold/
+lineage plans. The generator itself (what it emits per type, the affordance) is scoped in
+`contact-form-generator.md`.
