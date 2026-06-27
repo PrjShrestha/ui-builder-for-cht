@@ -1,0 +1,92 @@
+<!--
+Planner-locked plan: new-project onboarding order + starting point.
+Grounded against the templates (server/templates/*) and CHT docs (2026-06-26).
+-->
+
+# Plan: Onboarding order + new-project starting point
+
+**Version:** v0.1 — 2026-06-26 · **Status:** PLANNER-LOCKED, developer-ready.
+
+## 1. The recommended order (locked, matches CHT docs)
+**Hierarchy → contact forms (per type) → app forms → tasks.** Why:
+- **Hierarchy is the foundational dependency** — `contact_types` + `place_hierarchy_types`
+  define the people/place types everything else references.
+- **Contact forms are per contact-type** — a "person edit" form presupposes a `person` type.
+- **Tasks are scoped to contacts in the hierarchy** — they process contacts per the user's
+  position in the tree; a wrong hierarchy targets the wrong contacts.
+- **Changing the hierarchy after launch is disruptive** — every contact/report doc stores
+  ancestor IDs, so a later hierarchy change means rewriting all of them. Get it right first.
+  (CHT: "Set Hierarchy", "Configurable Hierarchies", "Task Schema Parameters".)
+
+## 2. Does CHT work without a hierarchy? (the nuance behind the guardrails)
+**It boots and runs** — CHT falls back to the legacy default hierarchy
+(`district_hospital → health_center → clinic → person`); `cht-conf`/deploy won't hard-fail
+on empty `contact_types`. **But** you're then stuck with default types, **can't create
+contacts in-app without contact forms**, and any form referencing an undefined type
+(`select-contact type-<x>`, lineage, task `appliesToType`) **fails silently** at runtime.
+So a hierarchy is **not a hard platform requirement but a practical one** — and because the
+failure is *silent default-fallback / unresolved refs* (not a crash), a non-technical author
+won't notice. **That is why we guide + warn rather than rely on errors.**
+
+## 3. Starting point — default to `blank`, NOT `cht-default` (the key decision)
+What each template actually ships (verified):
+
+| Template | contact_types | app forms | contact forms | Role |
+|---|---|---|---|---|
+| `empty` | 0 | 0 | 0 | the real trap (silent fallback) — **de-emphasize / warn** |
+| **`blank`** | **3** (district, health_facility, patient) | **0** | **0** | **DEFAULT** — foundation, no baggage |
+| `malaria` | 5 (district…chw…patient) | 0 | 0 | opt-in deeper hierarchy starter |
+| `cht-default` | 4 | 11 | 4 | the heavy baseline — opt-in "learn from an example", **not the default** |
+
+**Decision:** new projects default to **`blank`** — a starter hierarchy with **zero example
+forms**, which the author renames/extends in the Hierarchy editor to match their program.
+A new developer wants the *foundation* without inheriting the full CHT demo (11 app forms is
+confusing, not helpful). Offer `cht-default`/`malaria` as clearly-labelled
+"start from an example" options; surface `empty` only behind a "truly blank (advanced)"
+affordance with a warning.
+
+## 4. Guided new-project flow
+1. **Pick a starting point** — default `blank` (hierarchy seed); examples opt-in.
+2. **Hierarchy first** — land the author in the Hierarchy editor to rename/define their
+   contact types + levels (blank's district/health_facility/patient are placeholders).
+3. **Generate contact forms per type** — reuse `buildContactFormScaffold` (one create/edit
+   per defined type) so the hierarchy is actually populatable in-app.
+4. **Build app forms** — hierarchy now available for `select-contact`, the lineage block,
+   and properties `context.expression`.
+5. **Build tasks / contact-summary** — they reference forms + types defined above.
+
+## 5. Guardrails — guide, don't gate
+- **Do not hard-block** form-building on a defined hierarchy (kills cold-start; CHT runs
+  without one anyway).
+- **Forms-tab nudge** when `contact_types` is empty: *"No contact types defined yet — your
+  contact selectors, lineage blocks, and tasks won't have types to reference. Define your
+  hierarchy first →"* (links to the Hierarchy editor).
+- **Deploy-readiness checklist** before Deploy: hierarchy defined? a contact form per type?
+  app-form contact selectors / lineage / tasks reference *defined* types? `base_settings`
+  valid? — catches the silent-mismatch before it ships.
+- **Graceful empty-hierarchy handling** in the scaffold + lineage generator (the scaffold's
+  hardcoded `type-person` should degrade sanely when `person` isn't defined; lineage already
+  has the empty-hierarchy test).
+
+## 6. UI hooks
+- **`NewProjectWizard.tsx`** — default selection = `blank`; reorder the template list
+  (blank first; cht-default/malaria labelled "examples"); `empty` behind an advanced toggle
+  with a warning. (Templates via `GET /api/templates` + `createFromTemplate`.)
+- **`ProjectOverview.tsx`** — show the recommended order / a "next step" hint; the overview
+  already disables sections by file presence — add a "start with Hierarchy" cue on a fresh
+  project.
+- **Forms tab (`FormEditor`/`FormsIndex`)** — the empty-`contact_types` nudge.
+- **`DeployPanel.tsx`** — the readiness checklist.
+
+## 7. Decisions (locked 2026-06-26)
+1. **Order:** Hierarchy → contact forms → app forms → tasks (§1).
+2. **Default new-project template = `blank`** (hierarchy, no example forms); cht-default/
+   malaria are opt-in examples; `empty` de-emphasized + warned (§3).
+3. **Guide, don't gate** — warnings + readiness checklist, no hard blocks (§5), because the
+   no-hierarchy failure mode is silent, not a crash (§2).
+
+## 8. Open question
+Should step 3 (generate contact forms per type) be **automatic** on hierarchy-define, or an
+**offered** action ("Generate contact forms for your 3 types →")? Recommend *offered* — keeps
+the author in control and avoids surprising form generation, consistent with the "configurable,
+not forced" stance from the scaffold/lineage plans.
