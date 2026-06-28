@@ -1,0 +1,22 @@
+# Enforce LF line endings for all text files.
+#
+# Why this matters here: the round-trip invariant (docs/planner-handoff.md)
+# requires deterministic LF output from every serializer. Without this file,
+# Git's core.autocrlf=true rewrites the committed JSON fixtures to CRLF on a
+# Windows checkout, so the FHIR byte-stability tests (idempotence,
+# unknown-field preservation, provenance round-trip) compare the serializer's
+# LF output against CRLF fixtures and fail — even though CI on Linux stays
+# green. Pinning eol=lf keeps every checkout byte-identical to what CI sees.
+* text=auto eol=lf
+
+# Binary assets — never normalize or diff as text.
+*.xlsx binary
+*.xls binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
