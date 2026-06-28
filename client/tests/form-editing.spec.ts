@@ -513,38 +513,42 @@ test('§H3 follow-up — clicking a structural-issue jumps to the row, forces Fu
     await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
     await expect(page.locator('.survey-row').first()).toBeVisible();
 
-    // Full mode is needed to (a) add a group and (b) reach the end-group row
-    // so we can delete it. We'll switch back to Simple after to prove the
-    // jump auto-flips back to Full.
-    await page.getByRole('button', { name: 'Full', exact: true }).click();
+    // Seed an unbalanced survey. After §A2, every group renders as a folded
+    // accordion and the builder PREVENTS creating an imbalance (balanced
+    // insert + ungroup + the §A6 save guard) — so the only way a survey
+    // becomes unbalanced is loading a malformed form, which is exactly what
+    // the structural-issue jump exists to surface. Drop one `end group` row
+    // via the API (the client save guard is bypassed; the server does not
+    // re-balance), then reload so the editor re-parses an unbalanced survey.
+    const got = await request.get('http://127.0.0.1:5174/api/forms/app:pregnancy');
+    const body = (await got.json()) as {
+      form: { survey: Array<{ type: string; name?: string; labels?: unknown; extras?: unknown }> };
+      properties?: unknown;
+    };
+    // Append a dangling `begin group` at the very END — an unclosed group with
+    // nothing after it. This unbalances the survey (→ structural issue) while
+    // leaving every real question renderable in Simple mode: none of them fall
+    // inside the unclosed group, so the editor still shows survey rows. (Removing
+    // an existing end-group instead would leave the trailing rows "inside" the
+    // never-closed group, which computeSimpleHiddenRowIds hides entirely.)
+    body.form.survey.push({ type: 'begin group', name: 'orphan_block', labels: {}, extras: {} });
+    const put = await request.put('http://127.0.0.1:5174/api/forms/app:pregnancy', {
+      data: { form: body.form, properties: body.properties ?? null },
+    });
+    expect(put.ok()).toBeTruthy();
 
-    // Seed a balanced "triage" group.
-    await page.getByRole('button', { name: '+ Question' }).click();
-    const picker = page.locator('.qtype-modal');
-    await picker
-      .locator('input[placeholder*="has_fever"], input[placeholder*="patient_age"]')
-      .first()
-      .fill('triage');
-    await picker
-      .locator('.qtype-tile')
-      .filter({ has: page.locator('.qtype-tile-label', { hasText: /^Group$/ }) })
-      .click();
-    await expect(picker).not.toBeVisible();
-
-    // Delete ONLY the end row so the begin is left dangling — unbalanced.
-    const endRow = page
-      .locator('.survey-row')
-      .filter({ has: page.locator('code.type-chip-raw', { hasText: /^end group$/ }) });
-    await expect(endRow).toHaveCount(1);
-    await endRow.getByRole('button', { name: /delete/i }).click();
-
-    // The structural-issues badge MUST appear once the survey goes unbalanced.
+    // Reload — the form now parses as unbalanced, in the default Simple mode
+    // (so the jump has something to auto-flip away from).
+    await page.goto('/');
+    await page.locator('.nav-item', { hasText: 'Forms' }).click();
+    await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+    await expect(page.locator('.survey-row').first()).toBeVisible();
+    // The structural-issues badge appears for the unbalanced survey.
     const badge = page.locator('.page-header .badge.danger');
     await expect(badge).toBeVisible();
 
-    // Switch back to Simple so we can prove the jump auto-flips to Full.
+    // Start in Simple so the jump's auto-flip to Full is observable.
     await page.getByRole('button', { name: 'Simple', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Simple', exact: true })).toHaveClass(/active/);
 
     // Open the popover and click the first issue (the "Row N" jump button).
     await badge.click();
