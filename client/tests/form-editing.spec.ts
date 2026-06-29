@@ -116,6 +116,48 @@ test('choices — add, rename label, and remove options on the danger-signs mult
   await expect(page.getByText('blurred_vision', { exact: true })).toHaveCount(0);
 });
 
+test('choices — rename a list from the Choices tab updates the survey row type AND the choices', async ({
+  page,
+}) => {
+  await openPregnancy(page);
+  // Confirm the danger_signs select_multiple is bound to the danger_signs list
+  // BEFORE renaming.
+  await expect(rowByType(page, /^select_multiple danger_signs$/)).toBeVisible();
+
+  await page.getByRole('button', { name: /^Choices/ }).click();
+  const choicesTab = page.locator('.choices-tab');
+  const dangerSection = choicesTab
+    .locator('section.choice-list')
+    .filter({ has: page.locator('h3', { hasText: 'danger_signs' }) });
+  await expect(dangerSection).toBeVisible();
+
+  // Click "rename", fill the new name, accept the confirm.
+  await dangerSection.getByRole('button', { name: 'rename' }).click();
+  await dangerSection.locator('input[aria-label="Rename list danger_signs"]').fill('warning_signs');
+  page.once('dialog', (d) => {
+    expect(d.message()).toContain('warning_signs');
+    void d.accept();
+  });
+  await dangerSection.getByRole('button', { name: 'save' }).click();
+
+  // The header is now `warning_signs`; the old section is gone.
+  await expect(
+    choicesTab
+      .locator('section.choice-list')
+      .filter({ has: page.locator('h3', { hasText: 'warning_signs' }) }),
+  ).toBeVisible();
+  await expect(
+    choicesTab
+      .locator('section.choice-list')
+      .filter({ has: page.locator('h3', { hasText: 'danger_signs' }) }),
+  ).toHaveCount(0);
+
+  // Back on the Survey tab the bound row's type rewrites to the new list.
+  await page.getByRole('button', { name: /^Survey/ }).click();
+  await expect(rowByType(page, /^select_multiple warning_signs$/)).toBeVisible();
+  await expect(rowByType(page, /^select_multiple danger_signs$/)).toHaveCount(0);
+});
+
 /* ===================== 2. Editing labels + translations ===================== */
 
 test('labels — inline edit propagates to the Translate tab; filling a missing translation lowers the count', async ({

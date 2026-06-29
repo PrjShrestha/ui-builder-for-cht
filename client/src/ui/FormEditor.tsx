@@ -45,6 +45,8 @@ import {
   planSurveyMove,
   planUngroup,
   defaultInsertIndex,
+  extractListName,
+  renameListInType,
   type StructuralViolation,
   type FieldKind,
   type OrderingViolation,
@@ -2825,6 +2827,56 @@ function ChoicesTab(props: {
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+  // Inline rename for a choice list header. Mirrors InlineChoicesEditor's
+  // commitRename — same token-aware rewrite via renameListInType + matching
+  // ChoiceRow.list_name update, but anchored at the ChoicesTab header
+  // (the inline editor only sees ONE row at a time).
+  const [renamingList, setRenamingList] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState<string>('');
+
+  function commitListRename(oldName: string) {
+    const target = renameDraft.trim();
+    if (!target || target === oldName) {
+      setRenamingList(null);
+      return;
+    }
+    // Collision check — duplicating an existing list name would silently
+    // merge two unrelated choice sets into one. Block with an alert; the
+    // user must pick a different name.
+    const otherLists = grouped
+      .map((g) => g.list_name)
+      .filter((l) => l !== oldName);
+    if (otherLists.includes(target)) {
+      // eslint-disable-next-line no-undef
+      window.alert(
+        `A list named "${target}" already exists. Pick a different name.`,
+      );
+      return;
+    }
+    const usingRows = form.survey.filter(
+      (r) => extractListName(r.type) === oldName,
+    );
+    const matchingChoices = form.choices.filter((c) => c.list_name === oldName);
+    if (usingRows.length > 0 || matchingChoices.length > 0) {
+      // eslint-disable-next-line no-undef
+      const ok = window.confirm(
+        `Rename "${oldName}" → "${target}"? This updates ${usingRows.length} question${usingRows.length === 1 ? '' : 's'} and ${matchingChoices.length} choice${matchingChoices.length === 1 ? '' : 's'}. Undoable until save.`,
+      );
+      if (!ok) return;
+    }
+    patch({
+      ...form,
+      survey: form.survey.map((r) =>
+        extractListName(r.type) === oldName
+          ? { ...r, type: renameListInType(r.type, oldName, target) }
+          : r,
+      ),
+      choices: form.choices.map((c) =>
+        c.list_name === oldName ? { ...c, list_name: target } : c,
+      ),
+    });
+    setRenamingList(null);
+  }
 
   function onChoiceDragEnd(e: DragEndEvent) {
     const { active, over } = e;
@@ -2890,7 +2942,41 @@ function ChoicesTab(props: {
         {grouped.map((g) => (
           <section key={g.list_name} className="choice-list">
             <header className="row gap">
-              <h3>{g.list_name}</h3>
+              {renamingList === g.list_name ? (
+                <>
+                  <input
+                    value={renameDraft}
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitListRename(g.list_name);
+                      if (e.key === 'Escape') setRenamingList(null);
+                    }}
+                    placeholder="new list name"
+                    aria-label={`Rename list ${g.list_name}`}
+                  />
+                  <button className="link" onClick={() => commitListRename(g.list_name)}>
+                    save
+                  </button>
+                  <button className="link" onClick={() => setRenamingList(null)}>
+                    cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <h3>{g.list_name}</h3>
+                  <button
+                    className="link"
+                    onClick={() => {
+                      setRenameDraft(g.list_name);
+                      setRenamingList(g.list_name);
+                    }}
+                    title="Rename this list (trailing tokens like or_other are preserved)"
+                  >
+                    rename
+                  </button>
+                </>
+              )}
               <button className="link" onClick={() => addChoice(g.list_name)}>
                 + choice
               </button>
