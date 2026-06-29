@@ -6,7 +6,11 @@
  * and forms/contact/place-types.json.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { deriveHierarchyOrder, nudgeHierarchyPosition } from '@cht-ui/shared';
+import {
+  deriveHierarchyOrder,
+  nudgeHierarchyPosition,
+  slugifyHierarchyId,
+} from '@cht-ui/shared';
 import { api } from '../api.js';
 import { useApp } from '../state/store.js';
 import { useHistory } from '../state/useHistory.js';
@@ -137,10 +141,19 @@ export function HierarchyEditor() {
     }
   }
 
-  const treeRoots = useMemo(() => {
-    if (!data) return [];
-    return buildTree(data.contact_types);
-  }, [data]);
+  // Two-section split: persons are rendered as a flat list (they're leaves
+  // and re-sorting them ahead of their parent would misrepresent the
+  // indented chain). The places tree stays as it was — buildTree just gets
+  // the place subset so the chain doesn't get a duplicate person row.
+  const placeTypes = useMemo(
+    () => (data ? data.contact_types.filter((t) => t.person !== true) : []),
+    [data],
+  );
+  const personTypes = useMemo(
+    () => (data ? data.contact_types.filter((t) => t.person === true) : []),
+    [data],
+  );
+  const treeRoots = useMemo(() => buildTree(placeTypes), [placeTypes]);
 
   const selected = data?.contact_types.find((t) => t.id === selectedId) ?? null;
 
@@ -152,7 +165,6 @@ export function HierarchyEditor() {
       <header className="page-header sticky-header">
         <h1>Hierarchy</h1>
         <div className="row gap">
-          <button onClick={() => setAdding(true)}>+ Type</button>
           <button
             className="secondary"
             onClick={() => setGeneratorOpen(true)}
@@ -240,20 +252,57 @@ export function HierarchyEditor() {
       </div>
       <div className="hierarchy-grid">
         <section className="tree-pane">
-          <h3>Contact types ({data.contact_types.length})</h3>
+          <header className="tree-pane-header">
+            <h3>Contact types ({data.contact_types.length})</h3>
+            <button onClick={() => setAdding(true)}>+ Add type</button>
+          </header>
           {data.contact_types.length === 0 ? (
             <QuickHierarchyEmptyCTA onStart={() => setQuickOpen(true)} />
           ) : (
-            <ul className="tree">
-              {treeRoots.map((node) => (
-                <TreeNode
-                  key={node.id}
-                  node={node}
-                  onSelect={setSelectedId}
-                  selectedId={selectedId}
-                />
-              ))}
-            </ul>
+            <>
+              {personTypes.length > 0 && (
+                <div className="tree-section">
+                  <h4 className="tree-section-heading">
+                    People <span className="muted">({personTypes.length})</span>
+                  </h4>
+                  <ul className="tree people-list">
+                    {personTypes.map((p) => (
+                      <li key={p.id}>
+                        <button
+                          className={`tree-row${selectedId === p.id ? ' active' : ''} person`}
+                          onClick={() => setSelectedId(p.id)}
+                        >
+                          <span className="tree-icon">👤</span>
+                          <span className="tree-id">{p.id}</span>
+                          {p.parents && p.parents.length > 0 && (
+                            <span className="muted small">
+                              under {p.parents.join(', ')}
+                            </span>
+                          )}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {placeTypes.length > 0 && (
+                <div className="tree-section">
+                  <h4 className="tree-section-heading">
+                    Places <span className="muted">({placeTypes.length})</span>
+                  </h4>
+                  <ul className="tree">
+                    {treeRoots.map((node) => (
+                      <TreeNode
+                        key={node.id}
+                        node={node}
+                        onSelect={setSelectedId}
+                        selectedId={selectedId}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
           )}
         </section>
         <section className="detail-pane">
@@ -511,22 +560,49 @@ function ContactTypeDetail(props: {
           placeholder="medic-clinic"
         />
       </label>
-      <label className="row gap">
-        <input
-          type="checkbox"
-          checked={type.person === true}
-          onChange={(e) => props.onChange({ person: e.target.checked })}
-        />
-        <span>Person type (vs place)</span>
-      </label>
-      <label className="row gap">
-        <input
-          type="checkbox"
-          checked={type.count_visits === true}
-          onChange={(e) => props.onChange({ count_visits: e.target.checked })}
-        />
-        <span>Count visits (place-level)</span>
-      </label>
+      <fieldset className="type-kind-fieldset">
+        <legend>Type kind</legend>
+        <label className="row gap">
+          <input
+            type="radio"
+            name={`type-kind-${type.id}`}
+            checked={type.person !== true}
+            onChange={() => props.onChange({ person: false })}
+          />
+          <span>
+            <strong>Place</strong>
+            <em className="muted small"> — a facility or area (e.g. District, Health Facility)</em>
+          </span>
+        </label>
+        <label className="row gap">
+          <input
+            type="radio"
+            name={`type-kind-${type.id}`}
+            checked={type.person === true}
+            onChange={() => props.onChange({ person: true })}
+          />
+          <span>
+            <strong>Person</strong>
+            <em className="muted small"> — personnel or someone in care (e.g. CHW, Patient)</em>
+          </span>
+        </label>
+      </fieldset>
+      {/* `count_visits` is a real CHT setting that puts a visit count +
+          "last visited" on a place's profile. Meaningless on persons —
+          only surface it for places (plan §4). */}
+      {type.person !== true && (
+        <label
+          className="row gap"
+          title="Shows a visit count and 'last visited' on the contact's profile (CHT count_visits)."
+        >
+          <input
+            type="checkbox"
+            checked={type.count_visits === true}
+            onChange={(e) => props.onChange({ count_visits: e.target.checked })}
+          />
+          <span>Track visits on this place's profile</span>
+        </label>
+      )}
       <label>
         <span>name_key</span>
         <input
@@ -580,12 +656,25 @@ function AddTypeForm(props: {
   onCancel: () => void;
   onCommit: (newType: ContactType) => void;
 }) {
-  const [id, setId] = useState('');
+  // The user types a friendly NAME; we derive the ASCII id via the same
+  // `slugifyHierarchyId` helper the Quick Hierarchy Creator uses (plan
+  // doc DEV-HANDOFF #4 §2 — consistency fix). The two entry points
+  // disagreed pre-fix: AddTypeForm hard-rejected anything not matching
+  // `/^[a-z][a-z0-9_]*$/`, dead-ending on "Fchv Person".
+  const [name, setName] = useState('');
+  const [explicitId, setExplicitId] = useState('');
   const [isPerson, setIsPerson] = useState(false);
   const [parentId, setParentId] = useState<string>('');
-  const duplicate = props.existingIds.includes(id);
-  const validId = /^[a-z][a-z0-9_]*$/.test(id);
-  const canCommit = id !== '' && validId && !duplicate;
+
+  // Resolve the actual id we'd write — explicit wins, else slugify the
+  // typed name. Empty derivation happens when the name is all non-ASCII
+  // (Devanagari etc.); in that case the user MUST supply an explicit id.
+  const derivedFromName = slugifyHierarchyId(name.trim());
+  const id = (explicitId.trim() || derivedFromName).trim();
+  const validIdShape = /^[a-z][a-z0-9_]*$/.test(id);
+  const duplicate = id !== '' && props.existingIds.includes(id);
+  const needsExplicit = name.trim() !== '' && derivedFromName === '' && explicitId.trim() === '';
+  const canCommit = id !== '' && validIdShape && !duplicate && !needsExplicit;
 
   function commit() {
     if (!canCommit) return;
@@ -624,32 +713,69 @@ function AddTypeForm(props: {
         </div>
         <div style={{ padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
           <label className="qtype-name-field">
-            <span>Type id</span>
+            <span>Name</span>
             <input
               autoFocus
-              value={id}
-              onChange={(e) => setId(e.target.value)}
-              placeholder="e.g. ward, chw, patient"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Ward, CHW, Patient"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && canCommit) commit();
               }}
             />
             <span className="muted small">
-              Lowercase letters, digits, underscores. Used in app_settings + form references.
-              {duplicate && <strong style={{ color: '#dc2626' }}> — already exists</strong>}
-              {id && !validId && !duplicate && (
-                <strong style={{ color: '#dc2626' }}> — invalid id</strong>
+              {id ? (
+                <>
+                  saved as <code>{id}</code>
+                </>
+              ) : (
+                <>Friendly label — we'll derive the id.</>
+              )}
+              {duplicate && (
+                <strong style={{ color: '#dc2626' }}> — already exists</strong>
               )}
             </span>
           </label>
-          <label className="row gap">
-            <input
-              type="checkbox"
-              checked={isPerson}
-              onChange={(e) => setIsPerson(e.target.checked)}
-            />
-            <span>Person type (e.g. CHW, patient) — leave unchecked for a place</span>
-          </label>
+          {needsExplicit && (
+            <label className="qtype-name-field">
+              <span>Explicit id (ASCII)</span>
+              <input
+                value={explicitId}
+                onChange={(e) => setExplicitId(e.target.value)}
+                placeholder="ascii_id"
+              />
+              <span className="muted small">
+                The name has no ASCII letters — set an id (lowercase letters, digits, underscores).
+              </span>
+            </label>
+          )}
+          <fieldset className="row gap" style={{ border: 0, padding: 0, margin: 0, gap: 12 }}>
+            <legend className="sr-only">Type kind</legend>
+            <label className="row gap">
+              <input
+                type="radio"
+                name="add-type-kind"
+                checked={!isPerson}
+                onChange={() => setIsPerson(false)}
+              />
+              <span>
+                <strong>Place</strong>
+                <em className="muted small"> — a facility or area (e.g. District, Health Facility)</em>
+              </span>
+            </label>
+            <label className="row gap">
+              <input
+                type="radio"
+                name="add-type-kind"
+                checked={isPerson}
+                onChange={() => setIsPerson(true)}
+              />
+              <span>
+                <strong>Person</strong>
+                <em className="muted small"> — personnel or someone in care (e.g. CHW, Patient)</em>
+              </span>
+            </label>
+          </fieldset>
           <label className="qtype-name-field">
             <span>Parent (optional)</span>
             <select value={parentId} onChange={(e) => setParentId(e.target.value)}>
