@@ -37,6 +37,14 @@ entry points disagree.
 - Commit uses the derived id (the rest of `commit()` at `:590–604` is unchanged —
   `create_form`/`edit_form` etc. already key off `id`).
 
+> **REVISED 2026-06-28 (pm) — SUPERSEDES THIS §3.** The two-section People/Places
+> split below was built (`cdb36b0`), but the PO then decided against it. **Final
+> decision: nest each person type as a leaf under its parent place in ONE unified
+> tree** — drop the separate People section, keep the 👤/🏠 icons, and list a
+> parent's person-children before its child place. `buildTree`
+> (`HierarchyEditor.tsx:412–433`) already nests by `parents[0]`; this is mostly
+> removing the section wrapper `cdb36b0` added + a sibling sort.
+
 ## 3. Surface person types — but NOT by re-sorting the indented tree
 **Request:** "always sort person type first, then place types" (arrow at the
 left tree).
