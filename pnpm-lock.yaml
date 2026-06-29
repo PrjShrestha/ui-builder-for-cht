@@ -100,8 +100,8 @@ importers:
         specifier: ^8.0.3
         version: 8.3.0
       cht-conf:
-        specifier: ^6.4.1
-        version: 6.4.1
+        specifier: ^6.5.0
+        version: 6.5.0
       fastify:
         specifier: ^5.1.0
         version: 5.8.5
@@ -1540,8 +1540,8 @@ packages:
     resolution: {integrity: sha512-rNjApaLzuwaOTjCiT8lSDdGN1APCiqkChLMJxJPWLunPAt5fy8xgU9/jNOchV84wfIxrA0lRQB7oCT8jrn/wrQ==}
     engines: {node: '>=6.0'}
 
-  cht-conf@6.4.1:
-    resolution: {integrity: sha512-NSOyBNFhw0ENveeZOcXa8gZh1fo0xT6hdAdKpmZYJPJGTDLJol6mrsVOov/a3NEA8PS+56wGs7JyyffRx+xmjA==}
+  cht-conf@6.5.0:
+    resolution: {integrity: sha512-XiMY/LdZ+GpOtNsWEx7swF7pNZzrNXh65iraAYuV4evMNy2/fkv4Ib03uPRRGJmkCRy+O7FJZ3fE1icE65RPjg==}
     engines: {node: '>=20.0.0'}
     hasBin: true
 
@@ -5077,7 +5077,7 @@ snapshots:
 
   chrome-trace-event@1.0.4: {}
 
-  cht-conf@6.4.1:
+  cht-conf@6.5.0:
     dependencies:
       '@medic/translation-checker': 1.1.0
       '@parcel/watcher': 2.5.6
