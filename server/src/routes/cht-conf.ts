@@ -13,6 +13,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
 import os from 'node:os';
+import http from 'node:http';
+import https from 'node:https';
 import { getProjectPath, getDeployConfig, setDeployConfig, type DeployConfig } from '../state.js';
 import { matchErrorPattern } from '../cht-conf/errorPatterns.js';
 import { isDryRunEnabled, runDryRun } from '../cht-conf/dryRun.js';
@@ -43,7 +45,7 @@ const ACTION_CATALOG: ActionMeta[] = [
   { name: 'validate-contact-forms',  category: 'validate', requiresInstance: false, dangerous: false, label: 'Validate contact forms' },
   { name: 'validate-collect-forms',  category: 'validate', requiresInstance: false, dangerous: false, label: 'Validate Collect forms' },
   { name: 'validate-training-forms', category: 'validate', requiresInstance: false, dangerous: false, label: 'Validate training forms' },
-  { name: 'check-for-updates',       category: 'validate', requiresInstance: true,  dangerous: false, label: 'Check for updates' },
+  { name: 'check-for-updates',       category: 'validate', requiresInstance: true,  dangerous: false, label: 'Check cht-conf version' },
   { name: 'check-git',               category: 'validate', requiresInstance: false, dangerous: false, label: 'Check git status' },
   // compile
   { name: 'compile-app-settings',    category: 'compile', requiresInstance: false, dangerous: false, label: 'Compile app settings' },
@@ -271,6 +273,144 @@ function attachStreams(state: RunState, child: ChildProcess): void {
   });
 }
 
+/**
+ * Direct connection probe — bypass cht-conf entirely. The UI's "Test
+ * connection" button used to run `cht-conf check-for-updates`, but that
+ * action's whole job is to fail when the local cht-conf binary is behind
+ * the latest published version — every cht-conf release breaks the
+ * editor's connection test, even when the instance itself is reachable.
+ *
+ * Probe target is CHT's `/api/info` endpoint: returns version JSON on a
+ * 200, gates on basic-auth credentials, doesn't touch cht-conf. Self-
+ * signed certs (the `*.local-ip.medicmobile.org` dev pattern) are
+ * accepted — this is a connection test, not a TLS verification.
+ */
+interface ConnectionProbeResult {
+  ok: boolean;
+  status?: number;
+  /** Reachable + authenticated; CHT version reported by /api/info. */
+  version?: string;
+  /** Couch backing version reported by /api/info. */
+  couchVersion?: string;
+  /** Diagnostic message — populated on failure (and sometimes on success). */
+  error?: string;
+  /** The URL probed, with the password replaced by `***`. Echoed back so
+   *  the UI can show the user exactly what it tried. */
+  redactedUrl: string;
+}
+
+function probeConnection(
+  targetUrl: string,
+  user: string | undefined,
+  password: string | undefined,
+): Promise<ConnectionProbeResult> {
+  let parsed: URL;
+  try {
+    parsed = new URL('/api/info', targetUrl);
+  } catch (e) {
+    return Promise.resolve({
+      ok: false,
+      error: `Bad URL: ${(e as Error).message}`,
+      redactedUrl: targetUrl,
+    });
+  }
+  const isHttps = parsed.protocol === 'https:';
+  const auth = user ? `${user}:${password ?? ''}` : undefined;
+  // Build a redacted form of the same URL for the UI to display back.
+  const redacted = (() => {
+    const c = new URL(parsed.toString());
+    if (user) c.username = encodeURIComponent(user);
+    if (password) c.password = '***';
+    return c.toString();
+  })();
+
+  return new Promise<ConnectionProbeResult>((resolve) => {
+    const opts: https.RequestOptions = {
+      method: 'GET',
+      hostname: parsed.hostname,
+      port: parsed.port || (isHttps ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      auth,
+      // Local CHT instances ship self-signed certs against host names
+      // like `127-0-0-1.local-ip.medicmobile.org` — this is a connection
+      // probe, not a TLS guarantee, so don't reject on cert mismatch.
+      ...(isHttps ? { rejectUnauthorized: false } : {}),
+    };
+    const client = isHttps ? https : http;
+    const req = client.request(opts, (res) => {
+      let body = '';
+      res.on('data', (chunk) => (body += String(chunk)));
+      res.on('end', () => {
+        const status = res.statusCode ?? 0;
+        if (status >= 200 && status < 300) {
+          try {
+            const j = JSON.parse(body) as { version?: string; couchVersion?: string };
+            resolve({
+              ok: true,
+              status,
+              version: j.version,
+              couchVersion: j.couchVersion,
+              redactedUrl: redacted,
+            });
+          } catch {
+            // 2xx but non-JSON body — count as reachable but no version metadata.
+            resolve({ ok: true, status, redactedUrl: redacted });
+          }
+        } else if (status === 401) {
+          resolve({
+            ok: false,
+            status,
+            error: 'Authentication failed (HTTP 401). Check the user + password.',
+            redactedUrl: redacted,
+          });
+        } else if (status === 404) {
+          resolve({
+            ok: false,
+            status,
+            error:
+              'Reached the host but /api/info returned 404 — is the URL pointing at a CHT instance?',
+            redactedUrl: redacted,
+          });
+        } else {
+          resolve({
+            ok: false,
+            status,
+            error: `HTTP ${status}${body ? `: ${body.slice(0, 200)}` : ''}`,
+            redactedUrl: redacted,
+          });
+        }
+      });
+    });
+    req.on('error', (err) => {
+      const msg = (err as Error).message ?? String(err);
+      resolve({
+        ok: false,
+        error: msg.includes('ENOTFOUND')
+          ? 'Host not found — check the URL.'
+          : msg.includes('ECONNREFUSED')
+            ? 'Connection refused — is the instance running and reachable on this network?'
+            : msg,
+        redactedUrl: redacted,
+      });
+    });
+    req.setTimeout(10_000, () => {
+      req.destroy(new Error('Request timed out after 10s'));
+    });
+    req.end();
+  });
+}
+
+/** Resolve the deploy config to a base URL the probe can hit. */
+function deployTargetBaseUrl(cfg: DeployConfig | null): string | null {
+  if (!cfg) return null;
+  if (cfg.target === 'local') return 'http://localhost:5988';
+  if (cfg.target === 'instance' && cfg.instance) {
+    return `https://${cfg.instance}.dev.medicmobile.org`;
+  }
+  if (cfg.target === 'url' && cfg.url) return cfg.url;
+  return null;
+}
+
 export async function registerChtConfRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/cht-conf/actions', async () => {
     return {
@@ -283,6 +423,21 @@ export async function registerChtConfRoutes(app: FastifyInstance): Promise<void>
   app.get('/api/cht-conf/config', async () => {
     return { config: (await getDeployConfig()) ?? null };
   });
+
+  app.post<{ Body: { password?: string } }>(
+    '/api/cht-conf/test-connection',
+    async (req, reply) => {
+      const cfg = (await getDeployConfig()) ?? null;
+      const baseUrl = deployTargetBaseUrl(cfg);
+      if (!baseUrl) {
+        return reply.code(400).send({
+          ok: false,
+          error: 'No deploy target configured — pick --local, --instance, or --url first.',
+        } satisfies Partial<ConnectionProbeResult>);
+      }
+      return await probeConnection(baseUrl, cfg!.user, req.body?.password);
+    },
+  );
 
   app.put<{ Body: DeployConfig }>('/api/cht-conf/config', async (req) => {
     await setDeployConfig(req.body);

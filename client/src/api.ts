@@ -99,6 +99,24 @@ export const api = {
       body: JSON.stringify(config),
     }),
 
+  /**
+   * Direct connection probe — hits the deploy target's `/api/info`
+   * endpoint with basic auth. Bypasses cht-conf, so it doesn't break
+   * every time cht-conf publishes a new release.
+   */
+  testConnection: (password: string) =>
+    jsonFetch<{
+      ok: boolean;
+      status?: number;
+      version?: string;
+      couchVersion?: string;
+      error?: string;
+      redactedUrl: string;
+    }>('/api/cht-conf/test-connection', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+
   runChtConfAction: (action: string, password?: string, extraArgs?: string[], dryRun?: boolean) =>
     jsonFetch<{ ok: true; runId: string; dryRun?: boolean }>('/api/cht-conf/run', {
       method: 'POST',

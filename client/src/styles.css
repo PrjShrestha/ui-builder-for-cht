@@ -2143,6 +2143,13 @@ code {
 .deploy-target.card { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 .deploy-target label { display: flex; align-items: center; gap: 6px; }
 .deploy-target h3, .deploy-category h3, .deploy-log h3 { margin: 0 0 6px; }
+.deploy-test-result {
+  padding: 8px 12px; border-radius: 4px; font-size: 14px; line-height: 1.4;
+}
+.deploy-test-result.ok { background: #dcfce7; color: #166534; }
+.deploy-test-result.fail { background: #fee2e2; color: #7f1d1d; }
+.deploy-test-result code { background: rgba(0, 0, 0, 0.06); padding: 1px 4px; border-radius: 3px; }
+.deploy-test-result .muted { color: inherit; opacity: 0.75; }
 .deploy-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));

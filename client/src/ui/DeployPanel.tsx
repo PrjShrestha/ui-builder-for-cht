@@ -113,8 +113,42 @@ export function DeployPanel() {
   const [running, setRunning] = useState(false);
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Inline result of the Test-connection probe. Tracked separately from
+  // the cht-conf run log so the user can see the auth/version result
+  // even after they start an unrelated action and the log scrolls.
+  const [connectionResult, setConnectionResult] = useState<
+    | null
+    | {
+        ok: boolean;
+        status?: number;
+        version?: string;
+        couchVersion?: string;
+        error?: string;
+        redactedUrl: string;
+        at: number;
+      }
+  >(null);
+  const [testingConnection, setTestingConnection] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  async function runTestConnection(): Promise<void> {
+    setTestingConnection(true);
+    setConnectionResult(null);
+    try {
+      const r = await api.testConnection(password);
+      setConnectionResult({ ...r, at: Date.now() });
+    } catch (e) {
+      setConnectionResult({
+        ok: false,
+        error: (e as Error).message,
+        redactedUrl: '',
+        at: Date.now(),
+      });
+    } finally {
+      setTestingConnection(false);
+    }
+  }
 
   useEffect(() => {
     void api.chtConfActions().then((r) => {
@@ -312,10 +346,9 @@ export function DeployPanel() {
         password={password}
         onChangePassword={setPassword}
         onChangeConfig={saveConfig}
-        onTestConnection={() => {
-          const a = actions.find((x) => x.name === 'check-for-updates');
-          if (a) void runAction(a);
-        }}
+        onTestConnection={() => void runTestConnection()}
+        testingConnection={testingConnection}
+        connectionResult={connectionResult}
       />
 
       {/* Onboarding §5 — deploy-readiness checklist. Non-blocking; the
@@ -507,6 +540,16 @@ function DeployTargetForm(props: {
   onChangePassword: (v: string) => void;
   onChangeConfig: (c: DeployConfig) => void;
   onTestConnection: () => void;
+  testingConnection: boolean;
+  connectionResult: null | {
+    ok: boolean;
+    status?: number;
+    version?: string;
+    couchVersion?: string;
+    error?: string;
+    redactedUrl: string;
+    at: number;
+  };
 }) {
   const { config } = props;
   if (!config) return <p className="muted">Loading deploy config…</p>;
@@ -576,13 +619,51 @@ function DeployTargetForm(props: {
         </label>
       </div>
       <div className="row gap">
-        <button onClick={props.onTestConnection} className="secondary">
-          🔌 Test connection
+        <button
+          onClick={props.onTestConnection}
+          className="secondary"
+          disabled={props.testingConnection}
+        >
+          {props.testingConnection ? 'Testing…' : '🔌 Test connection'}
         </button>
         <span className="muted small">
-          Runs <code>cht --local check-for-updates</code> (or with your --url / --instance) and reports back in the log.
+          Hits <code>&lt;target&gt;/api/info</code> directly with your user + password
+          — no cht-conf, no version gate.
         </span>
       </div>
+      {props.connectionResult && (
+        <div
+          className={`deploy-test-result ${props.connectionResult.ok ? 'ok' : 'fail'}`}
+          role="status"
+        >
+          {props.connectionResult.ok ? (
+            <>
+              <strong>✓ Connection OK.</strong>{' '}
+              {props.connectionResult.version && (
+                <>
+                  CHT version <code>{props.connectionResult.version}</code>
+                  {props.connectionResult.couchVersion && (
+                    <>
+                      {' '}
+                      / CouchDB <code>{props.connectionResult.couchVersion}</code>
+                    </>
+                  )}
+                  .
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <strong>✗ Could not connect.</strong> {props.connectionResult.error}
+            </>
+          )}
+          {props.connectionResult.redactedUrl && (
+            <div className="muted small">
+              probed <code>{props.connectionResult.redactedUrl}</code>
+            </div>
+          )}
+        </div>
+      )}
       <p className="muted small">
         Password is held in memory only, not saved to disk. Target + user persist in
         <code> ~/.cht-ui-builder/state.json</code>.
