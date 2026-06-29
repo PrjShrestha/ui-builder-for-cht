@@ -43,6 +43,13 @@ async function readJson<T>(p: string): Promise<T | null> {
 }
 
 async function writeJson(p: string, value: unknown): Promise<void> {
+  // Ensure the parent dir exists before the atomic-write (.tmp + rename).
+  // The hierarchy editor writes `forms/contact/place-types.json` even on
+  // projects where `forms/contact/` doesn't exist yet — typically the
+  // empty-template / Quick-hierarchy-creator flow. Without the mkdir the
+  // `fs.writeFile(tmp, …)` throws ENOENT and base_settings.json has
+  // already been updated, leaving a partially-saved hierarchy on disk.
+  await fs.mkdir(path.dirname(p), { recursive: true });
   const tmp = `${p}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(value, null, 2), 'utf8');
   await fs.rename(tmp, p);

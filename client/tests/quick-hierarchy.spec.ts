@@ -43,12 +43,12 @@ async function openEmptyTempProject(
   settings.place_hierarchy_types = [];
   await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
 
-  const placeTypesPath = path.join(tmpProject, 'forms', 'contact', 'place-types.json');
-  try {
-    await fs.writeFile(placeTypesPath, JSON.stringify({}, null, 2));
-  } catch {
-    /* file may not exist on a fresh fixture; ignore */
-  }
+  // Delete the WHOLE forms/contact/ dir to simulate a truly-empty project
+  // — `place-types.json` AND its parent directory are missing. This
+  // exercises the `writeJson` mkdir-before-write path; otherwise the
+  // ENOENT bug (writing to a missing dir) would slip past e2e.
+  const formsContactDir = path.join(tmpProject, 'forms', 'contact');
+  await fs.rm(formsContactDir, { recursive: true, force: true });
 
   const opened = await request.post('http://127.0.0.1:5174/api/project/open', {
     data: { path: tmpProject },
