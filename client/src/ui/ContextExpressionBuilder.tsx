@@ -19,6 +19,19 @@ import {
   type ContactFormFields,
 } from './FieldPicker.js';
 
+/**
+ * A contact type as known to the project's hierarchy. Threaded down from
+ * FormEditor → PropertiesEditor → ContextExpressionBuilder so the
+ * "Contact type is" dropdown reflects the project's actual types instead
+ * of the legacy hardcoded four. `displayName` is the friendly
+ * place-types-display label when available; falls back to the id.
+ */
+export interface ContextContactType {
+  id: string;
+  person?: boolean;
+  displayName?: string;
+}
+
 interface Props {
   value: string;
   onChange: (next: string) => void;
@@ -26,6 +39,19 @@ interface Props {
   summaryFlags?: string[];
   /** Optional contact forms whose fields populate the `contact_field` picker. */
   contactForms?: ContactFormFields[];
+  /** Project's parsed `contact_types` from base_settings.json. When provided,
+   *  the "Contact type is" dropdown lists the real types and any new rule
+   *  emits `contact.contact_type === '<id>'` (the configurable-hierarchy form).
+   *  When omitted/empty the builder falls back to the legacy `contact.type`
+   *  shape so older configs still work. See
+   *  `docs/handoff-form-context-types-2026-06-28.md`. */
+  contactTypes?: ContextContactType[];
+  /** Whether "Available on people" is currently checked in the parent
+   *  PropertiesEditor — narrows the type dropdown to person types only. */
+  contextPerson?: boolean;
+  /** Whether "Available on places" is currently checked — narrows the
+   *  dropdown to place types only when set without `contextPerson`. */
+  contextPlace?: boolean;
   disabled?: boolean;
 }
 
@@ -34,6 +60,9 @@ export function ContextExpressionBuilder({
   onChange,
   summaryFlags = [],
   contactForms = [],
+  contactTypes = [],
+  contextPerson,
+  contextPlace,
   disabled,
 }: Props) {
   const [parsed, setParsed] = useState<ParsedContextExpression>(() => parseContextExpression(value));
@@ -59,9 +88,35 @@ export function ContextExpressionBuilder({
   function addRule(kind: ContextRule['kind']) {
     let r: ContextRule;
     switch (kind) {
-      case 'contact_type':
-        r = { kind: 'contact_type', value: 'person' };
+      case 'contact_type': {
+        // When the project ships parsed contact_types, emit the
+        // configurable form (contact.contact_type === '<id>') by default —
+        // that's the correct shape for every project the editor was
+        // built for. Fall back to the legacy `person` literal only when
+        // no types are known (open-without-hierarchy state).
+        if (contactTypes.length > 0) {
+          const filtered = filterContactTypesByContext(
+            contactTypes,
+            contextPerson,
+            contextPlace,
+          );
+          const first = filtered[0] ?? contactTypes[0]!;
+          r = { kind: 'contact_contact_type', value: first.id };
+        } else {
+          r = { kind: 'contact_type', value: 'person' };
+        }
         break;
+      }
+      case 'contact_contact_type': {
+        const filtered = filterContactTypesByContext(
+          contactTypes,
+          contextPerson,
+          contextPlace,
+        );
+        const first = filtered[0] ?? contactTypes[0];
+        r = { kind: 'contact_contact_type', value: first?.id ?? '' };
+        break;
+      }
       case 'contact_sex':
         r = { kind: 'contact_sex', value: 'male' };
         break;
@@ -121,6 +176,9 @@ export function ContextExpressionBuilder({
                 rule={rule}
                 summaryFlags={summaryFlags}
                 contactForms={contactForms}
+                contactTypes={contactTypes}
+                contextPerson={contextPerson}
+                contextPlace={contextPlace}
                 onChange={(r) => updateRule(idx, r)}
                 onRemove={() => removeRule(idx)}
               />
@@ -157,10 +215,26 @@ export function ContextExpressionBuilder({
   );
 }
 
+/** Hierarchy types the user can scope to, filtered by which gate they've
+ *  ticked (Available on people / places). When neither / both are ticked,
+ *  we list everything — the parent gates already cover the broad case. */
+function filterContactTypesByContext(
+  types: ContextContactType[],
+  person?: boolean,
+  place?: boolean,
+): ContextContactType[] {
+  if (person && !place) return types.filter((t) => t.person === true);
+  if (place && !person) return types.filter((t) => t.person !== true);
+  return types;
+}
+
 function ContextRuleRow(props: {
   rule: ContextRule;
   summaryFlags: string[];
   contactForms: ContactFormFields[];
+  contactTypes: ContextContactType[];
+  contextPerson?: boolean;
+  contextPlace?: boolean;
   onChange: (r: ContextRule) => void;
   onRemove: () => void;
 }) {
@@ -173,21 +247,88 @@ function ContextRuleRow(props: {
       return <div className="row gap rule-row"><code>false</code> <span className="muted">(never show)</span> {remove}</div>;
 
     case 'contact_type':
+    case 'contact_contact_type': {
+      // Both kinds share UI; the kind decides which JS shape we emit on
+      // save. We use the `contact_contact_type` variant by default for
+      // any new rule when project types are available (set by addRule).
+      // Loaded existing rules keep their parsed kind so legacy configs
+      // re-serialize byte-stable.
+      const filtered = filterContactTypesByContext(
+        props.contactTypes,
+        props.contextPerson,
+        props.contextPlace,
+      );
+      const persons = filtered.filter((t) => t.person === true);
+      const places = filtered.filter((t) => t.person !== true);
+      const knownIds = new Set(props.contactTypes.map((t) => t.id));
+      const isLegacyShape = r.kind === 'contact_type';
+      const isKnown = knownIds.has(r.value);
       return (
         <div className="row gap rule-row">
           <span>Contact type is</span>
-          <select value={r.value} onChange={(e) => props.onChange({ ...r, value: e.target.value })}>
-            <option value="person">person</option>
-            <option value="clinic">clinic / area</option>
-            <option value="health_center">health center</option>
-            <option value="district_hospital">district hospital</option>
-          </select>
-          {!['person', 'clinic', 'health_center', 'district_hospital'].includes(r.value) && (
-            <input value={r.value} onChange={(e) => props.onChange({ ...r, value: e.target.value })} />
+          {props.contactTypes.length > 0 ? (
+            <select
+              value={isKnown ? r.value : '__custom__'}
+              onChange={(e) => {
+                if (e.target.value === '__custom__') return;
+                // Picking a real project type promotes the rule to
+                // `contact_contact_type` (correct for configurable
+                // hierarchies). The legacy form is only kept verbatim
+                // when an existing rule was parsed as such AND its
+                // value was not changed via the dropdown.
+                props.onChange({ kind: 'contact_contact_type', value: e.target.value });
+              }}
+            >
+              {persons.length > 0 && (
+                <optgroup label="Persons">
+                  {persons.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.displayName ? `${t.displayName} (${t.id})` : t.id}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {places.length > 0 && (
+                <optgroup label="Places">
+                  {places.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.displayName ? `${t.displayName} (${t.id})` : t.id}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              <option value="__custom__">— custom id —</option>
+            </select>
+          ) : (
+            // No project types known — preserve the legacy hardcoded
+            // dropdown so the editor still works against bare cht-default
+            // imports that have no contact_types defined.
+            <select value={r.value} onChange={(e) => props.onChange({ ...r, value: e.target.value })}>
+              <option value="person">person</option>
+              <option value="clinic">clinic / area</option>
+              <option value="health_center">health center</option>
+              <option value="district_hospital">district hospital</option>
+            </select>
+          )}
+          {(!isKnown || props.contactTypes.length === 0) && (
+            <input
+              value={r.value}
+              onChange={(e) => props.onChange({ ...r, value: e.target.value })}
+              placeholder="contact type id"
+            />
+          )}
+          {isLegacyShape && props.contactTypes.length > 0 && (
+            <span
+              className="muted small"
+              title="Legacy contact.type === '...' form. Pick a project type from the dropdown to migrate to contact.contact_type ==="
+            >
+              <code>contact.type</code> (legacy)
+            </span>
           )}
           {remove}
         </div>
       );
+    }
 
     case 'contact_sex':
       return (

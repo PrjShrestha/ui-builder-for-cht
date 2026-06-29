@@ -408,6 +408,8 @@ function contextRuleHumanReadable(r: ContextRule): string {
       return 'Never';
     case 'contact_type':
       return `Contact type is "${r.value}"`;
+    case 'contact_contact_type':
+      return `Contact type is "${r.value}"`;
     case 'contact_sex':
       return `Sex is "${r.value}"`;
     case 'contact_field':

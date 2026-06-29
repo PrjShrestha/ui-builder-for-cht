@@ -3,7 +3,8 @@
  * .properties.json. It looks like JS but uses different vocab than
  * tasks `appliesIf`:
  *
- *   contact.type === 'person'        // not contact.contact.X
+ *   contact.type === 'person'           // legacy cht-default — top-level
+ *   contact.contact_type === 'patient'  // configurable hierarchies
  *   contact.sex === 'male'
  *   ageInYears(contact) >= 18
  *   ageInYears(contact) <= 65
@@ -12,10 +13,22 @@
  *   !contact.date_of_death
  *
  * AND-combined with `&&`. Whatever doesn't match a known shape lands as raw.
+ *
+ * **The contact_type vs contact_contact_type split** is load-bearing. In CHT
+ * docs:
+ *   - the legacy four cht-default types (`person` / `clinic` / `health_center`
+ *     / `district_hospital`) store the type as the top-level `type` field, so
+ *     `contact.type === 'person'` works;
+ *   - **configurable / custom contact types** (every project the editor was
+ *     built for) store the actual type under `contact_type` (and `type` is
+ *     `'contact'`), so the correct expression is `contact.contact_type === 'X'`.
+ * The two rule kinds preserve which form the user wrote / picked — re-emitting
+ * the wrong one would silently break form eligibility on import.
  */
 
 export type ContextRule =
   | { kind: 'contact_type'; value: string }
+  | { kind: 'contact_contact_type'; value: string }
   | { kind: 'contact_sex'; value: string }
   | { kind: 'contact_field'; field: string; op: '===' | '!==' | '>' | '<' | '>=' | '<='; value: string }
   | { kind: 'age_years'; op: '>' | '<' | '>=' | '<=' | '===' | '!=='; value: number }
@@ -75,7 +88,19 @@ function classify(expr: string): ContextRule {
     return { kind: 'age_years', op: normalizeOp(age[1]), value: n };
   }
 
-  // contact.type === 'X'
+  // contact.contact_type === 'X' (configurable / custom hierarchies) —
+  // MUST be matched BEFORE the legacy `contact.type` and the generic
+  // `contact.<field>` matchers, otherwise it would fall into the generic
+  // path as a `contact_field` row and re-emit as `contact.contact_type`
+  // anyway, but classify wrong (different rule kind = wrong dropdown row).
+  const cContactType = /^contact\.contact_type\s*(===|!==|==|!=)\s*'([^']*)'$/.exec(e);
+  if (cContactType && cContactType[1] && cContactType[2] !== undefined) {
+    if (cContactType[1] === '===' || cContactType[1] === '==') {
+      return { kind: 'contact_contact_type', value: cContactType[2] };
+    }
+  }
+
+  // contact.type === 'X' (legacy cht-default — top-level types)
   const ctype = /^contact\.type\s*(===|!==|==|!=)\s*'([^']*)'$/.exec(e);
   if (ctype && ctype[1] && ctype[2] !== undefined) {
     if (ctype[1] === '===' || ctype[1] === '==') {
@@ -134,6 +159,8 @@ function ruleToSource(rule: ContextRule): string {
       return 'false';
     case 'contact_type':
       return `contact.type === '${rule.value}'`;
+    case 'contact_contact_type':
+      return `contact.contact_type === '${rule.value}'`;
     case 'contact_sex':
       return `contact.sex === '${rule.value}'`;
     case 'contact_field':

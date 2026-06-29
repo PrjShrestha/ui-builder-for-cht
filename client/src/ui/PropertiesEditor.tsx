@@ -16,8 +16,9 @@
  * }
  */
 import { useEffect, useState } from 'react';
-import { ContextExpressionBuilder } from './ContextExpressionBuilder.js';
+import { ContextExpressionBuilder, type ContextContactType } from './ContextExpressionBuilder.js';
 import type { ContactFormFields } from './FieldPicker.js';
+import { api } from '../api.js';
 
 interface TitleEntry {
   locale: string;
@@ -46,6 +47,11 @@ interface Props {
    *  through to the context-expression key picker so form-eligibility flags
    *  validate. Plan: form-data-passing.md §3 Phase 0. */
   summaryFlags?: string[];
+  /** Project's contact types — used by the "Contact type is" dropdown in
+   *  the context-expression builder so configurable hierarchies emit
+   *  `contact.contact_type` correctly. See
+   *  `docs/handoff-form-context-types-2026-06-28.md`. */
+  contactTypes?: ContextContactType[];
   onChange: (next: FormProperties) => void;
   onClose: () => void;
 }
@@ -53,6 +59,39 @@ interface Props {
 export function PropertiesEditor(props: Props) {
   const [draft, setDraft] = useState<FormProperties>(props.value);
   useEffect(() => setDraft(props.value), [props.value]);
+
+  // Fetch the project's contact_types once for the context-expression
+  // builder's "Contact type is" dropdown. Caller can override by passing
+  // `contactTypes` explicitly (saves a fetch when the data is already
+  // available in the parent). Hierarchy reads hit the parsed-form cache,
+  // so the fetch is ~ms-cheap even on first mount.
+  const [fetchedTypes, setFetchedTypes] = useState<ContextContactType[] | null>(null);
+  useEffect(() => {
+    if (props.contactTypes !== undefined) return; // explicit prop wins
+    let alive = true;
+    api
+      .getHierarchy()
+      .then((h) => {
+        if (!alive) return;
+        const list = (h.contact_types as Array<{ id: string; person?: boolean }>).map(
+          (t) => ({
+            id: t.id,
+            person: t.person,
+            displayName: h.place_types_display?.[t.id],
+          }),
+        );
+        setFetchedTypes(list);
+      })
+      .catch(() => {
+        // Hierarchy unavailable (no project loaded, or a fresh-empty
+        // project mid-setup) — the builder falls back to its legacy
+        // hardcoded dropdown, so we don't surface this error here.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [props.contactTypes]);
+  const effectiveContactTypes = props.contactTypes ?? fetchedTypes ?? undefined;
 
   function patch(next: FormProperties) {
     setDraft(next);
@@ -157,6 +196,9 @@ export function PropertiesEditor(props: Props) {
             onChange={(v) => setContext('expression', v)}
             contactForms={props.contactForms}
             summaryFlags={props.summaryFlags}
+            contactTypes={effectiveContactTypes}
+            contextPerson={draft.context?.person === true}
+            contextPlace={draft.context?.place === true}
             disabled={draft.context?.expression === 'false'}
           />
         </label>
