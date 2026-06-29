@@ -392,6 +392,20 @@ export function findTileForRowType(
     const tileBase = tile.xlsformType.split(/\s+/)[0]?.toLowerCase();
     return tileBase === baseType;
   });
+  // Special case: a bare `string` row (no select-contact / mrdt-verify
+  // appearance) belongs to the Text tile, not the only two `'string'`-typed
+  // tiles in the catalog (select_contact, mrdt_verify) — both of which
+  // require their own appearance. Without this branch, the empty-appearance
+  // fallback below picks `select_contact` and mislabels every plain text
+  // field. CHT contact forms use `string` heavily (name / short_name /
+  // external_id / notes), so the bug hits every generated contact form.
+  if (baseType === 'string') {
+    const hasContactApp = app.split(/\s+/).includes('select-contact');
+    const hasMrdtApp = app.split(/\s+/).includes('mrdt-verify');
+    if (!hasContactApp && !hasMrdtApp) {
+      return QUESTION_TYPE_TILES.find((tile) => tile.id === 'text');
+    }
+  }
   if (matches.length === 0) return undefined;
   // Prefer one whose defaultExtras.appearance matches the row's appearance.
   const withApp = matches.find(
