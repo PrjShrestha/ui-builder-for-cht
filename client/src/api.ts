@@ -110,6 +110,7 @@ export const api = {
       status?: number;
       version?: string;
       couchVersion?: string;
+      authenticatedAs?: string;
       error?: string;
       redactedUrl: string;
     }>('/api/cht-conf/test-connection', {

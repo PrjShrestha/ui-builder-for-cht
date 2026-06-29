@@ -280,57 +280,55 @@ function attachStreams(state: RunState, child: ChildProcess): void {
  * the latest published version — every cht-conf release breaks the
  * editor's connection test, even when the instance itself is reachable.
  *
- * Probe target is CHT's `/api/info` endpoint: returns version JSON on a
- * 200, gates on basic-auth credentials, doesn't touch cht-conf. Self-
- * signed certs (the `*.local-ip.medicmobile.org` dev pattern) are
- * accepted — this is a connection test, not a TLS verification.
+ * Probe targets (in order):
+ *   1. `GET /_session` — CouchDB session endpoint, present on every
+ *      CHT install (CHT runs on Couch). Returns 200 + `userCtx.name`
+ *      matching our user on auth success; 401 on bad auth. This is
+ *      the universal auth gate.
+ *   2. `GET /api/deploy-info` — CHT-specific; returns the deployed
+ *      CHT + Couch versions. Optional follow-up after _session
+ *      succeeds; older CHT may 404 here and we still report success
+ *      from the session check.
+ *
+ * Self-signed certs (the `*.local-ip.medicmobile.org` dev pattern)
+ * are accepted — this is a connection test, not a TLS guarantee.
  */
 interface ConnectionProbeResult {
   ok: boolean;
   status?: number;
-  /** Reachable + authenticated; CHT version reported by /api/info. */
+  /** CHT version, if /api/deploy-info responded. Best-effort. */
   version?: string;
-  /** Couch backing version reported by /api/info. */
+  /** Couch version, if /api/deploy-info responded. Best-effort. */
   couchVersion?: string;
-  /** Diagnostic message — populated on failure (and sometimes on success). */
+  /** The username CouchDB reported back via /_session.userCtx.name —
+   *  useful confirmation that auth actually applied (not just that the
+   *  server replied 200 with `name: null` for an open Couch). */
+  authenticatedAs?: string;
+  /** Diagnostic message — populated on failure. */
   error?: string;
-  /** The URL probed, with the password replaced by `***`. Echoed back so
-   *  the UI can show the user exactly what it tried. */
+  /** The URL probed (base only), with the password replaced by `***`. */
   redactedUrl: string;
 }
 
-function probeConnection(
-  targetUrl: string,
-  user: string | undefined,
-  password: string | undefined,
-): Promise<ConnectionProbeResult> {
-  let parsed: URL;
-  try {
-    parsed = new URL('/api/info', targetUrl);
-  } catch (e) {
-    return Promise.resolve({
-      ok: false,
-      error: `Bad URL: ${(e as Error).message}`,
-      redactedUrl: targetUrl,
-    });
-  }
-  const isHttps = parsed.protocol === 'https:';
-  const auth = user ? `${user}:${password ?? ''}` : undefined;
-  // Build a redacted form of the same URL for the UI to display back.
-  const redacted = (() => {
-    const c = new URL(parsed.toString());
-    if (user) c.username = encodeURIComponent(user);
-    if (password) c.password = '***';
-    return c.toString();
-  })();
+interface RawProbeResponse {
+  status: number;
+  body: string;
+}
 
-  return new Promise<ConnectionProbeResult>((resolve) => {
+function httpRequest(
+  targetPath: string,
+  base: URL,
+  auth: string | undefined,
+): Promise<RawProbeResponse> {
+  return new Promise<RawProbeResponse>((resolve, reject) => {
+    const isHttps = base.protocol === 'https:';
     const opts: https.RequestOptions = {
       method: 'GET',
-      hostname: parsed.hostname,
-      port: parsed.port || (isHttps ? 443 : 80),
-      path: parsed.pathname + parsed.search,
+      hostname: base.hostname,
+      port: base.port || (isHttps ? 443 : 80),
+      path: targetPath,
       auth,
+      headers: { Accept: 'application/json' },
       // Local CHT instances ship self-signed certs against host names
       // like `127-0-0-1.local-ip.medicmobile.org` — this is a connection
       // probe, not a TLS guarantee, so don't reject on cert mismatch.
@@ -340,64 +338,134 @@ function probeConnection(
     const req = client.request(opts, (res) => {
       let body = '';
       res.on('data', (chunk) => (body += String(chunk)));
-      res.on('end', () => {
-        const status = res.statusCode ?? 0;
-        if (status >= 200 && status < 300) {
-          try {
-            const j = JSON.parse(body) as { version?: string; couchVersion?: string };
-            resolve({
-              ok: true,
-              status,
-              version: j.version,
-              couchVersion: j.couchVersion,
-              redactedUrl: redacted,
-            });
-          } catch {
-            // 2xx but non-JSON body — count as reachable but no version metadata.
-            resolve({ ok: true, status, redactedUrl: redacted });
-          }
-        } else if (status === 401) {
-          resolve({
-            ok: false,
-            status,
-            error: 'Authentication failed (HTTP 401). Check the user + password.',
-            redactedUrl: redacted,
-          });
-        } else if (status === 404) {
-          resolve({
-            ok: false,
-            status,
-            error:
-              'Reached the host but /api/info returned 404 — is the URL pointing at a CHT instance?',
-            redactedUrl: redacted,
-          });
-        } else {
-          resolve({
-            ok: false,
-            status,
-            error: `HTTP ${status}${body ? `: ${body.slice(0, 200)}` : ''}`,
-            redactedUrl: redacted,
-          });
-        }
-      });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
     });
-    req.on('error', (err) => {
-      const msg = (err as Error).message ?? String(err);
-      resolve({
-        ok: false,
-        error: msg.includes('ENOTFOUND')
-          ? 'Host not found — check the URL.'
-          : msg.includes('ECONNREFUSED')
-            ? 'Connection refused — is the instance running and reachable on this network?'
-            : msg,
-        redactedUrl: redacted,
-      });
-    });
+    req.on('error', reject);
     req.setTimeout(10_000, () => {
       req.destroy(new Error('Request timed out after 10s'));
     });
     req.end();
   });
+}
+
+function probeConnection(
+  targetUrl: string,
+  user: string | undefined,
+  password: string | undefined,
+): Promise<ConnectionProbeResult> {
+  let base: URL;
+  try {
+    base = new URL(targetUrl);
+  } catch (e) {
+    return Promise.resolve({
+      ok: false,
+      error: `Bad URL: ${(e as Error).message}`,
+      redactedUrl: targetUrl,
+    });
+  }
+  const auth = user ? `${user}:${password ?? ''}` : undefined;
+  const redacted = (() => {
+    const c = new URL(base.toString());
+    if (user) c.username = encodeURIComponent(user);
+    if (password) c.password = '***';
+    return c.toString();
+  })();
+
+  return (async () => {
+    // 1) The auth gate: /_session. Universal across CHT versions.
+    let sessionRes: RawProbeResponse;
+    try {
+      sessionRes = await httpRequest('/_session', base, auth);
+    } catch (err) {
+      const msg = (err as Error).message ?? String(err);
+      return {
+        ok: false,
+        error: msg.includes('ENOTFOUND')
+          ? 'Host not found — check the URL.'
+          : msg.includes('ECONNREFUSED')
+            ? 'Connection refused — is the instance running and reachable on this network?'
+            : msg.includes('CERT_')
+              ? `TLS certificate problem: ${msg}`
+              : msg,
+        redactedUrl: redacted,
+      };
+    }
+
+    if (sessionRes.status === 401) {
+      return {
+        ok: false,
+        status: 401,
+        error: 'Authentication failed (HTTP 401). Check the user + password.',
+        redactedUrl: redacted,
+      };
+    }
+    if (sessionRes.status < 200 || sessionRes.status >= 300) {
+      return {
+        ok: false,
+        status: sessionRes.status,
+        error:
+          sessionRes.status === 404
+            ? 'Reached the host but /_session 404\'d — is the URL pointing at a CHT / CouchDB instance?'
+            : `HTTP ${sessionRes.status}${sessionRes.body ? `: ${sessionRes.body.slice(0, 200)}` : ''}`,
+        redactedUrl: redacted,
+      };
+    }
+
+    // /_session returned 2xx. Parse userCtx for the authenticated-as name.
+    let authenticatedAs: string | undefined;
+    try {
+      const j = JSON.parse(sessionRes.body) as {
+        userCtx?: { name?: string | null };
+      };
+      authenticatedAs = j.userCtx?.name ?? undefined;
+    } catch {
+      // 2xx but non-JSON — odd for /_session, but treat as reachable.
+    }
+    if (auth && !authenticatedAs) {
+      // Sent credentials, got 200, but userCtx.name is null → Couch
+      // accepted the request without applying our basic auth. Surface
+      // as ambiguous success rather than silent failure.
+      return {
+        ok: false,
+        status: sessionRes.status,
+        error:
+          '/_session returned 200 but userCtx.name was empty — credentials may not have applied (cookie session? CORS?). Try clearing cookies on the target.',
+        redactedUrl: redacted,
+      };
+    }
+
+    // 2) Best-effort version info via /api/deploy-info. Missing or 404
+    // is non-fatal — we still report success from the session check.
+    let version: string | undefined;
+    let couchVersion: string | undefined;
+    try {
+      const di = await httpRequest('/api/deploy-info', base, auth);
+      if (di.status >= 200 && di.status < 300) {
+        try {
+          const j = JSON.parse(di.body) as {
+            version?: string;
+            base_version?: string;
+            couchdb_version?: string;
+          };
+          version = j.version ?? j.base_version;
+          couchVersion = j.couchdb_version;
+        } catch {
+          /* non-JSON body — skip version */
+        }
+      }
+    } catch {
+      /* deploy-info unreachable — skip; session probe already succeeded */
+    }
+
+    return {
+      ok: true,
+      status: sessionRes.status,
+      authenticatedAs,
+      version,
+      couchVersion,
+      redactedUrl: redacted,
+    };
+  })();
 }
 
 /** Resolve the deploy config to a base URL the probe can hit. */

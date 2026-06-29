@@ -123,6 +123,7 @@ export function DeployPanel() {
         status?: number;
         version?: string;
         couchVersion?: string;
+        authenticatedAs?: string;
         error?: string;
         redactedUrl: string;
         at: number;
@@ -546,6 +547,7 @@ function DeployTargetForm(props: {
     status?: number;
     version?: string;
     couchVersion?: string;
+    authenticatedAs?: string;
     error?: string;
     redactedUrl: string;
     at: number;
@@ -639,9 +641,15 @@ function DeployTargetForm(props: {
           {props.connectionResult.ok ? (
             <>
               <strong>✓ Connection OK.</strong>{' '}
+              {props.connectionResult.authenticatedAs && (
+                <>
+                  Authenticated as{' '}
+                  <code>{props.connectionResult.authenticatedAs}</code>.{' '}
+                </>
+              )}
               {props.connectionResult.version && (
                 <>
-                  CHT version <code>{props.connectionResult.version}</code>
+                  CHT <code>{props.connectionResult.version}</code>
                   {props.connectionResult.couchVersion && (
                     <>
                       {' '}
