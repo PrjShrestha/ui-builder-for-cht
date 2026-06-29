@@ -275,20 +275,23 @@ function buildSurvey(
   // ──── meta sub-group: created_by* (create) and last_edited_by* (edit).
   // Hidden + calculate; on create the calculates read inputs/user;
   // on edit `created_by*` is carried (hidden + read-only) and we add
-  // `last_edited_by*`.
+  // `last_edited_by*`. The calc field sits at `/data/<type>/meta/<field>`,
+  // so three hops up from the field land at `/data/`; from there
+  // `inputs/user/<x>` resolves correctly. (cht-default `person-create.xlsx`
+  // has the identical nesting and uses the same three-hop path.)
   survey.push(r('begin group', 'meta', '', { appearance: 'hidden' }));
   if (isCreate) {
     survey.push(
-      r('calculate', 'created_by', '', { calculation: '../../inputs/user/name' }),
+      r('calculate', 'created_by', '', { calculation: '../../../inputs/user/name' }),
     );
     survey.push(
       r('calculate', 'created_by_person_uuid', '', {
-        calculation: '../../inputs/user/contact_id',
+        calculation: '../../../inputs/user/contact_id',
       }),
     );
     survey.push(
       r('calculate', 'created_by_place_uuid', '', {
-        calculation: '../../inputs/user/facility_id',
+        calculation: '../../../inputs/user/facility_id',
       }),
     );
   } else {
@@ -298,11 +301,11 @@ function buildSurvey(
     survey.push(r('hidden', 'created_by_person_uuid', '', { read_only: 'true' }));
     survey.push(r('hidden', 'created_by_place_uuid', '', { read_only: 'true' }));
     survey.push(
-      r('calculate', 'last_edited_by', '', { calculation: '../../inputs/user/name' }),
+      r('calculate', 'last_edited_by', '', { calculation: '../../../inputs/user/name' }),
     );
     survey.push(
       r('calculate', 'last_edited_by_person_uuid', '', {
-        calculation: '../../inputs/user/contact_id',
+        calculation: '../../../inputs/user/contact_id',
       }),
     );
   }

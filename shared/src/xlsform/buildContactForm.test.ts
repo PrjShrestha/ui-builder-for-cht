@@ -260,3 +260,75 @@ test('warns on unknown leaf type', () => {
     `expected an unknown-type warning, got ${JSON.stringify(warnings)}`,
   );
 });
+
+/* ============ Bug A — created_by* / last_edited_by* XPath depth ============ */
+
+/**
+ * The meta calculates sit at /data/<type>/meta/<field>; to reach
+ * /data/inputs/user/<x> they need THREE `../` hops, not two. cht-default
+ * `person-create.xlsx` has the identical nesting and uses the same
+ * three-hop path. A two-hop emit resolves to /data/<type>/inputs/... which
+ * doesn't exist → silently empty `created_by*` on every saved contact
+ * (audit-trail gap). docs/handoff-contact-form-bugs-2026-06-28.md §A.
+ */
+function metaCalcOf(form: ReturnType<typeof buildContactForm>['form'], name: string): string {
+  const row = form.survey.find((r) => r.name === name && r.type === 'calculate');
+  if (!row) throw new Error(`expected a calculate row named ${name}`);
+  return row.extras['calculation'] ?? '';
+}
+
+test('Bug A — person-create meta calcs use the three-hop ../../../inputs/user/<x> path', () => {
+  const { form } = buildContactForm(linearTypes, { type: 'person', variant: 'create' });
+  assert.equal(metaCalcOf(form, 'created_by'), '../../../inputs/user/name');
+  assert.equal(metaCalcOf(form, 'created_by_person_uuid'), '../../../inputs/user/contact_id');
+  assert.equal(metaCalcOf(form, 'created_by_place_uuid'), '../../../inputs/user/facility_id');
+});
+
+test('Bug A — place-create meta calcs use the three-hop path (every type variant)', () => {
+  for (const t of ['district_hospital', 'health_center', 'clinic'] as const) {
+    const { form } = buildContactForm(linearTypes, { type: t, variant: 'create' });
+    assert.equal(
+      metaCalcOf(form, 'created_by'),
+      '../../../inputs/user/name',
+      `place ${t} created_by`,
+    );
+    assert.equal(
+      metaCalcOf(form, 'created_by_person_uuid'),
+      '../../../inputs/user/contact_id',
+      `place ${t} created_by_person_uuid`,
+    );
+    assert.equal(
+      metaCalcOf(form, 'created_by_place_uuid'),
+      '../../../inputs/user/facility_id',
+      `place ${t} created_by_place_uuid`,
+    );
+  }
+});
+
+test('Bug A — edit forms emit last_edited_by* with the same three-hop path', () => {
+  const { form } = buildContactForm(linearTypes, { type: 'person', variant: 'edit' });
+  assert.equal(metaCalcOf(form, 'last_edited_by'), '../../../inputs/user/name');
+  assert.equal(
+    metaCalcOf(form, 'last_edited_by_person_uuid'),
+    '../../../inputs/user/contact_id',
+  );
+});
+
+test('Bug A — no meta calc anywhere uses the buggy two-hop ../../inputs/user/<x> path', () => {
+  // Guard against regression on any (type, variant). If any emit ever
+  // drops a hop again, this catches it across the whole matrix.
+  for (const t of ['person', 'district_hospital', 'health_center', 'clinic'] as const) {
+    for (const v of ['create', 'edit'] as const) {
+      const { form } = buildContactForm(linearTypes, { type: t, variant: v });
+      for (const row of form.survey) {
+        if (row.type !== 'calculate') continue;
+        const calc = row.extras['calculation'] ?? '';
+        assert.doesNotMatch(
+          calc,
+          /^\.\.\/\.\.\/inputs\/user\//,
+          `${t} ${v} row ${row.name} uses the two-hop path: ${calc}`,
+        );
+      }
+    }
+  }
+});
