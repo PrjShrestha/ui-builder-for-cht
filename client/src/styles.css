@@ -1028,19 +1028,8 @@ code {
   margin-bottom: 8px;
 }
 .tree-pane-header h3 { margin: 0; }
-.tree-section { margin-bottom: 14px; }
-.tree-section-heading {
-  margin: 0 0 4px;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted, #64748b);
-}
-.tree-section-heading .muted { font-weight: 400; }
 .tree { list-style: none; padding-left: 0; }
 .tree ul { list-style: none; padding-left: 20px; }
-.people-list .tree-row .muted.small { margin-left: 6px; }
 .type-kind-fieldset {
   border: 1px solid var(--border, #e2e8f0);
   border-radius: 6px;

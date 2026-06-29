@@ -141,19 +141,16 @@ export function HierarchyEditor() {
     }
   }
 
-  // Two-section split: persons are rendered as a flat list (they're leaves
-  // and re-sorting them ahead of their parent would misrepresent the
-  // indented chain). The places tree stays as it was — buildTree just gets
-  // the place subset so the chain doesn't get a duplicate person row.
-  const placeTypes = useMemo(
-    () => (data ? data.contact_types.filter((t) => t.person !== true) : []),
+  // Unified tree (PO reversal — supersedes the two-section split shipped
+  // in cdb36b0). Every type renders as one tree, persons nested as leaves
+  // under their parent place via parents[0]; for each parent, person
+  // children list first, then place children. See
+  // docs/handoff-hierarchy-ux-2026-06-28.md §3 (final) — buildTree handles
+  // both the parent-of nesting AND the sibling sort.
+  const treeRoots = useMemo(
+    () => (data ? buildTree(data.contact_types) : []),
     [data],
   );
-  const personTypes = useMemo(
-    () => (data ? data.contact_types.filter((t) => t.person === true) : []),
-    [data],
-  );
-  const treeRoots = useMemo(() => buildTree(placeTypes), [placeTypes]);
 
   const selected = data?.contact_types.find((t) => t.id === selectedId) ?? null;
 
@@ -259,50 +256,16 @@ export function HierarchyEditor() {
           {data.contact_types.length === 0 ? (
             <QuickHierarchyEmptyCTA onStart={() => setQuickOpen(true)} />
           ) : (
-            <>
-              {personTypes.length > 0 && (
-                <div className="tree-section">
-                  <h4 className="tree-section-heading">
-                    People <span className="muted">({personTypes.length})</span>
-                  </h4>
-                  <ul className="tree people-list">
-                    {personTypes.map((p) => (
-                      <li key={p.id}>
-                        <button
-                          className={`tree-row${selectedId === p.id ? ' active' : ''} person`}
-                          onClick={() => setSelectedId(p.id)}
-                        >
-                          <span className="tree-icon">👤</span>
-                          <span className="tree-id">{p.id}</span>
-                          {p.parents && p.parents.length > 0 && (
-                            <span className="muted small">
-                              under {p.parents.join(', ')}
-                            </span>
-                          )}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {placeTypes.length > 0 && (
-                <div className="tree-section">
-                  <h4 className="tree-section-heading">
-                    Places <span className="muted">({placeTypes.length})</span>
-                  </h4>
-                  <ul className="tree">
-                    {treeRoots.map((node) => (
-                      <TreeNode
-                        key={node.id}
-                        node={node}
-                        onSelect={setSelectedId}
-                        selectedId={selectedId}
-                      />
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </>
+            <ul className="tree">
+              {treeRoots.map((node) => (
+                <TreeNode
+                  key={node.id}
+                  node={node}
+                  onSelect={setSelectedId}
+                  selectedId={selectedId}
+                />
+              ))}
+            </ul>
           )}
         </section>
         <section className="detail-pane">
@@ -478,7 +441,21 @@ function buildTree(types: ContactType[]): TreeItem[] {
       else roots.push(node);
     }
   }
+  // Sibling sort: for each parent, persons first then places — the
+  // request from the PO walkthrough (people who live there read first,
+  // child-places after). Stable across runs because the source order is
+  // already deterministic.
+  sortSiblingsPersonsFirst(roots);
   return roots;
+}
+
+function sortSiblingsPersonsFirst(siblings: TreeItem[]): void {
+  siblings.sort((a, b) => {
+    const aPerson = a.person === true ? 0 : 1;
+    const bPerson = b.person === true ? 0 : 1;
+    return aPerson - bPerson;
+  });
+  for (const s of siblings) sortSiblingsPersonsFirst(s.children);
 }
 
 function TreeNode(props: {

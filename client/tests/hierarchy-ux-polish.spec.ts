@@ -82,37 +82,44 @@ test('#4-§2 — Add-type modal slugifies a friendly name and commits with the d
     await modal.getByRole('button', { name: 'Add type' }).click();
     await expect(modal).not.toBeVisible();
 
-    // The new type lands in the People section under the derived id.
-    const peopleSection = page
-      .locator('.tree-section')
-      .filter({ has: page.locator('.tree-section-heading', { hasText: 'People' }) });
-    await expect(peopleSection).toBeVisible();
+    // The new type lands in the unified tree under its derived id.
     await expect(
-      peopleSection.locator('.tree-row .tree-id', { hasText: 'fchv_person' }),
+      page.locator('.tree-pane .tree-row .tree-id', { hasText: 'fchv_person' }),
     ).toBeVisible();
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('#4-§3 — tree pane splits into People and Places sections', async ({ page, request }) => {
+test('#4-§3 — unified tree: persons nest under their parent place; person-children list first', async ({
+  page,
+  request,
+}) => {
   const tmp = await openHierarchy(page, request);
   try {
-    // mini-config ships person + 3 places; both sections must show.
-    const people = page
-      .locator('.tree-section')
-      .filter({ has: page.locator('.tree-section-heading', { hasText: 'People' }) });
-    const places = page
-      .locator('.tree-section')
-      .filter({ has: page.locator('.tree-section-heading', { hasText: 'Places' }) });
-    await expect(people).toBeVisible();
-    await expect(places).toBeVisible();
-    // The person row must appear in People — not nested in the Places
-    // indented chain.
-    await expect(people.locator('.tree-row .tree-id', { hasText: 'person' })).toBeVisible();
-    await expect(
-      places.locator('.tree-row .tree-id', { hasText: /^person$/ }),
-    ).toHaveCount(0);
+    // mini-config: district_hospital → health_center → clinic +
+    // person parented under district_hospital (parents[0]). buildTree
+    // therefore nests `person` as a CHILD of `district_hospital`, NOT
+    // as a top-level row. Confirm via the indented <ul> shape.
+    const tree = page.locator('.tree-pane .tree').first();
+    await expect(tree).toBeVisible();
+
+    // The person row exists once, somewhere in the tree.
+    const personRow = tree
+      .locator('.tree-row')
+      .filter({ has: page.locator('.tree-id', { hasText: /^person$/ }) });
+    await expect(personRow).toHaveCount(1);
+
+    // It is NOT a top-level <li> — it must live inside a nested <ul>
+    // (the second-level list under district_hospital).
+    await expect(tree.locator('> li > ul .tree-row .tree-id', { hasText: /^person$/ }))
+      .toHaveCount(1);
+
+    // Sibling order: under district_hospital, the person child must
+    // appear BEFORE the place child (health_center). Walk the children
+    // <ul> in order; first row should be person.
+    const districtChildren = tree.locator('> li > ul > li > .tree-row .tree-id');
+    await expect(districtChildren.first()).toHaveText('person');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
@@ -124,11 +131,10 @@ test('#4-§4 — selecting a person hides "Track visits on this place\'s profile
 }) => {
   const tmp = await openHierarchy(page, request);
   try {
-    // Click into the existing `person` type.
+    // Click into the existing `person` type — anywhere in the unified tree.
     await page
-      .locator('.tree-section')
-      .filter({ has: page.locator('.tree-section-heading', { hasText: 'People' }) })
-      .locator('.tree-row', { hasText: 'person' })
+      .locator('.tree-pane .tree-row')
+      .filter({ has: page.locator('.tree-id', { hasText: /^person$/ }) })
       .click();
     const detail = page.locator('.detail-pane');
     await expect(detail.getByText('Type kind')).toBeVisible();
@@ -138,9 +144,8 @@ test('#4-§4 — selecting a person hides "Track visits on this place\'s profile
 
     // Switch to a place — count_visits surfaces again.
     await page
-      .locator('.tree-section')
-      .filter({ has: page.locator('.tree-section-heading', { hasText: 'Places' }) })
-      .locator('.tree-row', { hasText: /^clinic$/ })
+      .locator('.tree-pane .tree-row')
+      .filter({ has: page.locator('.tree-id', { hasText: /^clinic$/ }) })
       .click();
     await expect(detail.locator('input[type=radio]').nth(0)).toBeChecked(); // Place
     await expect(detail.getByText(/Track visits/)).toBeVisible();
