@@ -283,11 +283,19 @@ export function buildQuickHierarchy(input: QuickHierarchyInput): QuickHierarchyO
   }
 
   // Person leaf — parents = [last place id], strictly linear (plan §5).
+  // ALSO writes create_form / edit_form so the type is actually
+  // creatable in CHT. Without these, the app shows no "+ New <person>"
+  // affordance inside the parent place — the type exists but can't be
+  // added to. cht-default's `person` type ships both fields, and the
+  // contact-form generator emits matching create/edit form files for
+  // person types just like it does for places.
   const personRow: QuickHierarchyContactType = {
     id: personId,
     name_key: `contact.type.${personId}`,
     icon: '',
     person: true,
+    create_form: `form:contact:${personId}:create`,
+    edit_form: `form:contact:${personId}:edit`,
   };
   const lastPlaceId = placeIds[placeIds.length - 1];
   if (lastPlaceId) personRow.parents = [lastPlaceId];

@@ -660,11 +660,17 @@ function AddTypeForm(props: {
       name_key: `contact.type.${id}`,
       icon: '',
       person: isPerson,
+      // ALWAYS write create_form / edit_form — including for person
+      // types. Pre-fix the gate was `if (!isPerson)` so a freshly-added
+      // person type silently shipped without these fields; CHT then
+      // shows NO "+ New <person>" affordance inside the parent place
+      // because a contact_type is only creatable when its create_form
+      // points at an existing form doc. cht-default's `person` type
+      // ships both fields. The contact-form generator emits matching
+      // create/edit form .xlsx files for every defined type.
+      create_form: `form:contact:${id}:create`,
+      edit_form: `form:contact:${id}:edit`,
     };
-    if (!isPerson) {
-      newType.create_form = `form:contact:${id}:create`;
-      newType.edit_form = `form:contact:${id}:edit`;
-    }
     if (parentId) newType.parents = [parentId];
     props.onCommit(newType);
   }

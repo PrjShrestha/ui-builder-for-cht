@@ -57,15 +57,20 @@ test('§A1 — 2-place + person scaffold: parents wiring, place_hierarchy_types 
   });
 });
 
-test('§A2 — create_form/edit_form set on places, NOT on the person leaf (matches AddTypeForm convention)', () => {
+test('§A2 — create_form/edit_form set on every type INCLUDING the person leaf', () => {
+  // Pre-fix the person leaf shipped without create_form/edit_form, so
+  // CHT showed no "+ New <person>" affordance inside the parent place
+  // (a contact_type is only creatable when create_form points at a
+  // real form doc). Verify all three rows now carry both fields.
   const out = buildQuickHierarchy(ASCII_INPUT_2_PLACES);
   assert.equal(out.ok, true);
   if (!out.ok) return;
   assert.equal(out.result.contact_types[0]!.create_form, 'form:contact:district:create');
   assert.equal(out.result.contact_types[0]!.edit_form, 'form:contact:district:edit');
   assert.equal(out.result.contact_types[1]!.create_form, 'form:contact:health_facility:create');
-  assert.equal(out.result.contact_types[2]!.create_form, undefined);
-  assert.equal(out.result.contact_types[2]!.edit_form, undefined);
+  assert.equal(out.result.contact_types[1]!.edit_form, 'form:contact:health_facility:edit');
+  assert.equal(out.result.contact_types[2]!.create_form, 'form:contact:person:create');
+  assert.equal(out.result.contact_types[2]!.edit_form, 'form:contact:person:edit');
 });
 
 test('§A3 — name_key follows the contact.type.<id> convention for every row', () => {

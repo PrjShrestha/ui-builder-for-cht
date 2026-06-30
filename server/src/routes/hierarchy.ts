@@ -91,7 +91,21 @@ export async function registerHierarchyRoutes(app: FastifyInstance): Promise<voi
     }
     const settings = (await readJson<BaseSettings>(settingsPath)) ?? {};
     settings.place_hierarchy_types = req.body.place_hierarchy_types;
-    settings.contact_types = req.body.contact_types;
+    // Auto-fill missing create_form / edit_form on every contact_type.
+    // Pre-fix the AddTypeForm + Quick Hierarchy Creator both omitted
+    // these fields on PERSON types, which meant CHT showed no
+    // "+ New <person>" affordance inside the parent place — the type
+    // existed but couldn't be added to. The creation paths now write
+    // both fields; this server-side fill handles EXISTING configs
+    // (saved before that fix) so opening + saving an older hierarchy
+    // retroactively makes person types creatable. Non-destructive:
+    // existing values are NEVER overwritten — we only fill blanks.
+    settings.contact_types = req.body.contact_types.map((t) => {
+      const out: ContactType = { ...t };
+      if (!out.create_form) out.create_form = `form:contact:${out.id}:create`;
+      if (!out.edit_form) out.edit_form = `form:contact:${out.id}:edit`;
+      return out;
+    });
     await writeJson(settingsPath, settings);
     await writeJson(placeTypesPath, req.body.place_types_display);
     return { ok: true };
