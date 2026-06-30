@@ -328,11 +328,9 @@ function TaskCard(props: {
             onChange={(v) => setField('appliesTo', { kind: 'string', value: v })}
             placeholder="contacts or reports"
           />
-          <RawField
-            label="appliesToType"
+          <AppliesToTypeField
             value={getRaw('appliesToType')}
             onChange={(v) => setField('appliesToType', { kind: 'array', raw: v })}
-            hint="e.g. ['person'] or FORMS.PREGNANCY_REGISTRATION"
           />
           <AppliesIfWithBuilder
             value={getRaw('appliesIf')}
@@ -620,6 +618,202 @@ function PriorityField(props: {
         <span className="muted small" style={{ marginTop: 4 }}>
           📖 priorityLabel is also a translation key — same .properties files as title.
         </span>
+      )}
+    </label>
+  );
+}
+
+/**
+ * Visual picker for `appliesToType` — the array of form basenames /
+ * contact-type ids the task scopes to. Pre-fix this was a raw textarea
+ * where users had to hand-type `['person']` or `FORMS.PREGNANCY_REGISTRATION`
+ * (DEV-HANDOFF #9 + task-builder-parity.md). Now it's a multi-select of
+ * the project's actual app forms + contact types, with a raw escape
+ * hatch for advanced syntax (`'report'`, `'contacts'`, `FORMS.X`, etc.).
+ *
+ * Mode auto-detects from the current raw value:
+ *   - empty / pure string-literal array (`['a','b']`) → multi-select mode
+ *   - anything else (FORMS.X, special tokens, free expressions) → raw mode
+ *
+ * Emit in multi-select mode: `[ 'name1', 'name2' ]` — the simplest shape
+ * cht-conf accepts and that survives parseAppliesToType.
+ */
+function AppliesToTypeField(props: { value: string; onChange: (v: string) => void }) {
+  const forms = useApp((s) => s.forms);
+
+  // Stable list of pickable items, memoized off the upstream slice so
+  // selector identity doesn't churn (lesson from c0c71a8).
+  const appForms = useMemo(
+    () =>
+      forms
+        .filter((f) => f.category === 'app')
+        .map((f) => f.filename.replace(/\.xlsx$/i, ''))
+        .sort(),
+    [forms],
+  );
+  // Contact-types list — fetched once on mount via the hierarchy API
+  // (same pattern PropertiesEditor uses for its ContextExpressionBuilder
+  // dropdown). Tasks can scope to a contact type via appliesToType too,
+  // so we offer both axes in the picker.
+  const [contactTypeIds, setContactTypeIds] = useState<string[]>([]);
+  useEffect(() => {
+    let alive = true;
+    api
+      .getHierarchy()
+      .then((h) => {
+        if (!alive) return;
+        const ids = (h.contact_types as Array<{ id: string }>).map((t) => t.id).sort();
+        setContactTypeIds(ids);
+      })
+      .catch(() => {
+        /* hierarchy unavailable — picker just lists app forms */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Does the raw value look like a pure string-literal array (or empty)?
+  // If yes, multi-select mode is safe; if no (FORMS.X / 'report' / weird),
+  // start in raw mode so we don't truncate the user's expression.
+  const isPureStringArray = useMemo(() => {
+    const trimmed = props.value.trim();
+    if (trimmed === '') return true;
+    // Allow `[]`, `['a']`, `['a', 'b']`, double or single quotes; no
+    // member-access / function-call / object-shorthand.
+    if (!/^\[\s*(['"][^'"]+['"]\s*(,\s*['"][^'"]+['"]\s*)*)?\]$/.test(trimmed)) return false;
+    return true;
+  }, [props.value]);
+
+  // Parsed picked set — falls back to parseAppliesToType for any value
+  // (so even a raw-mode user sees their FORMS.X choices reflected in the
+  // checkboxes when they flip to multi-select).
+  const picked = useMemo(() => new Set(parseAppliesToType(props.value)), [props.value]);
+
+  const [mode, setMode] = useState<'pick' | 'raw'>(isPureStringArray ? 'pick' : 'raw');
+  // Track mode-source so we don't flip the user's mode out from under them
+  // mid-edit when the auto-detect would prefer the other branch.
+  const [modeTouched, setModeTouched] = useState(false);
+  useEffect(() => {
+    if (!modeTouched) setMode(isPureStringArray ? 'pick' : 'raw');
+  }, [isPureStringArray, modeTouched]);
+
+  function toggle(name: string) {
+    const next = new Set(picked);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    if (next.size === 0) {
+      props.onChange('[]');
+      return;
+    }
+    // Emit alphabetized for diff stability.
+    const sorted = [...next].sort();
+    const literal = `[ ${sorted.map((n) => `'${n}'`).join(', ')} ]`;
+    props.onChange(literal);
+  }
+
+  return (
+    <label className="expr-field">
+      <span className="expr-label">
+        <code>appliesToType</code>
+        <em className="muted"> — which forms / contact types this task fires on</em>
+      </span>
+      <div className="row gap" style={{ marginBottom: 6 }}>
+        <button
+          type="button"
+          className={mode === 'pick' ? 'active' : 'link'}
+          onClick={() => {
+            setMode('pick');
+            setModeTouched(true);
+          }}
+          disabled={!isPureStringArray && mode === 'raw'}
+          title={
+            !isPureStringArray
+              ? 'Current value uses FORMS.X or other advanced syntax — switch to multi-select would drop it. Clear the raw value first.'
+              : undefined
+          }
+        >
+          Multi-select
+        </button>
+        <button
+          type="button"
+          className={mode === 'raw' ? 'active' : 'link'}
+          onClick={() => {
+            setMode('raw');
+            setModeTouched(true);
+          }}
+        >
+          Raw JS
+        </button>
+      </div>
+      {mode === 'pick' ? (
+        <div className="applies-to-type-picker">
+          {appForms.length === 0 && contactTypeIds.length === 0 ? (
+            <p className="muted small">
+              No app forms or contact types yet in this project.
+            </p>
+          ) : (
+            <>
+              {appForms.length > 0 && (
+                <fieldset>
+                  <legend className="muted small">
+                    App forms <span>({appForms.length})</span>
+                  </legend>
+                  <div className="applies-to-type-grid">
+                    {appForms.map((name) => (
+                      <label key={name} className="row gap">
+                        <input
+                          type="checkbox"
+                          checked={picked.has(name)}
+                          onChange={() => toggle(name)}
+                        />
+                        <code>{name}</code>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              )}
+              {contactTypeIds.length > 0 && (
+                <fieldset>
+                  <legend className="muted small">
+                    Contact types <span>({contactTypeIds.length})</span>
+                  </legend>
+                  <div className="applies-to-type-grid">
+                    {contactTypeIds.map((id) => (
+                      <label key={id} className="row gap">
+                        <input
+                          type="checkbox"
+                          checked={picked.has(id)}
+                          onChange={() => toggle(id)}
+                        />
+                        <code>{id}</code>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              )}
+            </>
+          )}
+          <p className="muted small" style={{ marginTop: 4 }}>
+            Emits a string-array literal. Switch to <strong>Raw JS</strong> for
+            advanced syntax: <code>FORMS.X</code>, <code>'report'</code>,{' '}
+            <code>'contacts'</code>.
+          </p>
+        </div>
+      ) : (
+        <>
+          <textarea
+            value={props.value}
+            onChange={(e) => props.onChange(e.target.value)}
+            className="code-editor short"
+            spellCheck={false}
+          />
+          <span className="muted small">
+            Advanced syntax. Example: <code>['person']</code>,{' '}
+            <code>[FORMS.PREGNANCY_REGISTRATION, 'pregnancy']</code>,{' '}
+            <code>'report'</code>.
+          </span>
+        </>
       )}
     </label>
   );

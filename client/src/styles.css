@@ -84,6 +84,23 @@ code {
 }
 
 /* ---- Error banner ---- */
+.applies-to-type-picker {
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px; padding: 8px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.applies-to-type-picker fieldset {
+  border: 0; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.applies-to-type-picker legend { padding: 0 0 4px; }
+.applies-to-type-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 4px 12px;
+}
+.applies-to-type-grid label { align-items: center; }
+
 .error-boundary-fallback {
   padding: 24px; margin: 16px;
   border: 2px solid #dc2626; border-radius: 8px;
