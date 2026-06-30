@@ -37,6 +37,18 @@ Dev shipped **#1–#4 + `.gitattributes`**: contact-form `created_by*` path (`f0
 
 ---
 
+### ⚡ Update — pyxform names & refs (2026-06-28, evening) — CURRENT do-next
+
+Deploy hit pyxform on `pregnancy_registration.xlsx`: a `relevant` referenced a `name` that wasn't a valid XLSForm identifier (spaces/punctuation) plus a hand-written `${…}`. Dev shipped the immediate fix (rewrote the form — 7 names slugified, 1 ref rewritten, labels filled) + a `NameInput` edit-time warn/"Fix → slug" guard. **Planner direction: make naming automatic, not reactive.**
+
+1. **[GREENLIT — next] Rename + rewrite-all-refs macro.** Required to make the "Fix → slug" button (and any name change) safe: renaming a row's `name` must rewrite **every** `${old}` reference across the form — `relevant` / `constraint` / `calculation` / `choice_filter` / repeat-count / `${}`-in-labels. Same shape as the choices-tab list rename (`a361624`). Without it, fixing a name silently breaks references (the dev's own stated limitation).
+2. **[durable, recommended] Auto-derive `name` from the label on question CREATE.** The no-code "autoformed" fix: user types the human question text (label); the tool slugifies a valid `name` automatically (shown as a muted "saved as `…`", editable only as advanced), reusing `slugifyHierarchyId` — same pattern as Quick Hierarchy Creator / Add-Type. **Derive on create only**; do NOT auto-rename on later label edits (that would break refs — it routes through macro #1). Auto-suffix on collision (names are internal). Stops invalid identifiers at the source so a no-code user never touches an identifier. (Wants a short plan/triad pass before build — reshapes the editor's primary interaction.)
+3. **Confirm refs are picker-only for no-code.** The visual relevant/calc/constraint builders already insert `${name}` via FieldPicker — ensure the no-code path never requires hand-typing `${}` (raw is advanced-only).
+
+This supersedes the stale lists above: nest-persons (`27e25fb`), choices-rename (`a361624`), vite cleanup are **shipped**; lint deferred.
+
+---
+
 ## 1. Start here
 
 ### Working-tree reality (do this FIRST)
