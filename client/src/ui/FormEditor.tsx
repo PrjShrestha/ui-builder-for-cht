@@ -47,6 +47,7 @@ import {
   defaultInsertIndex,
   extractListName,
   renameListInType,
+  slugifyHierarchyId,
   type StructuralViolation,
   type FieldKind,
   type OrderingViolation,
@@ -1696,11 +1697,9 @@ function SurveyRowCard(props: {
             <span className="type-chip-label">{prettyTypeLabel(row.type, row.extras['appearance'] ?? '')}</span>
             <code className="type-chip-raw">{row.type || '(no type)'}</code>
           </button>
-          <input
+          <NameInput
             value={row.name}
-            onChange={(e) => props.update((r) => ({ ...r, name: e.target.value }))}
-            placeholder="name"
-            className="name-input"
+            onChange={(name) => props.update((r) => ({ ...r, name }))}
           />
           <label className="required-label">
             <input
@@ -1901,6 +1900,56 @@ function SurveyRowCard(props: {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+/**
+ * Survey-row `name` input with inline XLSForm-identifier validation +
+ * one-click slugify. The `name` column must match
+ * `^[A-Za-z_][A-Za-z0-9_]*$` — anything else (spaces, `?`, etc.) breaks
+ * pyxform on convert-app-forms with an opaque "Reference expressions
+ * must only include question names" error. Pre-fix, the editor let users
+ * type free strings here (PO walkthrough trap — confusing `name` with
+ * `label`). Now we warn inline and offer a Fix button that slugifies via
+ * the same shared helper Quick Hierarchy Creator uses.
+ */
+function NameInput(props: { value: string; onChange: (v: string) => void }) {
+  const isValid = props.value === '' || /^[A-Za-z_][A-Za-z0-9_]*$/.test(props.value);
+  const suggested = isValid ? '' : slugifyHierarchyId(props.value);
+  return (
+    <div className="name-input-wrap">
+      <input
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        placeholder="name"
+        className={`name-input${!isValid ? ' invalid' : ''}`}
+        aria-invalid={!isValid || undefined}
+        title={
+          isValid
+            ? undefined
+            : `XLSForm names must be identifiers (no spaces, no '?'). pyxform will reject this on deploy.`
+        }
+      />
+      {!isValid && (
+        <span className="name-input-warning">
+          <span aria-hidden="true">⚠ </span>
+          not a valid id —{' '}
+          {suggested ? (
+            <button
+              type="button"
+              className="link"
+              onClick={() => props.onChange(suggested)}
+              title="Replace with the slugified id; the original text is the label, not the name"
+            >
+              Fix → <code>{suggested}</code>
+            </button>
+          ) : (
+            <span>type a label-free identifier (a-z, 0-9, _)</span>
+          )}
+        </span>
+      )}
     </div>
   );
 }

@@ -915,6 +915,14 @@ code {
 .type-chip-label { font-size: 13px; font-weight: 600; color: var(--text, #111); }
 .type-chip-raw { font-size: 10px; color: var(--muted, #6b7280); font-family: var(--mono, monospace); }
 .name-input { font-family: ui-monospace, monospace; min-width: 160px; }
+.name-input-wrap { display: inline-flex; flex-direction: column; gap: 2px; }
+.name-input.invalid { border-color: #dc2626; background: #fef2f2; }
+.name-input-warning {
+  font-size: 11px; color: #7f1d1d;
+  display: inline-flex; gap: 4px; align-items: center;
+}
+.name-input-warning code { background: #fee2e2; padding: 0 4px; border-radius: 2px; }
+.name-input-warning .link { font-size: 11px; color: #7f1d1d; text-decoration: underline; }
 .required-label { display: flex; gap: 4px; align-items: center; font-size: 13px; }
 .row-actions { margin-left: auto; }
 
