@@ -9,7 +9,7 @@
  * The textarea ref is passed by the host so we can splice at caret
  * position instead of appending blindly.
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useApp } from '../state/store.js';
 import { useReportFormFields } from './useReportFormFields.js';
 
@@ -57,8 +57,18 @@ function InsertFieldModal(props: {
   onCancel: () => void;
   onPick: (snippet: string) => void;
 }) {
-  const allAppForms = useApp((s) =>
-    s.forms.filter((f) => f.category === 'app').map((f) => f.filename.replace(/\.xlsx$/i, '')),
+  // Zustand selector stability — inline `s.forms.filter().map()` returns a
+  // new array on every store read, which makes useSyncExternalStore think
+  // the snapshot changed and triggers an infinite render loop ("Maximum
+  // update depth exceeded"). Pull the stable slice; useMemo the derived
+  // list. Same pattern as ReportFieldPicker.
+  const forms = useApp((s) => s.forms);
+  const allAppForms = useMemo(
+    () =>
+      forms
+        .filter((f) => f.category === 'app')
+        .map((f) => f.filename.replace(/\.xlsx$/i, '')),
+    [forms],
   );
   const formOptions = props.availableForms.length > 0 ? props.availableForms : allAppForms;
   const [pickedForm, setPickedForm] = useState<string | null>(formOptions[0] ?? null);

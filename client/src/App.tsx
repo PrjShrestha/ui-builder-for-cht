@@ -14,6 +14,7 @@ import { DecisionsView } from './ui/DecisionsView.js';
 import { DeployPanel } from './ui/DeployPanel.js';
 import { StandardCodesView } from './ui/StandardCodesView.js';
 import { ErrorBanner } from './ui/ErrorBanner.js';
+import { ErrorBoundary } from './ui/ErrorBoundary.js';
 import { UndoToastHost } from './ui/UndoToast.js';
 
 export function App() {
@@ -64,22 +65,34 @@ export function App() {
     );
   }
 
+  // Build a stable key per view so navigating to a different panel
+  // auto-clears any captured error in the boundary. Includes formId
+  // so flipping between two forms also resets.
+  const viewKey =
+    view.kind === 'form' || view.kind === 'flowchart' ? `${view.kind}:${view.id}` : view.kind;
+
   return (
     <div className="app">
       <ErrorBanner />
       <UndoToastHost />
       <Sidebar />
       <main className="main">
-        {view.kind === 'project-overview' && <ProjectOverview />}
-        {view.kind === 'forms-index' && <FormsIndex />}
-        {view.kind === 'form' && <FormEditor formId={view.id} />}
-        {view.kind === 'hierarchy' && <HierarchyEditor />}
-        {view.kind === 'tasks' && <TasksEditor />}
-        {view.kind === 'contact-summary' && <ContactSummaryEditor />}
-        {view.kind === 'flowchart' && <FlowchartView formId={view.id} />}
-        {view.kind === 'decisions' && <DecisionsView />}
-        {view.kind === 'deploy' && <DeployPanel />}
-        {view.kind === 'standard-codes' && <StandardCodesView />}
+        {/* ErrorBoundary keeps the Sidebar usable when the active panel
+            crashes (e.g. an unstable Zustand selector causing
+            "Maximum update depth exceeded"). Without it a single
+            render throw white-screens the whole app. */}
+        <ErrorBoundary resetKey={viewKey}>
+          {view.kind === 'project-overview' && <ProjectOverview />}
+          {view.kind === 'forms-index' && <FormsIndex />}
+          {view.kind === 'form' && <FormEditor formId={view.id} />}
+          {view.kind === 'hierarchy' && <HierarchyEditor />}
+          {view.kind === 'tasks' && <TasksEditor />}
+          {view.kind === 'contact-summary' && <ContactSummaryEditor />}
+          {view.kind === 'flowchart' && <FlowchartView formId={view.id} />}
+          {view.kind === 'decisions' && <DecisionsView />}
+          {view.kind === 'deploy' && <DeployPanel />}
+          {view.kind === 'standard-codes' && <StandardCodesView />}
+        </ErrorBoundary>
       </main>
     </div>
   );

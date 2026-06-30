@@ -22,8 +22,20 @@ interface Props {
 
 export function ReportFieldPicker(props: Props) {
   const { value, onChange, availableForms } = props;
-  const allAppForms = useApp((s) =>
-    s.forms.filter((f) => f.category === 'app').map((f) => f.filename.replace(/\.xlsx$/i, '')),
+  // Zustand snapshot stability — selectors must return the SAME REFERENCE
+  // when the underlying slice hasn't changed. A `s.forms.filter().map()`
+  // builds a new array on every call → useSyncExternalStore considers the
+  // snapshot changed → React re-renders → another store read → infinite
+  // loop, crashing with "Maximum update depth exceeded". Select the
+  // stable slice (`s.forms`) and derive via useMemo with `forms` as the
+  // dep, so the derived list is stable as long as the forms list is.
+  const forms = useApp((s) => s.forms);
+  const allAppForms = useMemo(
+    () =>
+      forms
+        .filter((f) => f.category === 'app')
+        .map((f) => f.filename.replace(/\.xlsx$/i, '')),
+    [forms],
   );
   const formOptions = availableForms.length > 0 ? availableForms : allAppForms;
 
