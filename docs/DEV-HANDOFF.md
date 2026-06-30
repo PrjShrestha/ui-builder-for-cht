@@ -56,6 +56,8 @@ Deploy hit pyxform on `pregnancy_registration.xlsx`: a `relevant` referenced a `
 
 9. **[FEATURE] `appliesToType` should be a multi-select of the project's forms, not raw text.** Today `TasksEditor.tsx:332–334` renders `appliesToType` as a raw array-text input. Make it a **multi-select dropdown of the project's app forms** (and consider contact types — tasks can apply to contacts), building the JS array for the user; keep a raw-text fallback for advanced syntax (`FORMS.x`, `'report'`, `'contacts'`). Reuse `parseAppliesToType` (already raw→`string[]`, `useReportFormFields.ts:109`) + the app-forms list from the store. **Synergy:** `appliesToType` is what scopes the report-field picker (#7/#8) — a correct selection feeds those the right forms. Round-trip: preserve any unrepresentable raw verbatim.
 
+10. **[RESILIENCE, HIGH] No React error boundary anywhere — a single component crash white-screens the whole editor.** Confirmed: zero `ErrorBoundary`/`componentDidCatch`/`getDerivedStateFromError` in `client/src`. #7's render loop took down the **entire app** (blank screen, session lost), and React's own console message recommends adding one. **Fix:** add an error boundary around the main view/router (and ideally around the rule-builder modals + each editor panel) that catches a render throw and shows a localized, recoverable message ("This panel hit an error — reload / go back") instead of unmounting everything. General safety net independent of #7 — turns "I lost my whole session" into "one panel glitched."
+
 This supersedes the stale lists above: nest-persons (`27e25fb`), choices-rename (`a361624`), vite cleanup are **shipped**; lint deferred.
 
 ---
