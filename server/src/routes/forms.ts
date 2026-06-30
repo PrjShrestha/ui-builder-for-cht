@@ -388,9 +388,20 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
       requests: Array<{ type: string; variant: 'create' | 'edit'; displayName?: string }>;
       contactTypes: ContactTypeNode[];
       locales?: string[];
+      /**
+       * Default false — preserves the original skip-not-overwrite contract.
+       * When true, existing contact forms are clobbered with freshly
+       * generated content (e.g. to pick up a fixed generator's emit,
+       * like the 3-hop `../../../inputs/user/...` XPath in commit
+       * f0f0e20 which couldn't reach already-generated files). The UI
+       * is expected to confirm the overwrite with the user first; the
+       * server just enforces explicitness via this flag.
+       */
+      overwrite?: boolean;
     };
   }>('/api/forms/generate-contact', async (req, reply) => {
-    const { requests, contactTypes, locales } = req.body;
+    const { requests, contactTypes, locales, overwrite } = req.body;
+    const overwriteMode = overwrite === true;
     if (!Array.isArray(requests) || requests.length === 0) {
       return reply.code(400).send({ error: 'requests must be a non-empty array' });
     }
@@ -409,17 +420,20 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
       type: string;
       variant: 'create' | 'edit';
       basename: string;
-      status: 'written' | 'skipped' | 'invalid' | 'failed';
+      status: 'written' | 'overwritten' | 'skipped' | 'invalid' | 'failed';
       message?: string;
+      /** Set on `overwritten` — size of the file before we replaced it
+       *  (~useful for the UI's diff summary; full byte-diff is excessive). */
+      previousBytes?: number;
       warnings: string[];
     }
     const report: GenReport[] = [];
 
-    for (const req of requests) {
-      const basename = contactFormBasename(req.type, req.variant);
+    for (const reqEntry of requests) {
+      const basename = contactFormBasename(reqEntry.type, reqEntry.variant);
       const entry: GenReport = {
-        type: req.type,
-        variant: req.variant,
+        type: reqEntry.type,
+        variant: reqEntry.variant,
         basename,
         status: 'written',
         warnings: [],
@@ -431,19 +445,32 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
         continue;
       }
       const paths = await pathsForForm('contact', basename);
-      // Skip-not-overwrite (plan §3 hard rule). NEVER clobber an
-      // existing contact form — the author may have customised it.
-      if (await fileExists(paths.xlsx)) {
+      const existed = await fileExists(paths.xlsx);
+      if (existed && !overwriteMode) {
+        // Default skip-not-overwrite (plan §3 hard rule). NEVER clobber
+        // an existing contact form unless the caller explicitly asked.
         entry.status = 'skipped';
         entry.message = 'File already exists — left untouched.';
         report.push(entry);
         continue;
       }
       try {
+        let previousBytes: number | undefined;
+        if (existed) {
+          // Stat the previous file so the UI can show a one-line diff
+          // summary (size delta) without us having to track byte-level
+          // diffs across binary xlsx blobs.
+          try {
+            const st = await fs.stat(paths.xlsx);
+            previousBytes = st.size;
+          } catch {
+            /* race / vanished — non-fatal */
+          }
+        }
         const built = buildContactForm(contactTypes, {
-          type: req.type,
-          variant: req.variant,
-          displayName: req.displayName,
+          type: reqEntry.type,
+          variant: reqEntry.variant,
+          displayName: reqEntry.displayName,
           locales,
         });
         entry.warnings = built.warnings;
@@ -451,6 +478,16 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
         const buf = await serializeXlsForm(built.form);
         await fs.writeFile(paths.xlsx, buf);
         invalidateParsedForm(paths.xlsx);
+        // Overwrite also invalidates the previously-converted .xml so a
+        // stale convert-app-forms output can't ship in place of the new
+        // .xlsx the next time the user runs convert-contact-forms.
+        if (existed && (await fileExists(paths.xml))) {
+          await fs.unlink(paths.xml);
+        }
+        if (existed) {
+          entry.status = 'overwritten';
+          entry.previousBytes = previousBytes;
+        }
       } catch (e) {
         entry.status = 'failed';
         entry.message = (e as Error).message;
@@ -462,6 +499,7 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
       ok: true,
       report,
       written: report.filter((r) => r.status === 'written').length,
+      overwritten: report.filter((r) => r.status === 'overwritten').length,
       skipped: report.filter((r) => r.status === 'skipped').length,
       invalid: report.filter((r) => r.status === 'invalid').length,
       failed: report.filter((r) => r.status === 'failed').length,

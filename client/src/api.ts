@@ -205,10 +205,14 @@ export const api = {
     requests: Array<{ type: string; variant: 'create' | 'edit'; displayName?: string }>;
     contactTypes: Array<{ id: string; person?: boolean; parents?: string[] }>;
     locales?: string[];
+    /** When true, existing contact forms are clobbered (UI must confirm
+     *  first). Default false preserves the skip-not-overwrite contract. */
+    overwrite?: boolean;
   }) =>
     jsonFetch<{
       ok: true;
       written: number;
+      overwritten: number;
       skipped: number;
       invalid: number;
       failed: number;
@@ -216,8 +220,9 @@ export const api = {
         type: string;
         variant: 'create' | 'edit';
         basename: string;
-        status: 'written' | 'skipped' | 'invalid' | 'failed';
+        status: 'written' | 'overwritten' | 'skipped' | 'invalid' | 'failed';
         message?: string;
+        previousBytes?: number;
         warnings: string[];
       }>;
     }>('/api/forms/generate-contact', {

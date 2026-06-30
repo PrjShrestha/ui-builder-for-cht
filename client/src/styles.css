@@ -619,7 +619,24 @@ code {
    Reuses the QuestionTypePicker .qtype-backdrop + .qtype-modal shell for
    consistency; adds modal-local layout for the leaf picker, preview
    ladder, advanced disclosure, and warnings. */
-.lineage-builder-modal { max-width: 640px; }
+.lineage-builder-modal { max-width: 720px; }
+.cfg-mode-fieldset {
+  border: 1px solid var(--border, #e2e8f0); border-radius: 6px;
+  padding: 8px 12px; margin: 0 0 8px; display: flex;
+  flex-direction: column; gap: 6px;
+}
+.cfg-mode-fieldset label { align-items: flex-start; }
+.link.danger.small {
+  padding: 0 4px; font-size: 12px; line-height: 1.2;
+  background: transparent; border: 0; cursor: pointer;
+}
+.link.danger.small:disabled { opacity: 0.4; cursor: not-allowed; }
+button.danger {
+  background: #b91c1c; color: #fff; border: 0; padding: 6px 12px;
+  border-radius: 4px; cursor: pointer;
+}
+button.danger:disabled { background: #cbd5e1; cursor: not-allowed; }
+button.danger:hover:not(:disabled) { background: #991b1b; }
 .lineage-builder-intro {
   margin: 4px 0 12px;
   padding: 8px 10px;

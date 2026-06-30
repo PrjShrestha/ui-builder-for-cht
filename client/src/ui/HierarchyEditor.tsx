@@ -783,17 +783,26 @@ function AddTypeForm(props: {
 
 /* ======================= contact-form generator ======================= */
 
+type GenMode = 'skip' | 'overwrite';
+
 /**
  * Offered, never-auto contact-form generator (docs/plans/contact-form-
  * generator.md Decision B, plan §4). Mirrors the LineageBuilder modal
  * SHAPE — checklist of types, per-type create/edit toggles, live
- * preview — but writes to the filesystem (no snapshot-undo); the
- * result toast reports written/skipped counts.
+ * preview — but writes to the filesystem (no snapshot-undo).
  *
- * Existing files for `(type, variant)` are shown disabled "exists —
- * will skip" so the author understands the hard skip-not-overwrite
- * contract (plan §3 #4). Re-running after adding a new type only fills
- * the gaps.
+ * Two modes:
+ *   - 'skip' (default): existing files are NEVER overwritten — the
+ *     original plan §3 #4 hard contract. Add-a-new-type and re-run
+ *     fills only the gaps.
+ *   - 'overwrite': existing files ARE clobbered, with an explicit
+ *     window.confirm listing the affected files. Use when a generator
+ *     fix (like the f0f0e20 `created_by*` XPath) needs to reach
+ *     already-generated forms that the skip path would leave stale.
+ *
+ * Per-existing-file Delete button removes a form (xlsx + xml + props)
+ * from inside the modal so the user doesn't have to leave the editor
+ * to clear a stale form before regenerating.
  */
 function ContactFormGenerator(props: {
   contactTypes: ContactType[];
@@ -801,10 +810,10 @@ function ContactFormGenerator(props: {
   onClose: () => void;
 }) {
   // Per-(type,variant) check state. Default: every (type,variant) checked
-  // ON so a fresh project gets every form with one click; existing
-  // files are disabled but still rendered, with the checkbox checked +
-  // disabled (so the user can SEE that yes, it would have been written
-  // but a file's already there).
+  // ON so a fresh project gets every form with one click. In skip mode
+  // existing checkboxes are disabled (skip wouldn't write anyway); in
+  // overwrite mode they're enabled but unchecked by default — opt-in
+  // each file the user explicitly wants to clobber.
   const initialChecks = useMemo(() => {
     const m = new Map<string, boolean>();
     for (const t of props.contactTypes) {
@@ -814,12 +823,15 @@ function ContactFormGenerator(props: {
     return m;
   }, [props.contactTypes]);
   const [checks, setChecks] = useState<Map<string, boolean>>(initialChecks);
+  const [mode, setMode] = useState<GenMode>('skip');
   const [existingBasenames, setExistingBasenames] = useState<Set<string>>(new Set());
   const [running, setRunning] = useState(false);
+  const [deletingBasename, setDeletingBasename] = useState<string | null>(null);
   const [report, setReport] = useState<
     | null
     | {
         written: number;
+        overwritten: number;
         skipped: number;
         invalid: number;
         failed: number;
@@ -827,16 +839,32 @@ function ContactFormGenerator(props: {
           type: string;
           variant: 'create' | 'edit';
           basename: string;
-          status: 'written' | 'skipped' | 'invalid' | 'failed';
+          status: 'written' | 'overwritten' | 'skipped' | 'invalid' | 'failed';
           message?: string;
+          previousBytes?: number;
           warnings: string[];
         }>;
       }
   >(null);
   const [error, setError] = useState<string | null>(null);
 
+  async function refreshExistingBasenames(): Promise<void> {
+    try {
+      const r = await api.listForms();
+      const set = new Set<string>();
+      for (const f of r.forms) {
+        if (f.category === 'contact') {
+          set.add(f.filename.replace(/\.xlsx$/i, '').toLowerCase());
+        }
+      }
+      setExistingBasenames(set);
+    } catch {
+      /* listing failure is non-blocking */
+    }
+  }
+
   // Pull the existing contact-form basenames so we can mark which
-  // (type, variant) pairs are already on disk (and will skip).
+  // (type, variant) pairs are already on disk.
   useEffect(() => {
     let alive = true;
     void api
@@ -859,6 +887,25 @@ function ContactFormGenerator(props: {
     };
   }, []);
 
+  // When switching INTO overwrite mode, uncheck existing rows by default
+  // so the user opts-in to each clobber. Switching back to skip leaves
+  // selections alone — they'll just be no-ops on existing rows.
+  function setModeAndAdjustChecks(next: GenMode): void {
+    setMode(next);
+    if (next === 'overwrite') {
+      setChecks((prev) => {
+        const out = new Map(prev);
+        for (const t of props.contactTypes) {
+          for (const v of ['create', 'edit'] as const) {
+            const basename = `${t.id}-${v}`.toLowerCase();
+            if (existingBasenames.has(basename)) out.set(`${t.id}:${v}`, false);
+          }
+        }
+        return out;
+      });
+    }
+  }
+
   function toggle(key: string) {
     setChecks((prev) => {
       const next = new Map(prev);
@@ -871,24 +918,62 @@ function ContactFormGenerator(props: {
     return props.displayMap[typeId] ?? typeId;
   }
 
-  // Preview state. Filter to checked AND not-yet-existing for "will
-  // write"; checked AND existing → "will skip"; unchecked → not in
-  // either list. Computed every render so the toggle is immediate.
+  async function deleteExisting(basename: string): Promise<void> {
+    // eslint-disable-next-line no-undef
+    const ok = window.confirm(
+      `Delete ${basename}.xlsx (and any converted .xml / .properties.json) from forms/contact/?\n\nThis is irreversible from the UI — restore from git if you have it tracked.`,
+    );
+    if (!ok) return;
+    setDeletingBasename(basename);
+    setError(null);
+    try {
+      await api.deleteForm(`forms/contact/${basename}.xlsx`);
+      await refreshExistingBasenames();
+    } catch (e) {
+      setError(`Could not delete ${basename}.xlsx: ${(e as Error).message}`);
+    } finally {
+      setDeletingBasename(null);
+    }
+  }
+
+  // Preview state. Each checked (type, variant) lands in exactly one
+  // bucket based on mode + on-disk presence:
+  //   skip mode:
+  //     not existing → willWrite
+  //     existing     → willSkip
+  //   overwrite mode:
+  //     not existing → willWrite
+  //     existing     → willOverwrite
   const willWrite: Array<{ type: string; variant: 'create' | 'edit' }> = [];
   const willSkip: Array<{ type: string; variant: 'create' | 'edit' }> = [];
+  const willOverwrite: Array<{ type: string; variant: 'create' | 'edit' }> = [];
   for (const t of props.contactTypes) {
     for (const variant of ['create', 'edit'] as const) {
       if (!checks.get(`${t.id}:${variant}`)) continue;
       const basename = `${t.id}-${variant}`.toLowerCase();
-      if (existingBasenames.has(basename)) {
-        willSkip.push({ type: t.id, variant });
-      } else {
+      const exists = existingBasenames.has(basename);
+      if (!exists) {
         willWrite.push({ type: t.id, variant });
+      } else if (mode === 'overwrite') {
+        willOverwrite.push({ type: t.id, variant });
+      } else {
+        willSkip.push({ type: t.id, variant });
       }
     }
   }
+  const totalToTouch = willWrite.length + willOverwrite.length;
 
   async function runGenerate() {
+    // In overwrite mode, confirm before clobbering. List the files so
+    // the user can sanity-check what's about to change.
+    if (mode === 'overwrite' && willOverwrite.length > 0) {
+      const list = willOverwrite.map((o) => `  • ${o.type}-${o.variant}.xlsx`).join('\n');
+      // eslint-disable-next-line no-undef
+      const ok = window.confirm(
+        `Overwrite ${willOverwrite.length} existing contact form${willOverwrite.length === 1 ? '' : 's'}?\n\n${list}\n\nAny hand-edits to these files will be lost. Restore from git if needed.`,
+      );
+      if (!ok) return;
+    }
     setRunning(true);
     setError(null);
     try {
@@ -915,14 +1000,19 @@ function ContactFormGenerator(props: {
           person: t.person,
           parents: t.parents,
         })),
+        overwrite: mode === 'overwrite',
       });
       setReport({
         written: res.written,
+        overwritten: res.overwritten,
         skipped: res.skipped,
         invalid: res.invalid,
         failed: res.failed,
         rows: res.report,
       });
+      // After a successful run, refresh the existing-basenames cache
+      // so re-running the modal in the same session sees the new files.
+      await refreshExistingBasenames();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -948,16 +1038,46 @@ function ContactFormGenerator(props: {
 
         <p className="muted small lineage-builder-intro">
           Generates minimal-valid <code>create</code> + <code>edit</code> forms for the
-          contact types you've defined. The new files land in{' '}
+          contact types you've defined. Files land in{' '}
           <code>forms/contact/</code> as <code>&lt;type&gt;-create.xlsx</code> /{' '}
-          <code>&lt;type&gt;-edit.xlsx</code>. <strong>Existing files are NEVER overwritten</strong> —
-          a (type, variant) that already has a file is shown as "will skip".
+          <code>&lt;type&gt;-edit.xlsx</code>.
         </p>
 
         {error && <div className="error-banner">{error}</div>}
 
         {report === null ? (
           <>
+            <fieldset className="cfg-mode-fieldset">
+              <legend className="sr-only">Generation mode</legend>
+              <label className="row gap">
+                <input
+                  type="radio"
+                  name="cfg-mode"
+                  checked={mode === 'skip'}
+                  onChange={() => setModeAndAdjustChecks('skip')}
+                />
+                <span>
+                  <strong>Generate new only</strong>{' '}
+                  <em className="muted small">(skip existing files — safe default)</em>
+                </span>
+              </label>
+              <label className="row gap">
+                <input
+                  type="radio"
+                  name="cfg-mode"
+                  checked={mode === 'overwrite'}
+                  onChange={() => setModeAndAdjustChecks('overwrite')}
+                />
+                <span>
+                  <strong>Regenerate (overwrite existing)</strong>{' '}
+                  <em className="muted small">
+                    — pick this when a generator fix needs to reach already-generated
+                    forms. Hand-edits to those files will be lost.
+                  </em>
+                </span>
+              </label>
+            </fieldset>
+
             {props.contactTypes.length === 0 ? (
               <p className="muted">No contact types defined yet.</p>
             ) : (
@@ -966,8 +1086,8 @@ function ContactFormGenerator(props: {
                   <tr>
                     <th>Type</th>
                     <th style={{ width: 80 }}>Kind</th>
-                    <th style={{ width: 110 }}>Create</th>
-                    <th style={{ width: 110 }}>Edit</th>
+                    <th style={{ width: 130 }}>Create</th>
+                    <th style={{ width: 130 }}>Edit</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -982,19 +1102,44 @@ function ContactFormGenerator(props: {
                         const key = `${t.id}:${variant}`;
                         const basename = `${t.id}-${variant}`.toLowerCase();
                         const exists = existingBasenames.has(basename);
+                        // In skip mode, existing checkboxes are disabled
+                        // (the row will skip regardless). In overwrite
+                        // mode, they're enabled and the user opts-in
+                        // per-file.
+                        const checkboxDisabled = exists && mode === 'skip';
                         return (
                           <td key={variant}>
-                            <label className="row gap" style={{ alignItems: 'center', cursor: 'pointer' }}>
+                            <label
+                              className="row gap"
+                              style={{ alignItems: 'center', cursor: 'pointer' }}
+                            >
                               <input
                                 type="checkbox"
                                 checked={checks.get(key) ?? false}
                                 onChange={() => toggle(key)}
-                                disabled={exists}
+                                disabled={checkboxDisabled || deletingBasename === basename}
                               />
                               {exists ? (
-                                <span className="muted small">exists — will skip</span>
+                                <span className="muted small">
+                                  exists —{' '}
+                                  {mode === 'overwrite' ? 'overwrite' : 'will skip'}
+                                </span>
                               ) : (
                                 <span className="muted small">{basename}.xlsx</span>
+                              )}
+                              {exists && (
+                                <button
+                                  className="link danger small"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    void deleteExisting(basename);
+                                  }}
+                                  disabled={deletingBasename === basename}
+                                  title={`Delete ${basename}.xlsx (xlsx + xml + properties)`}
+                                  aria-label={`Delete ${basename}.xlsx`}
+                                >
+                                  {deletingBasename === basename ? '…' : '🗑'}
+                                </button>
                               )}
                             </label>
                           </td>
@@ -1009,12 +1154,20 @@ function ContactFormGenerator(props: {
             <div className="lineage-builder-preview">
               <div className="muted small">Preview:</div>
               <pre className="lineage-builder-ladder">
-                {willWrite.length === 0 && willSkip.length === 0
+                {totalToTouch === 0 && willSkip.length === 0
                   ? '(nothing selected)'
                   : [
-                      `→ Will write ${willWrite.length} file${willWrite.length === 1 ? '' : 's'}:`,
+                      willWrite.length > 0
+                        ? `→ Will write ${willWrite.length} new file${willWrite.length === 1 ? '' : 's'}:`
+                        : '',
                       ...willWrite.map((w) => `   ${w.type}-${w.variant}.xlsx`),
-                      willSkip.length > 0 ? `→ Will skip ${willSkip.length} existing file${willSkip.length === 1 ? '' : 's'}:` : '',
+                      willOverwrite.length > 0
+                        ? `⚠ Will OVERWRITE ${willOverwrite.length} existing file${willOverwrite.length === 1 ? '' : 's'}:`
+                        : '',
+                      ...willOverwrite.map((w) => `   ${w.type}-${w.variant}.xlsx  (overwritten)`),
+                      willSkip.length > 0
+                        ? `→ Will skip ${willSkip.length} existing file${willSkip.length === 1 ? '' : 's'}:`
+                        : '',
                       ...willSkip.map((w) => `   ${w.type}-${w.variant}.xlsx  (already on disk)`),
                     ]
                       .filter(Boolean)
@@ -1028,9 +1181,14 @@ function ContactFormGenerator(props: {
               </button>
               <button
                 onClick={() => void runGenerate()}
-                disabled={running || willWrite.length === 0}
+                disabled={running || totalToTouch === 0}
+                className={willOverwrite.length > 0 ? 'danger' : ''}
               >
-                {running ? 'Generating…' : `Generate ${willWrite.length} file${willWrite.length === 1 ? '' : 's'}`}
+                {running
+                  ? 'Generating…'
+                  : willOverwrite.length > 0
+                    ? `Regenerate ${totalToTouch} file${totalToTouch === 1 ? '' : 's'} (overwrites ${willOverwrite.length})`
+                    : `Generate ${totalToTouch} file${totalToTouch === 1 ? '' : 's'}`}
               </button>
             </div>
           </>
@@ -1040,7 +1198,10 @@ function ContactFormGenerator(props: {
               <div className="muted small">Result:</div>
               <pre className="lineage-builder-ladder">
                 {[
-                  `✓ Written: ${report.written}`,
+                  `✓ Written (new): ${report.written}`,
+                  report.overwritten > 0
+                    ? `↻ Overwritten (existing): ${report.overwritten}`
+                    : '',
                   `→ Skipped (already existed): ${report.skipped}`,
                   report.invalid > 0 ? `✗ Invalid: ${report.invalid}` : '',
                   report.failed > 0 ? `✗ Failed: ${report.failed}` : '',
@@ -1048,8 +1209,15 @@ function ContactFormGenerator(props: {
                   ...report.rows.map((row) => {
                     const glyph =
                       row.status === 'written' ? '✓' :
+                      row.status === 'overwritten' ? '↻' :
                       row.status === 'skipped' ? '→' : '✗';
-                    return `${glyph} ${row.basename}.xlsx  (${row.status}${row.message ? ' — ' + row.message : ''})`;
+                    const detail =
+                      row.status === 'overwritten' && row.previousBytes !== undefined
+                        ? ` — was ${row.previousBytes} bytes`
+                        : row.message
+                          ? ` — ${row.message}`
+                          : '';
+                    return `${glyph} ${row.basename}.xlsx  (${row.status}${detail})`;
                   }),
                   ...report.rows
                     .filter((r) => r.warnings.length > 0)
