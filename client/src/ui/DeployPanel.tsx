@@ -711,6 +711,17 @@ const DEPLOY_MACROS: DeployMacroSpec[] = [
     needsInstance: true,
   },
   {
+    id: 'deploy-contact-forms',
+    label: 'Deploy contact forms',
+    description: 'validate → convert → upload (the place/person create+edit forms)',
+    actions: [
+      'validate-contact-forms',
+      'convert-contact-forms',
+      'upload-contact-forms',
+    ],
+    needsInstance: true,
+  },
+  {
     id: 'deploy-settings',
     label: 'Deploy app settings',
     description: 'compile → upload',
@@ -720,12 +731,22 @@ const DEPLOY_MACROS: DeployMacroSpec[] = [
   {
     id: 'deploy-everything',
     label: 'Deploy everything',
-    description: 'validate → compile → convert → upload forms → upload settings',
+    description: 'validate → compile → convert (app + contact) → upload (app + contact) → upload settings',
     actions: [
+      // App forms first — the "Available on X" context refers to the app form.
       'validate-app-forms',
       'compile-app-settings',
       'convert-app-forms',
       'upload-app-forms',
+      // Contact forms — without these, every contact_type's create_form
+      // promise in base_settings.json points at a non-existent form doc
+      // on the instance (silent breakage: the instance accepts the
+      // app_settings but can't actually OPEN any contact-creation form).
+      'validate-contact-forms',
+      'convert-contact-forms',
+      'upload-contact-forms',
+      // Settings last so the hierarchy / contact_types references resolve
+      // to real form docs at lookup time.
       'upload-app-settings',
     ],
     needsInstance: true,
@@ -733,8 +754,14 @@ const DEPLOY_MACROS: DeployMacroSpec[] = [
   {
     id: 'validate-only',
     label: 'Validate everything (no upload)',
-    description: 'validate → compile → convert — safe rehearsal',
-    actions: ['validate-app-forms', 'compile-app-settings', 'convert-app-forms'],
+    description: 'validate → compile → convert (app + contact) — safe rehearsal',
+    actions: [
+      'validate-app-forms',
+      'compile-app-settings',
+      'convert-app-forms',
+      'validate-contact-forms',
+      'convert-contact-forms',
+    ],
     needsInstance: false,
   },
 ];
