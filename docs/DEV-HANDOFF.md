@@ -58,6 +58,8 @@ Deploy hit pyxform on `pregnancy_registration.xlsx`: a `relevant` referenced a `
 
 10. **[RESILIENCE, HIGH] No React error boundary anywhere — a single component crash white-screens the whole editor.** Confirmed: zero `ErrorBoundary`/`componentDidCatch`/`getDerivedStateFromError` in `client/src`. #7's render loop took down the **entire app** (blank screen, session lost), and React's own console message recommends adding one. **Fix:** add an error boundary around the main view/router (and ideally around the rule-builder modals + each editor panel) that catches a render throw and shows a localized, recoverable message ("This panel hit an error — reload / go back") instead of unmounting everything. General safety net independent of #7 — turns "I lost my whole session" into "one panel glitched."
 
+▶ **Task-builder parity initiative** — items **#7–#10 above + two NEW gaps** (modifyContent mapping **pickers** instead of raw text in `ActionsEditor`; task **`name`/`icon`/`title` pickers** — `name` label-first, `icon` from resources) are consolidated, with the form-builder patterns + a depends-first order, in **`docs/plans/task-builder-parity.md`**. Net goal: bring the Tasks editor to **form-builder no-code parity** — pick real data, never hand-type ids/`${}`, visual+raw, validate inline, round-trip-safe, crash-resilient. Most components already exist (`FieldPicker`, `ReportFieldPicker`, the form `<select>`); the work is wiring them into the remaining task surfaces.
+
 This supersedes the stale lists above: nest-persons (`27e25fb`), choices-rename (`a361624`), vite cleanup are **shipped**; lint deferred.
 
 ---
