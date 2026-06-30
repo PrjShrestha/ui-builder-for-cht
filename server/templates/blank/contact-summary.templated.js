@@ -7,6 +7,13 @@
 // chain from the contact's parent up to the root — passing it through
 // `filter: 'lineage'` is what makes CHT render the clickable
 // "Belongs to" breadcrumb users expect on a contact card.
+//
+// IMPORTANT: this file MUST end with `module.exports = { context,
+// cards, fields };` — not a bare `return`. cht-conf webpacks this
+// file with `libraryTarget: 'ContactSummary'`, which bridges
+// module.exports onto the global the CHT app reads. A bare `return`
+// returns from the entry function but the value is discarded by
+// webpack, leaving the app with an empty contact_summary (no fields).
 
 const extras = require('./contact-summary-extras');
 void extras;
@@ -52,4 +59,4 @@ const fields = [
 // designed.
 const cards = [];
 
-return { context, fields, cards };
+module.exports = { context: context, cards: cards, fields: fields };
