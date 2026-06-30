@@ -47,6 +47,7 @@ import {
   defaultInsertIndex,
   extractListName,
   renameListInType,
+  renameSurveyRow,
   slugifyHierarchyId,
   type StructuralViolation,
   type FieldKind,
@@ -1700,6 +1701,12 @@ function SurveyRowCard(props: {
           <NameInput
             value={row.name}
             onChange={(name) => props.update((r) => ({ ...r, name }))}
+            onRename={(fromName, toName) => {
+              // Atomic rename: change row.name AND rewrite every
+              // ${fromName} reference across the form in one patch
+              // (so undo restores both halves together).
+              props.patch(renameSurveyRow(props.form, fromName, toName));
+            }}
           />
           <label className="required-label">
             <input
@@ -1905,24 +1912,72 @@ function SurveyRowCard(props: {
 }
 
 /**
-/**
  * Survey-row `name` input with inline XLSForm-identifier validation +
- * one-click slugify. The `name` column must match
- * `^[A-Za-z_][A-Za-z0-9_]*$` — anything else (spaces, `?`, etc.) breaks
- * pyxform on convert-app-forms with an opaque "Reference expressions
- * must only include question names" error. Pre-fix, the editor let users
- * type free strings here (PO walkthrough trap — confusing `name` with
- * `label`). Now we warn inline and offer a Fix button that slugifies via
- * the same shared helper Quick Hierarchy Creator uses.
+ * one-click slugify + atomic-rename-all-refs.
+ *
+ * The `name` column must match `^[A-Za-z_][A-Za-z0-9_]*$` — anything
+ * else (spaces, `?`, etc.) breaks pyxform on convert-app-forms with an
+ * opaque "Reference expressions must only include question names"
+ * error. Pre-fix, the editor let users type free strings here (PO
+ * walkthrough trap — confusing `name` with `label`). Now we warn
+ * inline and offer a Fix button that slugifies via the same shared
+ * helper Quick Hierarchy Creator uses.
+ *
+ * The Fix button + a normal blur after editing call `onRename(old,
+ * new)` rather than just `onChange(new)` so EVERY `${old}` reference
+ * in the form's relevant/calculation/constraint/etc. is rewritten in
+ * lockstep — no dangling refs left in other rows when a name changes.
+ * Per-keystroke updates still go through `onChange` so the input
+ * stays responsive without rewriting refs mid-type.
  */
-function NameInput(props: { value: string; onChange: (v: string) => void }) {
+function NameInput(props: {
+  value: string;
+  onChange: (v: string) => void;
+  /** Atomic rename + ref-rewrite. Fired on blur (if name actually
+   *  changed from focus baseline) and on Fix-button click. */
+  onRename?: (fromName: string, toName: string) => void;
+}) {
   const isValid = props.value === '' || /^[A-Za-z_][A-Za-z0-9_]*$/.test(props.value);
   const suggested = isValid ? '' : slugifyHierarchyId(props.value);
+  // Capture the name at the start of an edit session (focus) so the
+  // blur handler can fire onRename(focusValue, currentValue) — refs
+  // get rewritten ONCE per edit session, not per keystroke.
+  const focusBaselineRef = useRef<string | null>(null);
+
+  function applyFix() {
+    if (!suggested) return;
+    // The visible value is the invalid name; rename FROM the current
+    // (invalid) value TO the slugified suggestion, rewriting refs.
+    if (props.onRename) {
+      props.onRename(props.value, suggested);
+    } else {
+      props.onChange(suggested);
+    }
+    // Clear the focus baseline so the upcoming blur (if it fires)
+    // doesn't double-rename from the now-stale baseline.
+    focusBaselineRef.current = null;
+  }
+
   return (
     <div className="name-input-wrap">
       <input
         value={props.value}
         onChange={(e) => props.onChange(e.target.value)}
+        onFocus={() => {
+          focusBaselineRef.current = props.value;
+        }}
+        onBlur={() => {
+          const baseline = focusBaselineRef.current;
+          focusBaselineRef.current = null;
+          if (baseline === null) return;
+          if (baseline === props.value) return;
+          if (!props.onRename) return;
+          // Only fire the rename macro when both halves are non-empty;
+          // an empty baseline or current can't drive a coherent
+          // ${...} rewrite anyway.
+          if (!baseline || !props.value) return;
+          props.onRename(baseline, props.value);
+        }}
         placeholder="name"
         className={`name-input${!isValid ? ' invalid' : ''}`}
         aria-invalid={!isValid || undefined}
@@ -1940,8 +1995,8 @@ function NameInput(props: { value: string; onChange: (v: string) => void }) {
             <button
               type="button"
               className="link"
-              onClick={() => props.onChange(suggested)}
-              title="Replace with the slugified id; the original text is the label, not the name"
+              onClick={applyFix}
+              title="Replace with the slugified id; rewrites every ${old} reference in the form to ${new} in the same step"
             >
               Fix → <code>{suggested}</code>
             </button>

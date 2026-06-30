@@ -5,6 +5,7 @@ export * from './xlsform/dependencies.js';
 export * from './xlsform/structuralBalance.js';
 export * from './xlsform/surveyEdits.js';
 export * from './xlsform/scaffolds.js';
+export * from './xlsform/renameSurveyRow.js';
 export * from './xlsform/buildHierarchyBlock.js';
 export * from './xlsform/buildContactForm.js';
 export * from './xlsform/relevantParser.js';
