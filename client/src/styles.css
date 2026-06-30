@@ -84,6 +84,11 @@ code {
 }
 
 /* ---- Error banner ---- */
+.mapping-source-picker .mapping-source-mode {
+  font-family: ui-monospace, monospace;
+}
+.mapping-source-picker select { min-width: 100px; }
+
 .applies-to-type-picker {
   border: 1px solid var(--border, #e2e8f0);
   border-radius: 6px; padding: 8px 12px;

@@ -4,7 +4,7 @@
  * Card per action with: type radio, form picker, "pass visit window" checkbox.
  * Raw fallback for custom modifyContent bodies.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   parseActions,
   serializeActions,
@@ -13,6 +13,7 @@ import {
   type TaskAction,
 } from '@cht-ui/shared';
 import { InsertFieldButton } from './InsertFieldButton.js';
+import { useReportFormFields } from './useReportFormFields.js';
 
 interface Props {
   value: string;
@@ -79,6 +80,7 @@ export function ActionsEditor({ value, formOptions, onChange, appliesToType }: P
               key={idx}
               action={a}
               formOptions={formOptions}
+              appliesToType={appliesToType ?? []}
               onChange={(u) => patchAction(idx, () => u)}
               onRemove={() => removeAction(idx)}
             />
@@ -120,6 +122,10 @@ export function ActionsEditor({ value, formOptions, onChange, appliesToType }: P
 function ActionCard(props: {
   action: TaskAction;
   formOptions: string[];
+  /** Form basenames the parent task scopes to (from `appliesToType`).
+   *  Used by the modifyContent source-field picker to surface fields
+   *  from the report(s) that trigger this task. */
+  appliesToType: string[];
   onChange: (a: TaskAction) => void;
   onRemove: () => void;
 }) {
@@ -216,7 +222,11 @@ function ActionCard(props: {
           toggles between them deliberately; no auto-detection beyond
           the parser's initial classify(). */}
       {!a.passesVisitWindow && (
-        <ModifyContentEditor action={a} onChange={props.onChange} />
+        <ModifyContentEditor
+          action={a}
+          appliesToType={props.appliesToType}
+          onChange={props.onChange}
+        />
       )}
     </div>
   );
@@ -241,6 +251,10 @@ function ActionCard(props: {
  */
 function ModifyContentEditor(props: {
   action: TaskAction;
+  /** Same list the parent ActionCard receives — used by the source
+   *  picker to surface fields from the report(s) that triggered this
+   *  task. */
+  appliesToType: string[];
   onChange: (a: TaskAction) => void;
 }) {
   const a = props.action;
@@ -311,17 +325,17 @@ function ModifyContentEditor(props: {
             {mappings!.map((m, idx) => (
               <tr key={idx}>
                 <td>
-                  <input
+                  <MappingTargetPicker
+                    actionForm={props.action.form}
                     value={m.targetField}
-                    onChange={(e) => patchRow(idx, { targetField: e.target.value })}
-                    placeholder="e.g. patient_id"
+                    onChange={(v) => patchRow(idx, { targetField: v })}
                   />
                 </td>
                 <td>
-                  <input
+                  <MappingSourcePicker
+                    appliesToType={props.appliesToType}
                     value={m.sourceExpr}
-                    onChange={(e) => patchRow(idx, { sourceExpr: e.target.value })}
-                    placeholder="e.g. report.patient_id  /  event.id  /  'literal'"
+                    onChange={(v) => patchRow(idx, { sourceExpr: v })}
                   />
                 </td>
                 <td>
@@ -389,5 +403,204 @@ function ModifyContentEditor(props: {
         (e.g. <code>content.patient_id = report.patient_id</code>).
       </em>
     </div>
+  );
+}
+
+/* ============================ mapping pickers ============================ */
+
+/**
+ * Target side of one modifyContent row — the `content.<X>` cell. Pre-fix
+ * this was a raw text input; users had to know the field name on the
+ * form being opened. Now it's a dropdown of fields parsed from that
+ * form's .xlsx (via `useReportFormFields`, which fetches app forms via
+ * api.getForm). Falls back to a free-text input via "custom" toggle
+ * for advanced cases (contact-create forms, fields the parser doesn't
+ * surface, or fields the user is about to add).
+ *
+ * Action.form may be either an app-form basename (action.type === 'report')
+ * or a contact-form basename (action.type === 'contact'). The hook
+ * fetches via api.getForm('app:' + basename); for contact forms the
+ * fetch returns no fields and the picker falls back to the input.
+ */
+function MappingTargetPicker(props: {
+  actionForm: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const { fields, loading } = useReportFormFields(props.actionForm || null);
+  const fieldSet = useMemo(() => new Set(fields), [fields]);
+  const [useCustom, setUseCustom] = useState<boolean>(false);
+  const canPick = !useCustom && !loading && fields.length > 0;
+  return (
+    <span className="row gap" style={{ alignItems: 'center' }}>
+      {canPick ? (
+        <select
+          value={fieldSet.has(props.value) ? props.value : ''}
+          onChange={(e) => props.onChange(e.target.value)}
+          title={`Field on ${props.actionForm}`}
+        >
+          <option value="">— pick a field —</option>
+          {fields.map((f) => (
+            <option key={f} value={f}>
+              {f}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          value={props.value}
+          onChange={(e) => props.onChange(e.target.value)}
+          placeholder={loading ? 'loading…' : 'e.g. patient_id'}
+        />
+      )}
+      {fields.length > 0 && (
+        <button
+          type="button"
+          className="link small"
+          onClick={() => setUseCustom((v) => !v)}
+          title={useCustom ? 'Pick from the form fields' : 'Type a custom field name'}
+        >
+          {useCustom ? 'pick' : 'custom'}
+        </button>
+      )}
+    </span>
+  );
+}
+
+/**
+ * Source side of one modifyContent row — the right-hand expression like
+ * `report.patient_id` / `event.id` / `'literal'`. Pre-fix this was raw
+ * text. Now it's a small mode selector + appropriate input:
+ *
+ *   - report.<field>: pick a triggering-report form (from the parent's
+ *     `appliesToType`), then a field. Emits `report.<field>`.
+ *   - event.<key>: dropdown of the common event-metadata keys
+ *     (id, dueDate, type, days, start, end). Emits `event.<key>`.
+ *   - literal: free text input. Emits whatever was typed verbatim
+ *     (the user is expected to wrap in quotes themselves if they
+ *     want a string literal).
+ *
+ * The picker auto-detects the mode on first render based on the value's
+ * prefix; the user can switch modes (sticks via the modeTouched ref).
+ * Same pattern as AppliesToTypeField's mode toggle.
+ */
+const EVENT_KEYS = ['id', 'dueDate', 'type', 'days', 'start', 'end'] as const;
+
+function detectSourceMode(value: string): 'report' | 'event' | 'raw' {
+  const v = value.trim();
+  if (v.startsWith('report.')) return 'report';
+  if (v.startsWith('event.')) return 'event';
+  return 'raw';
+}
+
+function MappingSourcePicker(props: {
+  appliesToType: string[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const initialMode = useMemo(() => detectSourceMode(props.value), [props.value]);
+  const [mode, setMode] = useState<'report' | 'event' | 'raw'>(initialMode);
+  const reportForms = props.appliesToType;
+  const [pickedForm, setPickedForm] = useState<string | null>(
+    () => reportForms[0] ?? null,
+  );
+  const { fields: reportFields, loading } = useReportFormFields(
+    mode === 'report' ? pickedForm : null,
+  );
+  const reportFieldSet = useMemo(() => new Set(reportFields), [reportFields]);
+
+  // When the user switches mode, prefill the value with a sensible default
+  // so the form's preview stays consistent.
+  function switchMode(next: 'report' | 'event' | 'raw') {
+    setMode(next);
+    if (next === 'event' && !props.value.startsWith('event.')) {
+      props.onChange('event.id');
+    } else if (next === 'raw' && (props.value.startsWith('report.') || props.value.startsWith('event.'))) {
+      // Keep their previous value if they were typing freely; only reset
+      // when coming FROM a structured shape.
+      props.onChange('');
+    }
+  }
+
+  const currentReportField = mode === 'report' && props.value.startsWith('report.')
+    ? props.value.slice('report.'.length)
+    : '';
+  const currentEventKey = mode === 'event' && props.value.startsWith('event.')
+    ? props.value.slice('event.'.length)
+    : '';
+
+  return (
+    <span className="row gap mapping-source-picker" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+      <select
+        value={mode}
+        onChange={(e) => switchMode(e.target.value as 'report' | 'event' | 'raw')}
+        title="Source kind"
+        className="mapping-source-mode"
+      >
+        <option value="report">report.</option>
+        <option value="event">event.</option>
+        <option value="raw">custom</option>
+      </select>
+      {mode === 'report' && (
+        <>
+          {reportForms.length > 1 && (
+            <select
+              value={pickedForm ?? ''}
+              onChange={(e) => setPickedForm(e.target.value || null)}
+              title="Which triggering form to source from"
+            >
+              {reportForms.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
+              ))}
+            </select>
+          )}
+          <select
+            value={reportFieldSet.has(currentReportField) ? currentReportField : ''}
+            onChange={(e) =>
+              props.onChange(e.target.value ? `report.${e.target.value}` : '')
+            }
+            disabled={loading || reportFields.length === 0}
+          >
+            <option value="">
+              {!pickedForm
+                ? '— set appliesToType first —'
+                : loading
+                  ? '— loading… —'
+                  : reportFields.length === 0
+                    ? '— no fields —'
+                    : '— pick a field —'}
+            </option>
+            {reportFields.map((f) => (
+              <option key={f} value={f}>
+                {f}
+              </option>
+            ))}
+          </select>
+        </>
+      )}
+      {mode === 'event' && (
+        <select
+          value={currentEventKey || 'id'}
+          onChange={(e) => props.onChange(`event.${e.target.value}`)}
+          title="Which event metadata field"
+        >
+          {EVENT_KEYS.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </select>
+      )}
+      {mode === 'raw' && (
+        <input
+          value={props.value}
+          onChange={(e) => props.onChange(e.target.value)}
+          placeholder="e.g. 'literal' or contact.patient_id"
+          style={{ flex: 1, minWidth: 180 }}
+        />
+      )}
+    </span>
   );
 }
