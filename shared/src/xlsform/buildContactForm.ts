@@ -247,20 +247,20 @@ function buildSurvey(
   );
 
   if (isPerson && isCreate) {
-    // Placement on create (person only): the author picks who the
-    // person belongs to via a select-contact selector. v1 keeps it
-    // simple — a single selector typed for the parent place.
-    if (parentPlaceId) {
-      survey.push(
-        r(
-          'string',
-          '_id_placement',
-          'Place this person under',
-          { appearance: `select-contact type-${parentPlaceId}` },
-          'yes',
-        ),
-      );
-    }
+    // Placement is handled by the hidden `parent` field above — it
+    // defaults to the resolved place id when the user taps
+    // "+ New person" inside a place context. We deliberately do NOT
+    // emit a user-facing placement selector here:
+    //   - CHT submit-time validation rejects any field name starting
+    //     with `_` other than the canonical `_id` / `_rev` / etc.
+    //     (CouchDB: "Bad special document member: <name>"). A pre-fix
+    //     `_id_placement` field passed `cht-conf validate-contact-forms`
+    //     (which doesn't surface doc-member errors) and only failed at
+    //     contact-submit-time on a real instance.
+    //   - cht-default's person-create has no user-facing placement
+    //     question either; placement comes purely from navigation
+    //     context. The hidden `parent` default we already emit is
+    //     enough.
     // person-only sex field — minimal-valid spec calls this out.
     // The list-name suffix matches the `male_female` choices the
     // generator ships below (and the cht-default convention).
@@ -344,13 +344,32 @@ export function buildContactForm(
     );
   } else if (!parentPlaceId && isPerson) {
     warnings.push(
-      `Person type "${opts.type}" has no place parent — the create form will omit the placement selector. Add a place parent in the Hierarchy editor so the person can be placed under a contact.`,
+      `Person type "${opts.type}" has no place parent — the hidden \`parent\` field in the create form will have no default. Add a place parent in the Hierarchy editor so a new person lands under a contact automatically.`,
     );
   }
 
   const locales = opts.locales && opts.locales.length > 0 ? opts.locales : ['en'];
   const survey = buildSurvey(opts, parentPlaceId, isPerson);
   const choices = buildChoicesForVariant(isPerson, opts.variant);
+
+  // Guard against CouchDB doc_validation. Any contact-doc field whose
+  // name starts with `_` becomes a top-level doc member at submit time;
+  // CouchDB rejects anything beyond its canonical specials with
+  // "Bad special document member: <name>". cht-conf static validation
+  // doesn't surface this — only the live submit does — so we enforce
+  // it here at generation time. `_id` is the one canonical leading-
+  // underscore name CHT contact forms use (on edit, to identify the
+  // doc to update); allow it explicitly. Everything else is a bug.
+  for (const row of survey) {
+    if (row.name && row.name.startsWith('_') && row.name !== '_id') {
+      throw new Error(
+        `buildContactForm bug: emitted survey row name "${row.name}" starts with '_'. ` +
+          `CouchDB rejects non-canonical leading-underscore field names at submit time ` +
+          `with "Bad special document member: ${row.name}". The only allowed leading-` +
+          `underscore name is "_id" (edit forms only).`,
+      );
+    }
+  }
 
   const display = opts.displayName?.trim() || humanise(opts.type);
   const variantLabel = opts.variant === 'create' ? 'Create' : 'Edit';
