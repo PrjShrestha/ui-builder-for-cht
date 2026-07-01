@@ -41,24 +41,25 @@ Keep `days` for the plain case and `dueDateRaw` for anything unrecognized.
 
 **parse** — recognize exactly these `dueDate` shapes into structured form; everything
 else stays `dueDateRaw` (raw fallback, as today):
-- `addDays(getField(report, 'X'), N)` → `anchor:{kind:'field',field:'X'}, offset:{value:N,unit:'days'}`
-- `addDays(getField(report, 'X'), N*7)` → `offset:{value:N,unit:'weeks'}`
-- `addDays(report.reported_date, N)` (and `*7`) → `anchor:{kind:'reported_date'}`
+- `Utils.addDate(new Date(Utils.getField(report, 'X')), N)` → `anchor:{kind:'field',field:'X'}, offset:{value:N,unit:'days'}`
+- `Utils.addDate(new Date(Utils.getField(report, 'X')), N*7)` → `offset:{value:N,unit:'weeks'}`
+- `Utils.addDate(Utils.getLmpDate(report), N*7)` → LMP anchor (dedicated helper), weeks offset
+- `Utils.addDate(report.reported_date, N)` (and `*7`) → `anchor:{kind:'reported_date'}`
 - a bare `days: N` (no dueDate) → unchanged (`days:N`, implicit reported_date+days)
 
 **serialize** — deterministic inverse, chosen to preserve byte-stability of existing forms:
 - `reported_date` + `days` unit, no `dueDate` originally → emit **`days: N`** (unchanged — do NOT rewrite existing plain events into dueDate form).
 - `field` anchor, or `weeks` unit, or reported_date expressed as a dueDate → emit
-  `dueDate: (event, contact, report) => addDays(getField(report, '<field>'), <days>)`.
+  `dueDate: (event, contact, report) => Utils.addDate(new Date(Utils.getField(report, '<field>')), <days>)` (or `Utils.addDate(Utils.getLmpDate(report), <days>)` for LMP).
 - `dueDateRaw` present → emit it verbatim.
 
-**Helper strategy (OPEN — confirm CHT convention via cht-specialist before coding):**
-the emitted `dueDate` needs a date-add + field-get. Options: (A) CHT nootils/Utils
-globally available in the tasks runtime; (B) ensure `addDays`/`getField` exist in the
-project's `tasks-extras.js` and reference them (preflight/generator offers to add if
-missing). Pick the CHT-idiomatic form; document the assumption; the preflight validator
-should flag a missing helper. **Do not ship until this is confirmed** — a wrong helper
-name reproduces the exact silent-runtime-failure class we've been fighting.
+**Helper strategy — RESOLVED (cht-specialist, 2026-06-28): `Utils` is GLOBAL in the
+tasks.js runtime — no `tasks-extras`/nootils helper to declare.** Emit with `Utils.*`:
+- report date field: `(event, contact, report) => Utils.addDate(new Date(Utils.getField(report, '<path>')), <days>)`
+- LMP (dedicated helper, handles field-location variance): `Utils.addDate(Utils.getLmpDate(report), <days>)`
+- reported_date: keep `days: N` (back-compat) or `Utils.addDate(report.reported_date, <days>)`
+`weeks` → `<days> = weeks*7`. `Utils.addDate(date, days)` returns a Date; `Utils.getField(report, path)`
+is safe dot-notation; both guaranteed in scope (see the Utils reference). No missing-helper risk.
 
 ## 4. Round-trip test cases (`shared/src/tasks/*.test.ts`)
 - plain `days: 84` ↔ byte-stable (no dueDate introduced).
@@ -78,6 +79,6 @@ Contact-field anchors (report-only for now); multi-report anchors; dueDate expre
 beyond `addDays(anchor, offset)` (stay raw). No changes to `appliesIf`/`actions`.
 
 ## 7. Open decisions
-1. **Helper strategy** (§3) — nootils vs `tasks-extras`; needs a CHT-conventions check.
+1. **Helper strategy** — RESOLVED (cht-specialist 2026-06-28): use `Utils.*` (global in tasks.js); no `tasks-extras` helper. See §3.
 2. Whether `reported_date + days` ever migrates to dueDate form — **recommend no** (keep
    `days`, back-compat) unless the user picks `weeks`.

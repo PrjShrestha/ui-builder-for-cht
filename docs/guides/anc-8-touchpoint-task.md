@@ -55,14 +55,16 @@ form was *submitted*), not after the LMP date.
 
 ```js
 events: [
-  { id: 'anc-12', start: 7, end: 14, dueDate: (event, contact, report) => addDays(getField(report, 'lmp_date'), 12 * 7) },
-  { id: 'anc-20', start: 7, end: 14, dueDate: (event, contact, report) => addDays(getField(report, 'lmp_date'), 20 * 7) },
+  { id: 'anc-12', start: 7, end: 14, dueDate: (event, contact, report) => Utils.addDate(Utils.getLmpDate(report), 12 * 7) },
+  { id: 'anc-20', start: 7, end: 14, dueDate: (event, contact, report) => Utils.addDate(Utils.getLmpDate(report), 20 * 7) },
   // …26, 30, 34, 36, 38, 40
 ]
 ```
 
-(The date-add helper depends on your `tasks-extras.js` / nootils; the **Insert field**
-button splices the `lmp_date` reference for you.)
+(`Utils.addDate` / `Utils.getLmpDate` / `Utils.getField` are **globally available** in
+the tasks runtime — nothing to declare; the **Insert field** button splices the field
+reference for you. `Utils.getLmpDate(report)` handles the various LMP field locations; for
+a generic date field use `Utils.addDate(new Date(Utils.getField(report, '<path>')), days)`.)
 
 ## Coming soon (fully no-code)
 An **event date-anchor picker** is queued (DEV-HANDOFF, top priority): pick the
