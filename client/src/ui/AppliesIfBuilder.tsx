@@ -20,6 +20,7 @@ import {
   type ContactFormFields,
 } from './FieldPicker.js';
 import { ReportFieldPicker } from './ReportFieldPicker.js';
+import { useProjectHelpers, type ProjectHelper } from './useProjectHelpers.js';
 
 export type { ContactFormFields };
 
@@ -297,32 +298,7 @@ function AppliesIfRuleRow(props: {
       );
 
     case 'helper':
-      return (
-        <div className="row gap rule-row">
-          <label className="row gap">
-            <input
-              type="checkbox"
-              checked={r.negated}
-              onChange={(e) => props.onChange({ ...r, negated: e.target.checked })}
-            />
-            NOT
-          </label>
-          <input
-            value={r.name}
-            onChange={(e) => props.onChange({ ...r, name: e.target.value })}
-            placeholder="helper fn name"
-          />
-          <span>(</span>
-          <input
-            value={r.args}
-            onChange={(e) => props.onChange({ ...r, args: e.target.value })}
-            placeholder="arguments"
-            style={{ minWidth: 240 }}
-          />
-          <span>)</span>
-          {remove}
-        </div>
-      );
+      return <HelperRow rule={r} onChange={props.onChange} remove={remove} />;
 
     case 'contact_field':
       return (
@@ -439,6 +415,118 @@ function ContactFieldRow(props: {
           Enter a number for the <code>{r.op}</code> comparison.
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Helper-function rule row — picks a helper from the project's real
+ * `tasks-extras.js` / `contact-summary-extras.js` (task-builder-parity
+ * #8). Pre-fix the user typed both name + args as raw text; a typo or
+ * wrong helper name silently broke the task at runtime (the JS
+ * compiles, the call just throws). The picker now lists the real
+ * exported helpers and pre-fills the call's args from the helper's
+ * declared param count using the cht-default convention.
+ *
+ * "custom" toggle preserves the escape hatch for helpers in OTHER
+ * source files (rare) or for renaming a helper without breaking the
+ * existing call.
+ */
+function HelperRow(props: {
+  rule: Extract<AppliesIfRule, { kind: 'helper' }>;
+  onChange: (r: AppliesIfRule) => void;
+  remove: React.ReactNode;
+}) {
+  const { rule: r, onChange, remove } = props;
+  const helpers = useProjectHelpers();
+  // The helper might exist outside what we surface (e.g. a private fn,
+  // or a file the parser couldn't lift). When the rule's name doesn't
+  // match any picker option, default to the custom-text input so we
+  // never silently drop a non-trivial expression.
+  const known = helpers.find((h) => h.name === r.name);
+  const [useCustom, setUseCustom] = useState<boolean>(!known && helpers.length > 0);
+
+  function pickHelper(h: ProjectHelper): void {
+    // Convention from cht-default: helpers are called inside appliesIf
+    // with (contact.contact, contact.reports, report) for the typical
+    // 3-arg signature. Use the helper's declared param count to scale
+    // the default call.
+    const argDefaults = ['contact.contact', 'contact.reports', 'report'];
+    const args = h.params.slice(0, Math.max(h.params.length, 1))
+      .map((_, i) => argDefaults[i] ?? '/* arg */')
+      .join(', ');
+    onChange({ ...r, name: h.name, args });
+  }
+
+  return (
+    <div className="row gap rule-row">
+      <label className="row gap">
+        <input
+          type="checkbox"
+          checked={r.negated}
+          onChange={(e) => onChange({ ...r, negated: e.target.checked })}
+        />
+        NOT
+      </label>
+      {useCustom || helpers.length === 0 ? (
+        <input
+          value={r.name}
+          onChange={(e) => onChange({ ...r, name: e.target.value })}
+          placeholder="helper fn name"
+        />
+      ) : (
+        <select
+          value={r.name}
+          onChange={(e) => {
+            const next = helpers.find((h) => h.name === e.target.value);
+            if (next) pickHelper(next);
+          }}
+          title="Pick a helper from tasks-extras.js / contact-summary-extras.js"
+        >
+          {!known && <option value={r.name}>{r.name} (unknown)</option>}
+          <optgroup label="tasks-extras.js">
+            {helpers
+              .filter((h) => h.source === 'tasks-extras')
+              .map((h) => (
+                <option key={`t:${h.name}`} value={h.name}>
+                  {h.name}({h.params.join(', ')})
+                </option>
+              ))}
+          </optgroup>
+          <optgroup label="contact-summary-extras.js">
+            {helpers
+              .filter((h) => h.source === 'contact-summary-extras')
+              .map((h) => (
+                <option key={`c:${h.name}`} value={h.name}>
+                  {h.name}({h.params.join(', ')})
+                </option>
+              ))}
+          </optgroup>
+        </select>
+      )}
+      {helpers.length > 0 && (
+        <button
+          type="button"
+          className="link small"
+          onClick={() => setUseCustom((v) => !v)}
+          title={
+            useCustom
+              ? 'Pick from project helpers'
+              : 'Type a custom helper name (e.g. one from an extras file the parser didn\'t surface)'
+          }
+        >
+          {useCustom ? 'pick' : 'custom'}
+        </button>
+      )}
+      <span>(</span>
+      <input
+        value={r.args}
+        onChange={(e) => onChange({ ...r, args: e.target.value })}
+        placeholder="arguments"
+        style={{ minWidth: 240 }}
+      />
+      <span>)</span>
+      {remove}
     </div>
   );
 }

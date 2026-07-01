@@ -12,7 +12,13 @@
  * a stretch in MVP; for now a code editor is correct enough.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { parseTaskFile, type FieldValue, type ParsedTaskFile, type TaskEntry } from '@cht-ui/shared';
+import {
+  parseTaskFile,
+  slugifyHierarchyId,
+  type FieldValue,
+  type ParsedTaskFile,
+  type TaskEntry,
+} from '@cht-ui/shared';
 import { api } from '../api.js';
 import { useApp } from '../state/store.js';
 import { useHistory } from '../state/useHistory.js';
@@ -302,7 +308,10 @@ function TaskCard(props: {
       </header>
       {expanded && (
         <div className="task-fields">
-          <ScalarField label="name" value={getString('name')} onChange={(v) => setField('name', { kind: 'string', value: v })} />
+          <TaskNameField
+            value={getString('name')}
+            onChange={(v) => setField('name', { kind: 'string', value: v })}
+          />
           <TitleFieldWithI18nHint
             value={getString('title')}
             onChange={(v) => setField('title', { kind: 'string', value: v })}
@@ -619,6 +628,84 @@ function PriorityField(props: {
           📖 priorityLabel is also a translation key — same .properties files as title.
         </span>
       )}
+    </label>
+  );
+}
+
+/**
+ * Task `name` field with label-first auto-slugify. Follows the pattern
+ * from Quick Hierarchy Creator + FormEditor's NameInput
+ * (decision_nocode_names_autoderived): the user types a friendly
+ * label; we slugify a valid identifier below the input, muted; the id
+ * itself is only editable via "advanced". This is the task's internal
+ * id (used by CHT to key the rules engine) — CHT never surfaces it to
+ * end users, so it should read like a code label ("anc-follow-up")
+ * not like the human phrase.
+ *
+ * The slugified suggestion is shown as a live "saved as `<id>`" hint.
+ * Click "use this" (or blur when the current value is empty / whitespace)
+ * to commit the slug. Existing tasks with a hand-picked name are left
+ * alone unless the user hits the button.
+ */
+function TaskNameField(props: { value: string; onChange: (v: string) => void }) {
+  const [advanced, setAdvanced] = useState<boolean>(false);
+  const trimmed = props.value.trim();
+  const isValid = trimmed === '' || /^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(trimmed);
+  const looksLikeIdentifier = isValid && trimmed !== '';
+  // Suggest a slug when the current value is non-identifier-shaped
+  // (has spaces, punctuation, etc). Task ids traditionally allow `-`
+  // in cht-default so we slugify then swap `_` → `-` to match style.
+  const suggested = !looksLikeIdentifier
+    ? slugifyHierarchyId(trimmed).replace(/_/g, '-')
+    : '';
+
+  return (
+    <label className="expr-field">
+      <span className="expr-label">
+        <code>name</code>
+        <em className="muted">
+          {' '}— internal id CHT uses to key this task; safe identifier only
+        </em>
+      </span>
+      <input
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        placeholder={advanced ? 'task_name' : 'e.g. ANC follow-up'}
+        className={!isValid ? 'invalid' : ''}
+      />
+      <span className="muted small" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        {looksLikeIdentifier ? (
+          <>
+            valid id · <code>{trimmed}</code>
+          </>
+        ) : suggested ? (
+          <>
+            saved as <code>{suggested}</code>
+            <button
+              type="button"
+              className="link"
+              onClick={() => props.onChange(suggested)}
+              title="Replace with the slugified id"
+            >
+              use this
+            </button>
+          </>
+        ) : trimmed === '' ? (
+          <>type a friendly label — we'll derive the id</>
+        ) : (
+          <>
+            <strong style={{ color: '#dc2626' }}>id needed</strong> — type a
+            label-free identifier (letters, digits, <code>_</code>, <code>-</code>)
+          </>
+        )}
+        <button
+          type="button"
+          className="link"
+          onClick={() => setAdvanced((v) => !v)}
+        >
+          {advanced ? 'label-first' : 'advanced'}
+        </button>
+      </span>
     </label>
   );
 }
