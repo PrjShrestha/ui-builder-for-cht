@@ -15,10 +15,12 @@
 import { useMemo, useState } from 'react';
 import {
   extractListName,
+  renameChoiceValue,
   renameListInType,
   type ChoiceRow,
   type XLSForm,
 } from '@cht-ui/shared';
+import { ChoiceNameInput } from './ChoiceNameInput.js';
 
 interface Props {
   form: XLSForm;
@@ -190,10 +192,13 @@ export function InlineChoicesEditor(props: Props) {
           </div>
           {choices.map((c) => (
             <div key={c.rowId} className="inline-choice-row">
-              <input
+              <ChoiceNameInput
                 value={c.name}
-                onChange={(e) => updateChoice(c.rowId, (x) => ({ ...x, name: e.target.value }))}
-                placeholder="yes"
+                onChange={(next) => updateChoice(c.rowId, (x) => ({ ...x, name: next }))}
+                onRename={({ oldName, newName }) =>
+                  props.patch(renameChoiceValue(props.form, listName!, oldName, newName))
+                }
+                fromLabel={c.labels[props.defaultLocale]}
               />
               <input
                 value={c.labels[props.defaultLocale] ?? ''}

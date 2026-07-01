@@ -998,6 +998,9 @@ button.danger:hover:not(:disabled) { background: #991b1b; }
 .name-input { font-family: ui-monospace, monospace; min-width: 160px; }
 .name-input-wrap { display: inline-flex; flex-direction: column; gap: 2px; }
 .name-input.invalid { border-color: #dc2626; background: #fef2f2; }
+.choice-name-input { display: inline-flex; align-items: center; gap: 6px; }
+.choice-name-input input.invalid { border-color: #dc2626; background: #fef2f2; }
+.choice-name-input .link.small { font-size: 0.78em; color: #dc2626; white-space: nowrap; }
 .name-input-warning {
   font-size: 11px; color: #7f1d1d;
   display: inline-flex; gap: 4px; align-items: center;

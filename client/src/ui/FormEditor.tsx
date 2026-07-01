@@ -47,6 +47,7 @@ import {
   defaultInsertIndex,
   extractListName,
   renameListInType,
+  renameChoiceValue,
   renameSurveyRow,
   slugifyHierarchyId,
   type StructuralViolation,
@@ -84,6 +85,7 @@ import { QuestionTypePicker } from './QuestionTypePicker.js';
 import { findTileForRowType } from './QuestionTypeCatalog.js';
 import { LineageBuilder } from './LineageBuilder.js';
 import { InlineChoicesEditor } from './InlineChoicesEditor.js';
+import { ChoiceNameInput } from './ChoiceNameInput.js';
 import { useHistory } from '../state/useHistory.js';
 import { showUndoToast } from './UndoToast.js';
 
@@ -3111,6 +3113,9 @@ function ChoicesTab(props: {
                       remove={() => removeChoice(c.rowId)}
                       moveUp={() => moveChoice(c.rowId, -1)}
                       moveDown={() => moveChoice(c.rowId, 1)}
+                      onRename={(oldName, newName) =>
+                        patch(renameChoiceValue(form, c.list_name, oldName, newName))
+                      }
                     />
                   ))}
                 </tbody>
@@ -3130,6 +3135,8 @@ function SortableChoiceRow(props: {
   remove: () => void;
   moveUp: () => void;
   moveDown: () => void;
+  /** Atomic choice-value rename + expression ref-rewrite. */
+  onRename: (oldName: string, newName: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: props.row.rowId,
@@ -3148,9 +3155,11 @@ function SortableChoiceRow(props: {
         </button>
       </td>
       <td>
-        <input
+        <ChoiceNameInput
           value={row.name}
-          onChange={(e) => props.update((r) => ({ ...r, name: e.target.value }))}
+          onChange={(next) => props.update((r) => ({ ...r, name: next }))}
+          onRename={({ oldName, newName }) => props.onRename(oldName, newName)}
+          fromLabel={row.labels[props.locales[0] ?? ''] ?? ''}
         />
       </td>
       {props.locales.map((loc) => (
