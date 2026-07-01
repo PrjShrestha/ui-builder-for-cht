@@ -64,6 +64,30 @@ This supersedes the stale lists above: nest-persons (`27e25fb`), choices-rename 
 
 ---
 
+## 🗺 Roadmap — trust & visibility (planner-greenlit, 2026-06-28)
+
+From the product assessment (`docs/reviews/product-assessment-2026-06-28.md`). **Tier 0 + Tier 1 greenlit; Tier 2 = cards editor + translations only (NOT targets/dashboards, PO 2026-06-28); Tier 3 parked.** Work Tier 0 → Tier 1.
+
+### Tier 0 — make it impossible to build something that won't deploy (highest leverage)
+- **[NEW] Authoring-time preflight validator.** In-app "Ready to deploy?" panel that runs cht-conf's *hard gates* before the user ever runs cht-conf: required files present (the template-requirements set), XLSForm `name`s are valid identifiers, XPath refs resolve (the `../../` vs `../../../` class + dangling `${}`), every `select_*` has a non-empty choices list, form_id conventions. Green/red per check + **one-click fixes** (reuse slugify / the meta-path fix / generator-overwrite). Run on Deploy-panel open (optionally on project open). **Share the check logic with the per-template CI compile guard** — one source of truth. Converts the deploy-time stack traces we hit this session into edit-time checkmarks.
+- **[NEW] Own the deploy pipeline end-to-end.** compile → convert → upload as one flow with progress + the existing friendly-error translator + deep-links to the failing item's fix. A non-coder should never see a raw cht-conf trace.
+- **Generator refresh/overwrite + repair** — already queued above (skip-not-overwrite item).
+- **Naming autoderive + rename-macro** — already queued above (pyxform names/refs items).
+
+### Tier 1 — let people SEE it (biggest gap vs CommCare/Kobo) — both want a plan/triad pass first
+- **[NEW] Live form preview.** Embed enketo-core (or CHT's form renderer) so the current form renders with live skip/validation/calc. Needs on-demand xls→xml (or reuse the converted `.xml`). README scoped it as ~2 sprints — **plan doc first.**
+- **[NEW] Workflow simulator (highest upside).** Sandbox: user enters a sample contact + sample report(s) → sees the contact-summary (context flags + cards) compute, which app forms become available (`context.expression` eval), which tasks fire (`appliesIf`/events), which targets increment. A mini CHT rules harness over synthetic docs. Neither CommCare nor Kobo simulates care-continuity logic — a leapfrog. **Plan doc first.**
+
+### Tier 2 — selected coverage gaps (PO: these two only)
+- **[NEW] Contact-summary cards/fields editor.** Visual editor for `cards[]` + `fields[]` (today preserved verbatim, no editor). Scope light/hybrid: labels, `appliesToType`, static field lists, reorder; **raw fallback** for imperative `fields: function(){}` cards. Wants a plan pass (real cards are imperative JS — see the cht-default pregnancy card).
+- **[NEW] Translations editor.** View/edit `messages-*.properties` + the keys tasks/cards/targets/summaries reference — key × locale grid with missing-translation highlighting (extend the Forms→Translate pattern to the `.properties` files). Non-destructive: preserve unknown keys verbatim.
+- ~~Targets / dashboard editor~~ — **not now** (PO 2026-06-28). `targets.js` still ships as a stub (deploy requirement) but gets no editor.
+
+### Tier 3 — PARKED
+Review→approve→deploy sign-off flow; guided program recipes; hosted/multi-user mode.
+
+---
+
 ## 1. Start here
 
 ### Working-tree reality (do this FIRST)
