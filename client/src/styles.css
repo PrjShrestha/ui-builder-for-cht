@@ -50,8 +50,28 @@ button.link {
   color: var(--primary);
   padding: 2px 6px;
 }
-button.link.danger { color: var(--danger); }
+/* Row-level delete affordances (×, "delete", "remove") get a solid red
+   pill so the affordance is unmissable on a busy page. Pre-fix these
+   were transparent + pale-red text; ~25 sites across the app read as
+   "faded link" which users kept missing. Padding is a little tighter
+   than the full button.danger so the row layout stays compact. */
+button.link.danger {
+  color: #fff;
+  background: var(--danger);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+button.link.danger:hover:not(:disabled) {
+  background: #991b1b;
+  text-decoration: none;
+}
+button.link.danger:disabled {
+  background: #cbd5e1;
+  color: #fff;
+  cursor: not-allowed;
+}
 button.link:hover:not(:disabled) { text-decoration: underline; background: transparent; }
+button.link.danger:hover:not(:disabled) { text-decoration: none; }
 
 input, select, textarea {
   font-family: inherit;
@@ -669,8 +689,10 @@ code {
 }
 .cfg-mode-fieldset label { align-items: flex-start; }
 .link.danger.small {
-  padding: 0 4px; font-size: 12px; line-height: 1.2;
-  background: transparent; border: 0; cursor: pointer;
+  padding: 1px 6px; font-size: 12px; line-height: 1.4;
+  /* Inherits the solid red background + white text from button.link.danger.
+     The .small modifier just tightens padding + font-size for row toolbars. */
+  border: 0; cursor: pointer;
 }
 .link.danger.small:disabled { opacity: 0.4; cursor: not-allowed; }
 button.danger {
