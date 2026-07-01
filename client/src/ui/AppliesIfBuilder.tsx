@@ -79,6 +79,24 @@ export function AppliesIfBuilder(props: Props) {
       case 'report_field':
         next = { kind: 'report_field', field: 'surveillance.has_chronic_symptoms', op: '===', value: 'yes' };
         break;
+      case 'field_presence':
+        next = { kind: 'field_presence', source: 'report', field: '', negated: false };
+        break;
+      case 'field_age':
+        next = { kind: 'field_age', source: 'report', field: '', unit: 'weeks', op: '>=', value: 42 };
+        break;
+      case 'field_age_between':
+        next = {
+          kind: 'field_age_between',
+          source: 'report',
+          field: '',
+          unit: 'days',
+          min: 84,
+          max: 90,
+          minOp: '>=',
+          maxOp: '<=',
+        };
+        break;
       case 'raw':
         next = { kind: 'raw', text: '' };
         break;
@@ -184,6 +202,9 @@ export function AppliesIfBuilder(props: Props) {
                 <button className="link" onClick={() => addRule('is_task_user')}>+ task user</button>
                 <button className="link" onClick={() => addRule('contact_field')}>+ contact field</button>
                 <button className="link" onClick={() => addRule('report_field')}>+ report field</button>
+                <button className="link" onClick={() => addRule('field_presence')}>+ field is set / not set</button>
+                <button className="link" onClick={() => addRule('field_age')}>+ field age (days/weeks)</button>
+                <button className="link" onClick={() => addRule('field_age_between')}>+ field age BETWEEN</button>
                 <button className="link" onClick={() => addRule('helper')}>+ helper fn</button>
                 <button className="link" onClick={() => addRule('raw')}>+ raw JS</button>
               </div>
@@ -345,6 +366,39 @@ function AppliesIfRuleRow(props: {
         </div>
       );
 
+    case 'field_presence':
+      return (
+        <FieldPresenceRow
+          rule={r}
+          contactForms={props.contactForms ?? []}
+          appliesToType={props.appliesToType ?? []}
+          onChange={props.onChange}
+          remove={remove}
+        />
+      );
+
+    case 'field_age':
+      return (
+        <FieldAgeRow
+          rule={r}
+          contactForms={props.contactForms ?? []}
+          appliesToType={props.appliesToType ?? []}
+          onChange={props.onChange}
+          remove={remove}
+        />
+      );
+
+    case 'field_age_between':
+      return (
+        <FieldAgeBetweenRow
+          rule={r}
+          contactForms={props.contactForms ?? []}
+          appliesToType={props.appliesToType ?? []}
+          onChange={props.onChange}
+          remove={remove}
+        />
+      );
+
     case 'raw':
       return (
         <div className="row gap rule-row">
@@ -358,6 +412,226 @@ function AppliesIfRuleRow(props: {
         </div>
       );
   }
+}
+
+/**
+ * "Field is set / is not set" — parses to `!!<ref>` (positive) or
+ * `!<ref>` (negated). Source dropdown picks report vs contact; field
+ * picker matches the existing ReportFieldPicker / FieldPicker used
+ * elsewhere so the user only picks from real project fields.
+ */
+function FieldPresenceRow(props: {
+  rule: Extract<AppliesIfRule, { kind: 'field_presence' }>;
+  contactForms: ContactFormFields[];
+  appliesToType: string[];
+  onChange: (r: AppliesIfRule) => void;
+  remove: React.ReactNode;
+}) {
+  const { rule: r, contactForms, appliesToType, onChange, remove } = props;
+  return (
+    <div className="row gap rule-row">
+      <select
+        value={r.source}
+        onChange={(e) => onChange({ ...r, source: e.target.value as 'report' | 'contact' })}
+        title="Field source"
+      >
+        <option value="report">report field</option>
+        <option value="contact">contact field</option>
+      </select>
+      {r.source === 'report' ? (
+        <ReportFieldPicker
+          value={r.field}
+          onChange={(v) => onChange({ ...r, field: v })}
+          availableForms={appliesToType}
+        />
+      ) : (
+        <FieldPicker
+          value={r.field}
+          contactForms={contactForms}
+          onChange={(v) => onChange({ ...r, field: v })}
+        />
+      )}
+      <select
+        value={r.negated ? 'not_set' : 'is_set'}
+        onChange={(e) => onChange({ ...r, negated: e.target.value === 'not_set' })}
+      >
+        <option value="is_set">is set</option>
+        <option value="not_set">is not set</option>
+      </select>
+      {remove}
+    </div>
+  );
+}
+
+/**
+ * "Field age" — parses to `(Date.now() - new Date(<ref>).getTime()) / <ms> <op> <n>`.
+ * Unit is a dropdown (days/weeks/months); serializer maps to the matching ms constant.
+ * Value is a positive number (LMP age 42 weeks, dob < 30 days, etc.).
+ */
+function FieldAgeRow(props: {
+  rule: Extract<AppliesIfRule, { kind: 'field_age' }>;
+  contactForms: ContactFormFields[];
+  appliesToType: string[];
+  onChange: (r: AppliesIfRule) => void;
+  remove: React.ReactNode;
+}) {
+  const { rule: r, contactForms, appliesToType, onChange, remove } = props;
+  const valueInvalid = !Number.isFinite(r.value);
+  return (
+    <div className="rule-row-block">
+      <div className="row gap rule-row">
+        <select
+          value={r.source}
+          onChange={(e) => onChange({ ...r, source: e.target.value as 'report' | 'contact' })}
+          title="Field source"
+        >
+          <option value="report">report field</option>
+          <option value="contact">contact field</option>
+        </select>
+        {r.source === 'report' ? (
+          <ReportFieldPicker
+            value={r.field}
+            onChange={(v) => onChange({ ...r, field: v })}
+            availableForms={appliesToType}
+          />
+        ) : (
+          <FieldPicker
+            value={r.field}
+            contactForms={contactForms}
+            onChange={(v) => onChange({ ...r, field: v })}
+          />
+        )}
+        <span className="muted">was</span>
+        <select
+          value={r.op}
+          onChange={(e) =>
+            onChange({
+              ...r,
+              op: e.target.value as '===' | '!==' | '>' | '<' | '>=' | '<=',
+            })
+          }
+        >
+          <option value=">=">at least</option>
+          <option value=">">more than</option>
+          <option value="<=">at most</option>
+          <option value="<">less than</option>
+          <option value="===">exactly</option>
+          <option value="!==">not exactly</option>
+        </select>
+        <input
+          type="number"
+          value={Number.isFinite(r.value) ? r.value : ''}
+          onChange={(e) => onChange({ ...r, value: Number(e.target.value) })}
+          className={valueInvalid ? 'invalid' : ''}
+          style={{ width: 72 }}
+        />
+        <select
+          value={r.unit}
+          onChange={(e) => onChange({ ...r, unit: e.target.value as 'days' | 'weeks' | 'months' })}
+        >
+          <option value="days">days</option>
+          <option value="weeks">weeks</option>
+          <option value="months">months</option>
+        </select>
+        <span className="muted">ago (before today)</span>
+        {remove}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "Field age BETWEEN" — parses/emits two guards ANDed together (min-side +
+ * max-side) over the same source/field/unit. On parse, the shared
+ * `fuseFieldAgeBetween` pass collapses the two field_age rows back into
+ * this single row so open+save doesn't split the range.
+ */
+function FieldAgeBetweenRow(props: {
+  rule: Extract<AppliesIfRule, { kind: 'field_age_between' }>;
+  contactForms: ContactFormFields[];
+  appliesToType: string[];
+  onChange: (r: AppliesIfRule) => void;
+  remove: React.ReactNode;
+}) {
+  const { rule: r, contactForms, appliesToType, onChange, remove } = props;
+  const minInvalid = !Number.isFinite(r.min);
+  const maxInvalid = !Number.isFinite(r.max);
+  const rangeInvalid = Number.isFinite(r.min) && Number.isFinite(r.max) && r.min > r.max;
+  return (
+    <div className="rule-row-block">
+      <div className="row gap rule-row">
+        <select
+          value={r.source}
+          onChange={(e) => onChange({ ...r, source: e.target.value as 'report' | 'contact' })}
+          title="Field source"
+        >
+          <option value="report">report field</option>
+          <option value="contact">contact field</option>
+        </select>
+        {r.source === 'report' ? (
+          <ReportFieldPicker
+            value={r.field}
+            onChange={(v) => onChange({ ...r, field: v })}
+            availableForms={appliesToType}
+          />
+        ) : (
+          <FieldPicker
+            value={r.field}
+            contactForms={contactForms}
+            onChange={(v) => onChange({ ...r, field: v })}
+          />
+        )}
+        <span className="muted">was between</span>
+        <select
+          value={r.minOp}
+          onChange={(e) => onChange({ ...r, minOp: e.target.value as '>=' | '>' })}
+          title="Lower-bound inclusivity"
+        >
+          <option value=">=">at least</option>
+          <option value=">">more than</option>
+        </select>
+        <input
+          type="number"
+          value={Number.isFinite(r.min) ? r.min : ''}
+          onChange={(e) => onChange({ ...r, min: Number(e.target.value) })}
+          className={minInvalid ? 'invalid' : ''}
+          style={{ width: 72 }}
+        />
+        <span className="muted">and</span>
+        <select
+          value={r.maxOp}
+          onChange={(e) => onChange({ ...r, maxOp: e.target.value as '<=' | '<' })}
+          title="Upper-bound inclusivity"
+        >
+          <option value="<=">at most</option>
+          <option value="<">less than</option>
+        </select>
+        <input
+          type="number"
+          value={Number.isFinite(r.max) ? r.max : ''}
+          onChange={(e) => onChange({ ...r, max: Number(e.target.value) })}
+          className={maxInvalid ? 'invalid' : ''}
+          style={{ width: 72 }}
+        />
+        <select
+          value={r.unit}
+          onChange={(e) => onChange({ ...r, unit: e.target.value as 'days' | 'weeks' | 'months' })}
+        >
+          <option value="days">days</option>
+          <option value="weeks">weeks</option>
+          <option value="months">months</option>
+        </select>
+        <span className="muted">ago (before today)</span>
+        {remove}
+      </div>
+      {rangeInvalid && (
+        <div className="rule-row-warning">
+          <strong>Empty range.</strong> Min ({r.min}) is greater than max ({r.max}) — nothing will
+          ever match. Swap the values or the rule can&apos;t fire.
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ContactFieldRow(props: {

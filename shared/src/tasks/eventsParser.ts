@@ -14,6 +14,24 @@
  * the simple `days` integer; we expose both as a single union per event.
  */
 
+import { jsSingleQuoteString } from './jsParser.js';
+
+/**
+ * Structured anchor for a `dueDate: (event, contact, report) => ...` shape we recognized.
+ * `reported_date` = `report.reported_date`
+ * `field`         = `Utils.getField(report, '<field>')`
+ * `lmp`           = `Utils.getLmpDate(report)`  (dedicated helper; handles LMP path variance)
+ */
+export type EventAnchor =
+  | { kind: 'reported_date' }
+  | { kind: 'field'; field: string }
+  | { kind: 'lmp' };
+
+export interface EventOffset {
+  value: number;
+  unit: 'days' | 'weeks';
+}
+
 export interface SimpleEvent {
   /** Unique id of the event (e.g. 'pregnancy_v1'). Optional in source but encouraged. */
   id?: string;
@@ -23,7 +41,14 @@ export interface SimpleEvent {
   start?: number;
   /** Window closes `end` days after the due date. */
   end?: number;
-  /** Raw `dueDate: function(...) {...}` source if present (mutually exclusive with `days`). */
+  /**
+   * Structured `dueDate` anchor + offset. Populated when the raw dueDate matches
+   * one of the shapes in `parseDueDateExpr`. Mutually exclusive with `days` and
+   * `dueDateRaw` (a shape we lifted structurally does not leave a raw copy).
+   */
+  anchor?: EventAnchor;
+  offset?: EventOffset;
+  /** Raw `dueDate: function(...) {...}` source if present (mutually exclusive with `days` + `anchor`). */
   dueDateRaw?: string;
   /** Any other key/value pairs we don't understand. Preserved verbatim. */
   extras: Record<string, string>;
@@ -70,13 +95,50 @@ export function serializeEvents(parsed: ParsedEvents): string {
 
 function serializeEvent(e: SimpleEvent): string {
   const parts: string[] = [];
-  if (e.id !== undefined) parts.push(`id: ${JSON.stringify(e.id)}`);
-  if (e.days !== undefined) parts.push(`days: ${e.days}`);
+  // Single-quote (not JSON.stringify's double-quote) to match CHT's
+  // eslint `quotes: ['error', 'single']` rule — cht-conf compile fails
+  // if we emit double-quoted strings into tasks.js.
+  if (e.id !== undefined) parts.push(`id: ${jsSingleQuoteString(e.id)}`);
+  // Structured anchor/offset takes priority when present: emit dueDate.
+  // Exception: reported_date + days unit → keep as plain `days:` to preserve
+  // byte-stability of existing forms (do NOT rewrite plain events into dueDate).
+  const structured = renderStructuredDueDate(e);
+  if (structured !== null) {
+    if (e.days !== undefined) parts.push(`days: ${e.days}`);
+    parts.push(`dueDate: ${structured}`);
+  } else if (e.anchor && e.offset && e.anchor.kind === 'reported_date' && e.offset.unit === 'days') {
+    // reported_date + days = the plain-days case; emit `days:` and skip dueDate.
+    parts.push(`days: ${e.offset.value}`);
+  } else {
+    if (e.days !== undefined) parts.push(`days: ${e.days}`);
+    if (e.dueDateRaw) parts.push(`dueDate: ${e.dueDateRaw}`);
+  }
   if (e.start !== undefined) parts.push(`start: ${e.start}`);
   if (e.end !== undefined) parts.push(`end: ${e.end}`);
-  if (e.dueDateRaw) parts.push(`dueDate: ${e.dueDateRaw}`);
   for (const [k, v] of Object.entries(e.extras)) parts.push(`${k}: ${v}`);
   return `{ ${parts.join(', ')} }`;
+}
+
+/**
+ * Render a structured `dueDate: ...` arrow expression for an anchor+offset,
+ * or null if the event isn't a structural dueDate case. Reported_date + days
+ * is intentionally null (keeps plain `days:` for byte-stability).
+ */
+function renderStructuredDueDate(e: SimpleEvent): string | null {
+  if (!e.anchor || !e.offset) return null;
+  const days = e.offset.unit === 'weeks' ? e.offset.value * 7 : e.offset.value;
+  if (e.anchor.kind === 'reported_date') {
+    // Only emit dueDate for weeks unit — days stays as `days:` (see caller).
+    if (e.offset.unit === 'weeks') {
+      return `(event, contact, report) => Utils.addDate(report.reported_date, ${days})`;
+    }
+    return null;
+  }
+  if (e.anchor.kind === 'lmp') {
+    return `(event, contact, report) => Utils.addDate(Utils.getLmpDate(report), ${days})`;
+  }
+  // field
+  return `(event, contact, report) => Utils.addDate(new Date(Utils.getField(report, '${e.anchor.field}')), ${days})`;
 }
 
 function parseEventObject(src: string): SimpleEvent | null {
@@ -144,10 +206,92 @@ function classifyEventKey(event: SimpleEvent, key: string, valueRaw: string): vo
     return;
   }
   if (k === 'duedate' || k === 'dueDate') {
-    event.dueDateRaw = valueRaw;
+    // Try to lift into structured anchor+offset. Any shape we don't recognize
+    // falls back to `dueDateRaw` (raw fallback preserves the user's expression
+    // verbatim).
+    const lifted = parseDueDateExpr(valueRaw);
+    if (lifted) {
+      event.anchor = lifted.anchor;
+      event.offset = lifted.offset;
+    } else {
+      event.dueDateRaw = valueRaw;
+    }
     return;
   }
   event.extras[key] = valueRaw;
+}
+
+/**
+ * Try to lift a `dueDate` expression into structured anchor+offset. Recognized
+ * shapes (whitespace-agnostic, param names ignored):
+ *   (e, c, r) => Utils.addDate(new Date(Utils.getField(r, 'X')), N)  → field anchor
+ *   (e, c, r) => Utils.addDate(Utils.getLmpDate(r), N)               → LMP anchor
+ *   (e, c, r) => Utils.addDate(r.reported_date, N)                   → reported_date anchor
+ *   function (e, c, r) { return Utils.addDate(...) }                 → same as above
+ * `N` that's a multiple of 7 becomes weeks; else days. Returns null for anything else
+ * (caller preserves the raw expression via `dueDateRaw`).
+ */
+export function parseDueDateExpr(
+  expr: string,
+): { anchor: EventAnchor; offset: EventOffset } | null {
+  const body = extractArrowOrFunctionBody(expr);
+  if (body === null) return null;
+  // Extract the `Utils.addDate(<anchorExpr>, <days>)` call, ignoring whitespace.
+  const call = /^Utils\.addDate\(\s*([\s\S]+?)\s*,\s*(-?\d+)\s*\)$/.exec(body.trim());
+  if (!call || !call[1] || call[2] === undefined) return null;
+  const anchorExpr = call[1].trim();
+  const days = Number(call[2]);
+  if (!Number.isFinite(days)) return null;
+  const offset: EventOffset =
+    days !== 0 && days % 7 === 0
+      ? { value: days / 7, unit: 'weeks' }
+      : { value: days, unit: 'days' };
+
+  // report.reported_date  (any single-token param — 'report'/'r'/etc — we accept literal 'report' here since we normalized)
+  if (/^[a-zA-Z_$][\w$]*\.reported_date$/.test(anchorExpr)) {
+    return { anchor: { kind: 'reported_date' }, offset };
+  }
+  // Utils.getLmpDate(report)
+  if (/^Utils\.getLmpDate\(\s*[a-zA-Z_$][\w$]*\s*\)$/.test(anchorExpr)) {
+    return { anchor: { kind: 'lmp' }, offset };
+  }
+  // new Date(Utils.getField(report, 'X'))
+  const fieldMatch = /^new\s+Date\(\s*Utils\.getField\(\s*[a-zA-Z_$][\w$]*\s*,\s*'([^']+)'\s*\)\s*\)$/.exec(
+    anchorExpr,
+  );
+  if (fieldMatch && fieldMatch[1]) {
+    return { anchor: { kind: 'field', field: fieldMatch[1] }, offset };
+  }
+  return null;
+}
+
+/**
+ * Given an arrow (`(a, b, c) => body` or `x => body`) or `function (...) { return body }`,
+ * return the body expression trimmed. Braced arrow bodies (`() => { return X }`) are
+ * unwrapped. Anything else returns null (caller falls back to raw).
+ */
+function extractArrowOrFunctionBody(expr: string): string | null {
+  const src = expr.trim();
+  // Arrow: [(params)]? => body
+  const arrow = /^(?:\(([^)]*)\)|([a-zA-Z_$][\w$]*))\s*=>\s*([\s\S]+)$/.exec(src);
+  if (arrow) {
+    const body = arrow[3]!.trim();
+    // Braced body: unwrap { return X; }
+    if (body.startsWith('{') && body.endsWith('}')) {
+      const inner = body.slice(1, -1).trim();
+      const ret = /^return\s+([\s\S]+?);?\s*$/.exec(inner);
+      return ret && ret[1] ? ret[1].trim() : null;
+    }
+    return body;
+  }
+  // function (params) { return body; }
+  const fn = /^function\s*[a-zA-Z_$]*\s*\(([^)]*)\)\s*\{([\s\S]*)\}\s*$/.exec(src);
+  if (fn) {
+    const inner = fn[2]!.trim();
+    const ret = /^return\s+([\s\S]+?);?\s*$/.exec(inner);
+    return ret && ret[1] ? ret[1].trim() : null;
+  }
+  return null;
 }
 
 /* ------------------------- helpers ------------------------- */

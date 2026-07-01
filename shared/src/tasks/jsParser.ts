@@ -48,6 +48,23 @@ export type FieldValue =
   | { kind: 'function'; raw: string }
   | { kind: 'unknown'; raw: string };
 
+/**
+ * Render a JS string literal using SINGLE quotes — the CHT eslint config
+ * enforces `quotes: ['error', 'single']`, so anything we emit into tasks.js /
+ * targets.js / contact-summary.templated.js must use single quotes or the
+ * generated file fails `cht compile-app-settings` (webpack warns-as-error on
+ * the lint pass). Escapes backslashes, single quotes, and control chars.
+ */
+export function jsSingleQuoteString(s: string): string {
+  const escaped = s
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+  return `'${escaped}'`;
+}
+
 /** Extract entries from a tasks.js / targets.js / similar source string. */
 export function parseTaskFile(source: string): ParsedTaskFile {
   const arrayBounds = findExportArrayBounds(source);

@@ -456,6 +456,18 @@ function appliesIfRuleHumanReadable(r: AppliesIfRule): string {
       return `contact.contact.${r.field} ${opSym(r.op)} ${isEqOp(r.op) ? `"${r.value}"` : r.value}`;
     case 'report_field':
       return `Report field "${r.field}" ${opSym(r.op)} ${isEqOp(r.op) ? `"${r.value}"` : r.value}`;
+    case 'field_presence': {
+      const ref = r.source === 'report' ? `Report field "${r.field}"` : `Contact field "${r.field}"`;
+      return `${ref} ${r.negated ? 'is NOT set' : 'is set'}`;
+    }
+    case 'field_age': {
+      const ref = r.source === 'report' ? `Report field "${r.field}"` : `Contact field "${r.field}"`;
+      return `${ref} age ${opSym(r.op)} ${r.value} ${r.unit}`;
+    }
+    case 'field_age_between': {
+      const ref = r.source === 'report' ? `Report field "${r.field}"` : `Contact field "${r.field}"`;
+      return `${ref} age between ${opSym(r.minOp)} ${r.min} and ${opSym(r.maxOp)} ${r.max} ${r.unit}`;
+    }
     case 'raw':
       return r.text;
   }

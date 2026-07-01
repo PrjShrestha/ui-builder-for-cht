@@ -13,6 +13,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
+  jsSingleQuoteString,
   parseTaskFile,
   slugifyHierarchyId,
   type FieldValue,
@@ -287,7 +288,7 @@ function TaskCard(props: {
     if (!v) return '';
     if (v.kind === 'array' || v.kind === 'object' || v.kind === 'function' || v.kind === 'unknown')
       return v.raw;
-    if (v.kind === 'string') return JSON.stringify(v.value);
+    if (v.kind === 'string') return jsSingleQuoteString(v.value);
     if (v.kind === 'number') return String(v.value);
     if (v.kind === 'boolean') return String(v.value);
     if (v.kind === 'identifier') return v.value;
@@ -947,7 +948,9 @@ function rebuildTasksFile(parsed: ParsedTaskFile): string {
 function entryToSource(entry: TaskEntry): string {
   const lines: string[] = [];
   for (const [k, v] of Object.entries(entry.fields)) {
-    const keyOut = /^[a-zA-Z_$][\w$]*$/.test(k) ? k : JSON.stringify(k);
+    // Single-quote non-identifier keys to match CHT's eslint config
+    // (quotes: ['error', 'single']); JSON.stringify would use double quotes.
+    const keyOut = /^[a-zA-Z_$][\w$]*$/.test(k) ? k : jsSingleQuoteString(k);
     lines.push(`    ${keyOut}: ${fieldValueToSource(v)}`);
   }
   return `{\n${lines.join(',\n')}\n  }`;
@@ -956,7 +959,7 @@ function entryToSource(entry: TaskEntry): string {
 function fieldValueToSource(v: FieldValue): string {
   switch (v.kind) {
     case 'string':
-      return JSON.stringify(v.value);
+      return jsSingleQuoteString(v.value);
     case 'number':
       return String(v.value);
     case 'boolean':

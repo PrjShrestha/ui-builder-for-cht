@@ -28,7 +28,58 @@ export type AppliesIfRule =
   | { kind: 'helper'; name: string; args: string; negated: boolean }
   | { kind: 'contact_field'; field: string; op: '===' | '!==' | '>' | '<' | '>=' | '<='; value: string }
   | { kind: 'report_field'; field: string; op: '===' | '!==' | '>' | '<' | '>=' | '<='; value: string }
+  /**
+   * Presence check for a contact or report field. Positive form
+   * ("field IS set") when negated=false; "field is NOT set" when
+   * negated=true. Rendered as `!!<ref>` / `!<ref>`. Handles the
+   * common CHT "gate on a field being non-empty" pattern that
+   * users previously had to write as raw JS.
+   */
+  | { kind: 'field_presence'; source: 'contact' | 'report'; field: string; negated: boolean }
+  /**
+   * Age check: compares (today − field's date) to a value in days /
+   * weeks / months. Common CHT pattern for time-since scheduling
+   * (e.g. "lmp_date was >= 42 weeks ago"). Emits inline JS Date
+   * arithmetic with a fixed unit-multiplier — no project helper
+   * required. Weeks = 604 800 000 ms, months = 2 629 800 000 ms
+   * (30.4375 d avg — matches Utils.now-based schedulers).
+   */
+  | {
+      kind: 'field_age';
+      source: 'contact' | 'report';
+      field: string;
+      unit: 'days' | 'weeks' | 'months';
+      op: '>=' | '<=' | '>' | '<' | '===' | '!==';
+      value: number;
+    }
+  /**
+   * Between-range age check: `min OP1 age OP2 max`. Common CHT
+   * scheduling pattern ("task fires when LMP is 84-90 days old").
+   * `minOp`/`maxOp` capture the endpoint strictness (>= / > for min,
+   * <= / < for max) so round-trip preserves the user's original bounds
+   * exactly. On parse, two adjacent `field_age` rules over the same
+   * source/field/unit — one min-side, one max-side — are FUSED into a
+   * single row so open+save doesn't split them into two lines.
+   */
+  | {
+      kind: 'field_age_between';
+      source: 'contact' | 'report';
+      field: string;
+      unit: 'days' | 'weeks' | 'months';
+      min: number;
+      max: number;
+      minOp: '>=' | '>';
+      maxOp: '<=' | '<';
+    }
   | { kind: 'raw'; text: string };
+
+/** ms per unit for field_age. `months` is 30.4375 d — matches how CHT's
+ *  Utils.now / addDate treat month rounding. */
+const UNIT_MS: Record<'days' | 'weeks' | 'months', number> = {
+  days: 86_400_000,
+  weeks: 604_800_000,
+  months: 2_629_800_000,
+};
 
 export interface ParsedAppliesIf {
   /** The function's signature parameters in declaration order, e.g. ['contact', 'report']. */
@@ -207,7 +258,86 @@ function extractRules(body: string): { rules: AppliesIfRule[]; guardGroups: Arra
     rules.push({ kind: 'raw', text: body.trim() });
     guardGroups.push(undefined);
   }
-  return { rules, guardGroups };
+  // 4) Fuse adjacent `field_age` min/max pairs into a single `field_age_between`
+  //    row so open+save doesn't split a between-range into two lines.
+  return fuseFieldAgeBetween(rules, guardGroups);
+}
+
+/**
+ * Look for adjacent pairs of `field_age` rules that together form a bounded
+ * range on the same source/field/unit, and collapse them into one
+ * `field_age_between` rule. Two rules are fuseable when:
+ *   - both are `field_age` with matching source + field + unit
+ *   - one carries a min-side op (`>=` / `>`) and the other a max-side op
+ *     (`<=` / `<`) — order doesn't matter
+ *   - AND either share the same non-undefined guardGroup (came from a single
+ *     `if (A || B) return false`) OR both have undefined guardGroup and are
+ *     adjacent in the return-form path (`return A && B`).
+ * Runs left-to-right, greedy; any rule that doesn't fuse is left alone.
+ */
+function fuseFieldAgeBetween(
+  rules: AppliesIfRule[],
+  guardGroups: Array<number | undefined>,
+): { rules: AppliesIfRule[]; guardGroups: Array<number | undefined> } {
+  const outRules: AppliesIfRule[] = [];
+  const outGroups: Array<number | undefined> = [];
+  const MIN_OPS = new Set(['>=', '>']);
+  const MAX_OPS = new Set(['<=', '<']);
+  let i = 0;
+  while (i < rules.length) {
+    const a = rules[i]!;
+    const b = rules[i + 1];
+    const ga = guardGroups[i];
+    const gb = guardGroups[i + 1];
+    if (
+      a.kind === 'field_age' &&
+      b &&
+      b.kind === 'field_age' &&
+      a.source === b.source &&
+      a.field === b.field &&
+      a.unit === b.unit &&
+      (ga === gb || (ga === undefined && gb === undefined))
+    ) {
+      const aIsMin = MIN_OPS.has(a.op);
+      const bIsMax = MAX_OPS.has(b.op);
+      const aIsMax = MAX_OPS.has(a.op);
+      const bIsMin = MIN_OPS.has(b.op);
+      if (aIsMin && bIsMax) {
+        outRules.push({
+          kind: 'field_age_between',
+          source: a.source,
+          field: a.field,
+          unit: a.unit,
+          min: a.value,
+          max: b.value,
+          minOp: a.op as '>=' | '>',
+          maxOp: b.op as '<=' | '<',
+        });
+        outGroups.push(ga);
+        i += 2;
+        continue;
+      }
+      if (aIsMax && bIsMin) {
+        outRules.push({
+          kind: 'field_age_between',
+          source: a.source,
+          field: a.field,
+          unit: a.unit,
+          min: b.value,
+          max: a.value,
+          minOp: b.op as '>=' | '>',
+          maxOp: a.op as '<=' | '<',
+        });
+        outGroups.push(ga);
+        i += 2;
+        continue;
+      }
+    }
+    outRules.push(a);
+    outGroups.push(ga);
+    i++;
+  }
+  return { rules: outRules, guardGroups: outGroups };
 }
 
 /** Splits `a || b || c` at top level; honors parens. */
@@ -245,6 +375,30 @@ function splitAtTopLevel(expr: string, ops: string[]): string[] {
 /** Classify a single bare expression (no &&/|| at top level). */
 function classifySimple(expr: string): AppliesIfRule {
   const e = expr.trim();
+
+  // field_presence — `!!<ref>` (positive: is set) or `!<ref>` (positive:
+  // is not set). Checked FIRST (before the leading-`!` strip) so a
+  // `!getField(report, 'X')` guard is recognized as field_presence
+  // rather than being stripped to `getField(...)` and caught by the
+  // helper-fn regex below. `getField(report,'X')` and `contact.contact.X`
+  // are the two allowed refs.
+  const bangBangReport = /^!!(?:Utils\.)?getField\(\s*report\s*,\s*'([^']+)'\s*\)$/.exec(e);
+  if (bangBangReport && bangBangReport[1]) {
+    return { kind: 'field_presence', source: 'report', field: bangBangReport[1], negated: false };
+  }
+  const bangReport = /^!(?:Utils\.)?getField\(\s*report\s*,\s*'([^']+)'\s*\)$/.exec(e);
+  if (bangReport && bangReport[1]) {
+    return { kind: 'field_presence', source: 'report', field: bangReport[1], negated: true };
+  }
+  const bangBangContact = /^!!contact\.contact\.([a-zA-Z_$][\w$.]*)$/.exec(e);
+  if (bangBangContact && bangBangContact[1]) {
+    return { kind: 'field_presence', source: 'contact', field: bangBangContact[1], negated: false };
+  }
+  const bangContact = /^!contact\.contact\.([a-zA-Z_$][\w$.]*)$/.exec(e);
+  if (bangContact && bangContact[1]) {
+    return { kind: 'field_presence', source: 'contact', field: bangContact[1], negated: true };
+  }
+
   // Strip leading ! for negation tracking.
   let negated = false;
   let stripped = e;
@@ -292,7 +446,7 @@ function classifySimple(expr: string): AppliesIfRule {
 
   // getField(report, 'X') === 'Y'
   const reportCmp =
-    /^getField\(\s*report\s*,\s*'([^']+)'\s*\)\s*(===|!==|==|!=)\s*'([^']*)'$/.exec(stripped);
+    /^(?:Utils\.)?getField\(\s*report\s*,\s*'([^']+)'\s*\)\s*(===|!==|==|!=)\s*'([^']*)'$/.exec(stripped);
   if (reportCmp && reportCmp[1] && reportCmp[2] && reportCmp[3] !== undefined) {
     return {
       kind: 'report_field',
@@ -304,7 +458,7 @@ function classifySimple(expr: string): AppliesIfRule {
 
   // getField(report, 'X') OP NUMBER (numeric)
   const reportCmpNum =
-    /^getField\(\s*report\s*,\s*'([^']+)'\s*\)\s*(>=|<=|===|!==|==|!=|>|<)\s*(-?\d+(?:\.\d+)?)$/.exec(
+    /^(?:Utils\.)?getField\(\s*report\s*,\s*'([^']+)'\s*\)\s*(>=|<=|===|!==|==|!=|>|<)\s*(-?\d+(?:\.\d+)?)$/.exec(
       stripped,
     );
   if (reportCmpNum && reportCmpNum[1] && reportCmpNum[2] && reportCmpNum[3]) {
@@ -314,6 +468,51 @@ function classifySimple(expr: string): AppliesIfRule {
       op: normalizeOp(reportCmpNum[2]),
       value: reportCmpNum[3],
     };
+  }
+
+  // field_age: (Date.now() - new Date(<ref>).getTime()) / <ms> <op> <n>
+  // Matches parenthesized form the serializer emits. `<ref>` is either
+  // getField(report, 'X') or contact.contact.X. `<op>` and `<n>` land
+  // in the rule verbatim (unit is inferred from <ms>).
+  //
+  // Regex captures: 1=ref, 2=ms, 3=op, 4=number.
+  const ageRe = new RegExp(
+    '^\\(Date\\.now\\(\\)\\s*-\\s*new Date\\(' +
+      '((?:Utils\\.)?getField\\(\\s*report\\s*,\\s*\'[^\']+\'\\s*\\)|contact\\.contact\\.[a-zA-Z_$][\\w$.]*)' +
+      '\\)\\.getTime\\(\\)\\)\\s*/\\s*(\\d+)\\s*' +
+      '(>=|<=|===|!==|==|!=|>|<)\\s*' +
+      '(-?\\d+(?:\\.\\d+)?)$',
+  );
+  const ageMatch = ageRe.exec(stripped);
+  if (ageMatch && ageMatch[1] && ageMatch[2] && ageMatch[3] && ageMatch[4]) {
+    const refRaw = ageMatch[1];
+    const ms = Number(ageMatch[2]);
+    // Unit inferred from ms. If a project hand-edited the multiplier
+    // to something we don't recognize, fall through to raw so the
+    // custom value survives round-trip.
+    let unit: 'days' | 'weeks' | 'months' | null = null;
+    for (const [k, v] of Object.entries(UNIT_MS)) {
+      if (v === ms) {
+        unit = k as 'days' | 'weeks' | 'months';
+        break;
+      }
+    }
+    if (unit) {
+      const source: 'contact' | 'report' =
+        refRaw.startsWith('getField(') || refRaw.startsWith('Utils.getField(') ? 'report' : 'contact';
+      const field =
+        source === 'report'
+          ? /'([^']+)'/.exec(refRaw)?.[1] ?? ''
+          : refRaw.slice('contact.contact.'.length);
+      return {
+        kind: 'field_age',
+        source,
+        field,
+        unit,
+        op: normalizeOp(ageMatch[3]),
+        value: Number(ageMatch[4]),
+      };
+    }
   }
 
   return { kind: 'raw', text: e };
@@ -357,10 +556,21 @@ function invertGuardRule(r: AppliesIfRule): AppliesIfRule {
     case 'is_muted':
     case 'has_error':
     case 'helper':
+    case 'field_presence':
       return { ...r, negated: !r.negated };
     case 'contact_field':
     case 'report_field':
+    case 'field_age':
       return { ...r, op: invertOp(r.op) };
+    case 'field_age_between':
+      // Not reached in the parse path — fusion runs AFTER invertGuardRule,
+      // so the parser only ever hands single field_age rules to this
+      // function. But for exhaustiveness (and safety if a caller builds a
+      // ParsedAppliesIf by hand and hands it in), flipping a between rule
+      // means "invert the range" — which is a disjunction, not another
+      // between. We treat it as identity; the fusion step never feeds this
+      // path in practice.
+      return r;
     case 'is_task_user':
       // Guards usually check `!isTaskUser(user)` → the rule is "is task user". Negation
       // doesn't apply here; treat presence as the positive requirement.
@@ -436,7 +646,45 @@ function ruleToGuardSource(rule: AppliesIfRule): string | null {
     }
     case 'report_field': {
       const cmp = invertOp(rule.op);
-      return `getField(report, '${rule.field}') ${cmp} ${fmtCmpValue(cmp, rule.value)}`;
+      return `Utils.getField(report, '${rule.field}') ${cmp} ${fmtCmpValue(cmp, rule.value)}`;
+    }
+    case 'field_presence': {
+      // Positive rule = "field IS set" (negated=false) or "NOT set"
+      // (negated=true). Guard is the opposite: exit when the positive
+      // condition FAILS. So negated=false → guard exits on "!<ref>";
+      // negated=true → guard exits on "!!<ref>" (truthy).
+      const ref =
+        rule.source === 'report'
+          ? `Utils.getField(report, '${rule.field}')`
+          : `contact.contact.${rule.field}`;
+      return rule.negated ? `!!${ref}` : `!${ref}`;
+    }
+    case 'field_age': {
+      const ref =
+        rule.source === 'report'
+          ? `Utils.getField(report, '${rule.field}')`
+          : `contact.contact.${rule.field}`;
+      const ms = UNIT_MS[rule.unit];
+      const cmp = invertOp(rule.op);
+      return `(Date.now() - new Date(${ref}).getTime()) / ${ms} ${cmp} ${rule.value}`;
+    }
+    case 'field_age_between': {
+      // Positive rule: min minOp age maxOp max (e.g. "84 ≤ age ≤ 90").
+      // Guard = inverted disjunction: "age < min OR age > max" — but with
+      // strictness flipped to match the endpoint's exclusivity.
+      //   minOp >= → guard side: age < min      (invertOp on >=)
+      //   minOp >  → guard side: age <= min     (invertOp on >)
+      //   maxOp <= → guard side: age > max      (invertOp on <=)
+      //   maxOp <  → guard side: age >= max     (invertOp on <)
+      const ref =
+        rule.source === 'report'
+          ? `Utils.getField(report, '${rule.field}')`
+          : `contact.contact.${rule.field}`;
+      const ms = UNIT_MS[rule.unit];
+      const ageExpr = `(Date.now() - new Date(${ref}).getTime()) / ${ms}`;
+      const minGuardOp = invertOp(rule.minOp);
+      const maxGuardOp = invertOp(rule.maxOp);
+      return `${ageExpr} ${minGuardOp} ${rule.min} || ${ageExpr} ${maxGuardOp} ${rule.max}`;
     }
     case 'raw':
       return rule.text || null;
