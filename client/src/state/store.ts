@@ -19,7 +19,8 @@ export type View =
   | { kind: 'flowchart'; id: string }
   | { kind: 'decisions' }
   | { kind: 'deploy' }
-  | { kind: 'standard-codes' };
+  | { kind: 'standard-codes' }
+  | { kind: 'translations' };
 
 export interface ProjectInfo {
   path: string;

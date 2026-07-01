@@ -7,9 +7,17 @@
  * behind a target form (--local | --instance | --url) plus a username.
  * Passwords are typed each run and never persisted.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  runPreflight,
+  type PreflightContext,
+  type PreflightContextForm,
+  type PreflightFix,
+  type XLSForm,
+} from '@cht-ui/shared';
 import { api, type DeployConfig } from '../api.js';
 import { useApp } from '../state/store.js';
+import { PreflightPanel } from './PreflightPanel.js';
 
 interface FriendlyHint {
   patternId: string;
@@ -77,6 +85,39 @@ const CATEGORY_LABELS: Record<Category, string> = {
   danger: 'Danger zone',
 };
 
+/**
+ * The one-click deploy pipeline's default step order — matches the server's
+ * DEPLOY_STEPS enum in server/src/routes/deploy.ts. Kept local (not
+ * re-exported from server) because the client only needs the names as
+ * strings; the server validates each name against its own allowlist.
+ */
+const DEFAULT_DEPLOY_STEPS: readonly string[] = [
+  'compile-app-settings',
+  'convert-app-forms',
+  'convert-contact-forms',
+  'upload-app-forms',
+  'upload-contact-forms',
+  'upload-app-settings',
+];
+
+interface DeployRunStep {
+  step: string;
+  status: 'pending' | 'running' | 'success' | 'fail';
+  stderrExcerpt?: string;
+  translated?: FriendlyHint;
+}
+
+/**
+ * Compact a stderr blob for inline display next to a failed step. Prefers
+ * the last non-empty line (that's where cht-conf's actual error usually
+ * lives); falls back to the last ~200 chars if the tail is empty.
+ */
+function excerptStderr(stderr: string): string {
+  const lines = stderr.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  if (lines.length === 0) return stderr.slice(-200);
+  return lines[lines.length - 1]!;
+}
+
 const CATEGORY_HINTS: Record<Category, string> = {
   validate: 'Read-only checks. Safe to run anytime.',
   compile: 'Compiles app_settings.json from tasks.js, contact-summary, schedules.',
@@ -133,6 +174,22 @@ export function DeployPanel() {
   const logEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
+  // Preflight — parsed forms cache keyed by formId. Loaded once on mount for
+  // every form the project ships; individual form saves elsewhere invalidate
+  // by re-fetching via the "reload preflight" affordance (implicit here —
+  // navigating away and back re-runs the effect). The shared runner is pure,
+  // so as long as the cache is fresh the panel reflects reality.
+  const [preflightForms, setPreflightForms] = useState<PreflightContextForm[]>([]);
+
+  // One-click deploy state. Kept parallel to the per-action `running` /
+  // `lines` state so a power-user macro run and the one-click run never
+  // stomp each other's log — the one-click flow has its own progress + hint
+  // buffers, wired to a distinct NDJSON stream.
+  const [deploySteps, setDeploySteps] = useState<Set<string>>(new Set(DEFAULT_DEPLOY_STEPS));
+  const [deployRunning, setDeployRunning] = useState(false);
+  const [deployProgress, setDeployProgress] = useState<DeployRunStep[]>([]);
+  const [overridePreflight, setOverridePreflight] = useState(false);
+
   async function runTestConnection(): Promise<void> {
     setTestingConnection(true);
     setConnectionResult(null);
@@ -183,12 +240,193 @@ export function DeployPanel() {
     };
   }, []);
 
+  // Preflight — fetch every form once and parse-cache it for the shared
+  // runner. Uses `allForms` as the source-of-truth; each `api.getForm` call
+  // is independent so we fan them out in parallel and settle to whatever
+  // succeeded (a single failing form doesn't blank the panel). The
+  // required-files probe stays null this cycle — no server route exists
+  // yet, and the shared runner's contract is "null → skip the pack".
+  useEffect(() => {
+    if (allForms.length === 0) {
+      setPreflightForms([]);
+      return;
+    }
+    let alive = true;
+    void Promise.allSettled(
+      allForms.map(async (f) => ({
+        formId: f.basename,
+        xlsform: (await api.getForm(f.formId)).form as XLSForm,
+        isContactForm: f.category === 'contact',
+      })),
+    ).then((results) => {
+      if (!alive) return;
+      const out: PreflightContextForm[] = [];
+      for (const r of results) {
+        if (r.status === 'fulfilled') out.push(r.value);
+      }
+      setPreflightForms(out);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [allForms]);
+
+  const preflightCtx: PreflightContext = useMemo(
+    () => ({ forms: preflightForms, requiredFiles: null }),
+    [preflightForms],
+  );
+
+  const preflightErrorCount = useMemo(
+    () => runPreflight(preflightCtx).filter((r) => r.severity === 'error').length,
+    [preflightCtx],
+  );
+
   async function saveConfig(next: DeployConfig) {
     setConfig(next);
     try {
       await api.setDeployConfig(next);
     } catch (e) {
       setError((e as Error).message);
+    }
+  }
+
+  /**
+   * Route a preflight fix descriptor to the appropriate editor. This is
+   * navigation + hand-off only — the actual mutation happens in the
+   * FormEditor / HierarchyEditor. `formId` in preflight fix descriptors
+   * is the form BASENAME (see PreflightContextForm.formId); the app's
+   * View shape uses the composite id `app:<basename>` / `contact:<basename>`,
+   * so we resolve back to a FormListEntry.id via `allForms`.
+   */
+  function handlePreflightFix(fix: PreflightFix) {
+    if (fix.kind === 'rename-row') {
+      const match = allForms.find((f) => f.basename === fix.formId);
+      if (!match) {
+        // eslint-disable-next-line no-undef
+        window.alert(`Could not find form "${fix.formId}" — reload and try again.`);
+        return;
+      }
+      // Existing jump-to-row pattern: setView opens FormEditor; FormEditor's
+      // local revealRowId channel takes over once the row id is in the URL /
+      // hash slot. This cycle we drop into the form; the highlighted-row
+      // scroll follow-up needs a store-level revealRowId slot and is called
+      // out as a shared non-goal in owned-deploy-pipeline.md §Non-goals.
+      useApp.getState().setView({ kind: 'form', id: match.formId });
+      return;
+    }
+    if (fix.kind === 'regenerate-contact-form') {
+      // eslint-disable-next-line no-undef
+      window.alert(
+        `Regenerating contact form "${fix.formId}" — opening the hierarchy editor. ` +
+          'Click "Generate contact forms…" and choose "Regenerate (overwrite existing)".',
+      );
+      useApp.getState().setView({ kind: 'hierarchy' });
+      return;
+    }
+    if (fix.kind === 'stub-file') {
+      // Stubbing missing files needs a server-side write route
+      // (POST /api/preflight/stub-file); until that lands, surface the
+      // intended action so the user can drop in the file by hand. Same
+      // content lives in server/templates/blank/ per the templates-ship-
+      // required-minimal memory.
+      // eslint-disable-next-line no-undef
+      window.alert(
+        `Missing required file: ${fix.path}\n\n` +
+          `This project is missing ${fix.path}. To scaffold it, run:\n\n` +
+          `  cht-conf-init\n\n` +
+          `or copy the template from server/templates/blank/${fix.path} into the project root.`,
+      );
+      return;
+    }
+    if (fix.kind === 'add-choice-list') {
+      const match = allForms.find((f) => f.basename === fix.formId);
+      if (!match) {
+        // eslint-disable-next-line no-undef
+        window.alert(`Could not find form "${fix.formId}" — reload and try again.`);
+        return;
+      }
+      useApp.getState().setView({ kind: 'form', id: match.formId });
+      return;
+    }
+  }
+
+  /**
+   * One-click owned-deploy pipeline. Streams NDJSON from POST /api/deploy/run;
+   * updates the per-step progress list as events arrive. This flow is
+   * distinct from the per-macro runs above — it uses HTTP streaming, not
+   * SSE-subscribe-by-runId, and populates its own progress buffer instead
+   * of the shared log. The existing per-step buttons still work unchanged.
+   */
+  async function runOneClickDeploy() {
+    if (!config) return;
+    setError(null);
+    const steps = DEFAULT_DEPLOY_STEPS.filter((s) => deploySteps.has(s));
+    if (steps.length === 0) {
+      setError('Pick at least one step to run.');
+      return;
+    }
+    // Resolve the deploy URL the same way testConnection does. --local
+    // points at the medic docker default; --instance expands to the
+    // dev.medicmobile.org convention; --url passes through.
+    let url: string;
+    if (config.target === 'local') url = 'https://localhost:5988';
+    else if (config.target === 'instance' && config.instance) {
+      url = `https://${config.instance}.dev.medicmobile.org`;
+    } else if (config.target === 'url' && config.url) url = config.url;
+    else {
+      setError('Deploy target is not configured.');
+      return;
+    }
+    if (!config.user) {
+      setError('Enter a user in the deploy target form above.');
+      return;
+    }
+    if (!password) {
+      setError('Enter the deploy password first.');
+      return;
+    }
+    setDeployRunning(true);
+    setDeployProgress(steps.map((s) => ({ step: s, status: 'pending' })));
+    try {
+      for await (const evt of api.deployRun({
+        url,
+        user: config.user,
+        password,
+        steps,
+      })) {
+        const kind = evt['event'];
+        if (kind === 'step-start') {
+          const step = String(evt['step']);
+          setDeployProgress((prev) =>
+            prev.map((s) => (s.step === step ? { ...s, status: 'running' } : s)),
+          );
+        } else if (kind === 'step-success') {
+          const step = String(evt['step']);
+          setDeployProgress((prev) =>
+            prev.map((s) => (s.step === step ? { ...s, status: 'success' } : s)),
+          );
+        } else if (kind === 'step-error') {
+          const step = String(evt['step']);
+          const stderr = typeof evt['stderr'] === 'string' ? (evt['stderr'] as string) : '';
+          const translated = evt['translated'] as FriendlyHint | undefined;
+          setDeployProgress((prev) =>
+            prev.map((s) =>
+              s.step === step
+                ? {
+                    ...s,
+                    status: 'fail',
+                    stderrExcerpt: excerptStderr(stderr),
+                    translated,
+                  }
+                : s,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDeployRunning(false);
     }
   }
 
@@ -342,6 +580,13 @@ export function DeployPanel() {
 
       {error && <div className="error-banner">{error}</div>}
 
+      {/* Tier 0 — preflight validator ("Ready to deploy?"). Runs cht-conf's
+          hard gates BEFORE cht-conf, so a non-coder never sees a raw
+          pyxform trace. onFix routes each fix descriptor to the correct
+          editor; the actual mutation happens there (per-fix commentary in
+          handlePreflightFix). See docs/plans/preflight-validator.md. */}
+      <PreflightPanel ctx={preflightCtx} onFix={handlePreflightFix} />
+
       <DeployTargetForm
         config={config}
         password={password}
@@ -365,6 +610,30 @@ export function DeployPanel() {
         password={password}
         binaryAvailable={binaryAvailable}
         onRun={(macro) => void runMacro(macro)}
+      />
+
+      {/* Tier 0 — one-click owned deploy pipeline (POST /api/deploy/run).
+          Additive: the per-step buttons and per-macro buttons still work.
+          Gated on preflight-error count === 0; "Deploy anyway" is the
+          escape hatch for power users who know what they're doing. */}
+      <OneClickDeployBar
+        binaryAvailable={binaryAvailable}
+        running={deployRunning}
+        preflightErrorCount={preflightErrorCount}
+        overridePreflight={overridePreflight}
+        onToggleOverride={() => setOverridePreflight((v) => !v)}
+        steps={DEFAULT_DEPLOY_STEPS}
+        selectedSteps={deploySteps}
+        onToggleStep={(step) =>
+          setDeploySteps((prev) => {
+            const next = new Set(prev);
+            if (next.has(step)) next.delete(step);
+            else next.add(step);
+            return next;
+          })
+        }
+        progress={deployProgress}
+        onRun={() => void runOneClickDeploy()}
       />
 
       <div className="card" style={{ padding: '10px 14px' }}>
@@ -1143,6 +1412,123 @@ function DeployReadinessChecklist(props: {
           </li>
         ))}
       </ul>
+    </section>
+  );
+}
+
+/* ----------------------- One-click deploy pipeline ----------------------- */
+
+/**
+ * Tier 0 owned-deploy pipeline bar. One button runs the full sequence
+ * (compile → convert → upload) through POST /api/deploy/run and streams
+ * per-step progress inline. Gated on preflight errors === 0, with a
+ * "Deploy anyway" escape link for power users.
+ *
+ * Kept as an additive layer over the existing per-step and per-macro
+ * buttons — none of the older paths are replaced.
+ */
+function OneClickDeployBar(props: {
+  binaryAvailable: boolean;
+  running: boolean;
+  preflightErrorCount: number;
+  overridePreflight: boolean;
+  onToggleOverride: () => void;
+  steps: readonly string[];
+  selectedSteps: Set<string>;
+  onToggleStep: (step: string) => void;
+  progress: DeployRunStep[];
+  onRun: () => void;
+}) {
+  const preflightBlocked = props.preflightErrorCount > 0 && !props.overridePreflight;
+  const disabled = props.running || !props.binaryAvailable || preflightBlocked;
+
+  const glyph: Record<DeployRunStep['status'], string> = {
+    pending: '◌',
+    running: '▶',
+    success: '✓',
+    fail: '✕',
+  };
+
+  return (
+    <section className="card deploy-oneclick">
+      <header className="row gap" style={{ alignItems: 'baseline' }}>
+        <strong>One-click deploy</strong>
+        <span className="muted small">
+          runs the owned pipeline (compile → convert → upload) as a single
+          streamed request — no runId to track
+        </span>
+      </header>
+      <div className="row gap" style={{ flexWrap: 'wrap' }}>
+        {props.steps.map((s) => (
+          <label
+            key={s}
+            className="row gap"
+            style={{ alignItems: 'center', cursor: 'pointer', fontSize: 13 }}
+          >
+            <input
+              type="checkbox"
+              checked={props.selectedSteps.has(s)}
+              onChange={() => props.onToggleStep(s)}
+              disabled={props.running}
+            />
+            <code>{s}</code>
+          </label>
+        ))}
+      </div>
+      <div className="row gap" style={{ alignItems: 'center' }}>
+        <button
+          onClick={props.onRun}
+          disabled={disabled}
+          title={
+            preflightBlocked
+              ? `${props.preflightErrorCount} preflight error(s) — fix them or click "Deploy anyway"`
+              : 'Run the owned deploy pipeline'
+          }
+        >
+          {props.running ? 'Deploying…' : 'Deploy'}
+        </button>
+        {preflightBlocked && (
+          <>
+            <span className="muted small">
+              {props.preflightErrorCount} preflight error(s) blocking —
+            </span>
+            <button
+              type="button"
+              className="link"
+              onClick={props.onToggleOverride}
+              disabled={props.running}
+            >
+              Deploy anyway
+            </button>
+          </>
+        )}
+        {props.preflightErrorCount > 0 && props.overridePreflight && (
+          <span className="muted small">
+            (override on — preflight errors ignored)
+          </span>
+        )}
+      </div>
+      {props.progress.length > 0 && (
+        <ul className="deploy-oneclick-progress">
+          {props.progress.map((s) => (
+            <li key={s.step} className={`deploy-oneclick-step state-${s.status}`}>
+              <span className="deploy-oneclick-glyph" aria-hidden="true">
+                {glyph[s.status]}
+              </span>
+              <code className="deploy-oneclick-name">{s.step}</code>
+              {s.status === 'fail' && s.translated && (
+                <span className="deploy-oneclick-friendly">
+                  <strong>{s.translated.friendly}</strong>
+                  {s.translated.hint && <> — {s.translated.hint}</>}
+                </span>
+              )}
+              {s.status === 'fail' && !s.translated && s.stderrExcerpt && (
+                <span className="deploy-oneclick-stderr">{s.stderrExcerpt}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

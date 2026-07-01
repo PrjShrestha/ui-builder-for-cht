@@ -13,9 +13,11 @@ import { registerHierarchyRoutes } from './routes/hierarchy.js';
 import { registerTasksRoutes } from './routes/tasks.js';
 import { registerContactSummaryRoutes } from './routes/contactSummary.js';
 import { registerChtConfRoutes } from './routes/cht-conf.js';
+import { registerDeployRoutes } from './routes/deploy.js';
 import { registerTemplateRoutes } from './routes/templates.js';
 import { registerFhirMappingRoutes } from './routes/fhirMapping.js';
 import { registerDictionaryRoutes } from './routes/dictionaries.js';
+import { registerTranslationRoutes } from './routes/translations.js';
 
 const PORT = Number(process.env.PORT ?? 5174);
 const HOST = process.env.HOST ?? '127.0.0.1';
@@ -37,9 +39,11 @@ async function main() {
   await registerTasksRoutes(app);
   await registerContactSummaryRoutes(app);
   await registerChtConfRoutes(app);
+  await registerDeployRoutes(app);
   await registerTemplateRoutes(app);
   await registerFhirMappingRoutes(app);
   await registerDictionaryRoutes(app);
+  await registerTranslationRoutes(app);
 
   await app.listen({ port: PORT, host: HOST });
   app.log.info(`UI Builder server listening on http://${HOST}:${PORT}`);

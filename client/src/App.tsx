@@ -9,6 +9,7 @@ import { FormEditor } from './ui/FormEditor.js';
 import { HierarchyEditor } from './ui/HierarchyEditor.js';
 import { TasksEditor } from './ui/TasksEditor.js';
 import { ContactSummaryEditor } from './ui/ContactSummaryEditor.js';
+import { TranslationsEditor } from './ui/TranslationsEditor.js';
 import { FlowchartView } from './ui/FlowchartView.js';
 import { DecisionsView } from './ui/DecisionsView.js';
 import { DeployPanel } from './ui/DeployPanel.js';
@@ -88,6 +89,7 @@ export function App() {
           {view.kind === 'hierarchy' && <HierarchyEditor />}
           {view.kind === 'tasks' && <TasksEditor />}
           {view.kind === 'contact-summary' && <ContactSummaryEditor />}
+          {view.kind === 'translations' && <TranslationsEditor />}
           {view.kind === 'flowchart' && <FlowchartView formId={view.id} />}
           {view.kind === 'decisions' && <DecisionsView />}
           {view.kind === 'deploy' && <DeployPanel />}

@@ -131,6 +131,61 @@ export const api = {
       body: JSON.stringify({ actions, password, dryRun }),
     }),
 
+  /**
+   * Owned deploy pipeline — POST /api/deploy/run. Consumes the server's
+   * NDJSON stream and yields one parsed event object per line. Distinct
+   * from `runChtConfSequence`, which uses the runId + SSE subscribe
+   * pattern; this route is single-request, single-response, streaming.
+   *
+   * Callers can `for await (const evt of api.deployRun(payload))` and
+   * dispatch by `evt.event`. Events are typed as `unknown` here — the
+   * server-side envelope shape is deploy.ts's DeployRunEvent, but keeping
+   * this signature loose avoids cross-workspace type coupling for a
+   * single-consumer route.
+   */
+  async *deployRun(payload: {
+    url: string;
+    user: string;
+    password: string;
+    steps: string[];
+    extraArgs?: Record<string, string[]>;
+  }): AsyncGenerator<Record<string, unknown>, void, void> {
+    // eslint-disable-next-line no-undef
+    const res = await fetch('/api/deploy/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok || !res.body) {
+      let detail = '';
+      try {
+        const errBody = (await res.json()) as { error?: string };
+        detail = errBody.error ?? '';
+      } catch {
+        detail = await res.text();
+      }
+      throw new Error(`${res.status} ${res.statusText}${detail ? ' — ' + detail : ''}`);
+    }
+    const reader = res.body.getReader();
+    // eslint-disable-next-line no-undef
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line.length === 0) continue;
+        yield JSON.parse(line) as Record<string, unknown>;
+      }
+    }
+    const tail = buf.trim();
+    if (tail.length > 0) yield JSON.parse(tail) as Record<string, unknown>;
+  },
+
   getChtConfRun: (runId: string) =>
     jsonFetch<{
       id: string;
@@ -308,6 +363,36 @@ export const api = {
         version: string | null;
       }>;
     }>('/api/fhir/dictionary/list'),
+
+  /** Read every `messages-<locale>.properties` file the project ships. The
+   *  server surfaces the parsed line list per file; the client only needs
+   *  the (key, value) entries to render the grid. */
+  getTranslations: () =>
+    jsonFetch<{
+      files: Array<{
+        locale: string;
+        dir: string;
+        path: string;
+        entries: import('@cht-ui/shared').PropertiesFile;
+      }>;
+    }>('/api/translations'),
+
+  /** Batched save for one locale: {updates} pairs are applied via
+   *  `updateProperty` on the server, so every unedited line stays
+   *  byte-identical on disk. `dir` disambiguates when the same locale exists
+   *  in both `translations/` and `app_settings/forms/translations/`. */
+  putTranslations: (
+    locale: string,
+    updates: Array<{ key: string; value: string }>,
+    dir?: string,
+  ) =>
+    jsonFetch<{ ok: true; path: string }>(
+      `/api/translations/${encodeURIComponent(locale)}${dir ? `?dir=${encodeURIComponent(dir)}` : ''}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ updates }),
+      },
+    ),
 
   /** Debounced search over one dictionary. The picker calls this on every
    *  keystroke (after a debounce window); sub-50 ms per call by design. */

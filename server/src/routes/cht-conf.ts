@@ -127,7 +127,7 @@ function newRunId(): string {
   return `run_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
 }
 
-function chtBinary(): string {
+export function chtBinary(): string {
   // The cht-conf binary is installed as a dep of this server workspace.
   // server/dist/routes/cht-conf.js → server/node_modules/.bin/cht.cmd
   const serverRoot = path.resolve(__dirname, '..', '..');
@@ -144,7 +144,7 @@ function chtBinary(): string {
  * the Windows `shell: true` spawn, and cht-conf's `new URL(...)` decodes them
  * back to the originals.
  */
-function buildUrlWithCreds(
+export function buildUrlWithCreds(
   rawUrl: string,
   user: string | undefined,
   password: string | undefined,

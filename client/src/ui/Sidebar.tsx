@@ -68,6 +68,11 @@ export function Sidebar() {
           disabled={!project.hasContactSummary}
         />
         <NavItem
+          label="Translations"
+          active={view.kind === 'translations'}
+          onClick={() => nav({ kind: 'translations' })}
+        />
+        <NavItem
           label="Decisions (sign-off)"
           active={view.kind === 'decisions'}
           onClick={() => nav({ kind: 'decisions' })}

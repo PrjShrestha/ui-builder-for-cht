@@ -7,6 +7,14 @@
  * at the original byte range — fields[] and cards[] are preserved
  * verbatim.
  *
+ * The "Cards" tab layers on top of the same file: it lifts the
+ * `cards = [ ... ]` array into structured entries (label + appliesToType
+ * + [{label, value}] fields). Anything the parser can't lift (imperative
+ * `fields: function () { ... }`, `modifyContext`, unrecognized props)
+ * stays as a RawCard rendered read-only. Save splices the rewritten
+ * cards array back into the file via `spliceCards` — every byte outside
+ * the array literal is preserved.
+ *
  * Falls back to raw code editor if the file doesn't contain a parseable
  * context object.
  */
@@ -17,20 +25,32 @@ import {
   parseHelpers,
   patchHelper,
   removeHelper,
+  parseCards,
+  spliceCards,
+  findCardsArrayBounds,
+  type Card,
+  type CardField,
+  type ParsedCards,
   type ParsedContactSummary,
+  type RawCard,
 } from '@cht-ui/shared';
 import { api } from '../api.js';
 import { useApp } from '../state/store.js';
 import { AppliesIfBuilder, type ContactFormFields } from './AppliesIfBuilder.js';
+import { FieldPicker } from './FieldPicker.js';
 import { useContactFormFields } from './useContactFormFields.js';
 
 type CSFile = 'contact-summary.templated.js' | 'contact-summary.extras.js';
+type CSView = 'structured' | 'cards' | 'helpers' | 'raw';
 
 interface CSState {
   raw: Record<CSFile, string | null>;
   parsed: ParsedContactSummary | null;
   flags: Record<string, string>;
   order: string[];
+  parsedCards: ParsedCards | null;
+  cards: (Card | RawCard)[];
+  cardsDirty: boolean;
 }
 
 export function ContactSummaryEditor() {
@@ -42,9 +62,10 @@ export function ContactSummaryEditor() {
 
   const [state, setState] = useState<CSState | null>(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'structured' | 'helpers' | 'raw'>('structured');
+  const [view, setView] = useState<CSView>('structured');
   const [activeRaw, setActiveRaw] = useState<CSFile>('contact-summary.templated.js');
   const [editingHelper, setEditingHelper] = useState<string | null>(null);
+  const [contactTypeIds, setContactTypeIds] = useState<string[]>([]);
   const contactForms = useContactFormFields();
 
   useEffect(() => {
@@ -56,11 +77,15 @@ export function ContactSummaryEditor() {
         if (!alive) return;
         const templated = res['contact-summary.templated.js'] ?? '';
         const parsed = templated ? parseContactSummary(templated) : null;
+        const parsedCards = templated ? readCardsFromFile(templated) : null;
         setState({
           raw: res,
           parsed,
           flags: { ...(parsed?.contextFlags ?? {}) },
           order: [...(parsed?.contextOrder ?? [])],
+          parsedCards,
+          cards: parsedCards ? [...parsedCards.cards] : [],
+          cardsDirty: false,
         });
         setLoading(false);
       })
@@ -73,6 +98,23 @@ export function ContactSummaryEditor() {
       alive = false;
     };
   }, [setError]);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .getHierarchy()
+      .then((h) => {
+        if (!alive) return;
+        const ids = (h.contact_types as Array<{ id: string }>).map((t) => t.id).sort();
+        setContactTypeIds(ids);
+      })
+      .catch(() => {
+        /* hierarchy unavailable — picker just accepts free-text types */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   function patchFlag(name: string, expression: string) {
     if (!state) return;
@@ -119,12 +161,26 @@ export function ContactSummaryEditor() {
     let parsed = state.parsed;
     let flags = state.flags;
     let order = state.order;
+    let parsedCards = state.parsedCards;
+    let cards = state.cards;
+    let cardsDirty = state.cardsDirty;
     if (file === 'contact-summary.templated.js') {
       parsed = parseContactSummary(content);
       flags = { ...parsed.contextFlags };
       order = [...parsed.contextOrder];
+      // Editing the raw file discards any pending cards working copy — the
+      // parsed state is authoritative once the user has typed into raw.
+      parsedCards = readCardsFromFile(content);
+      cards = parsedCards ? [...parsedCards.cards] : [];
+      cardsDirty = false;
     }
-    setState({ raw: nextRaw, parsed, flags, order });
+    setState({ raw: nextRaw, parsed, flags, order, parsedCards, cards, cardsDirty });
+    setDirty('contact-summary', true);
+  }
+
+  function patchCards(next: (Card | RawCard)[]) {
+    if (!state) return;
+    setState({ ...state, cards: next, cardsDirty: true });
     setDirty('contact-summary', true);
   }
 
@@ -132,15 +188,25 @@ export function ContactSummaryEditor() {
     if (!state) return;
     setSaving('contact-summary', true);
     try {
-      // Rebuild contact-summary.templated.js from the parsed object + new flags.
+      // Compose the templated file by applying the two edits that may be
+      // pending: context flags (structured tab) and the cards array (cards
+      // tab). Each splice is against the file source directly, so both edits
+      // compose cleanly against the same starting bytes even when applied in
+      // sequence — `spliceCards` operates on `const cards = [ ... ]` which
+      // never overlaps the `context: {...}` object.
       let templatedOut = state.raw['contact-summary.templated.js'] ?? '';
       if (state.parsed && state.parsed.contextBounds && view === 'structured') {
         templatedOut = serializeContactSummary(state.parsed, state.flags, state.order);
+      }
+      if (state.parsedCards && state.parsedCards.shape === 'array' && state.cardsDirty) {
+        const nextCards: ParsedCards = { ...state.parsedCards, cards: state.cards };
+        templatedOut = spliceCards(templatedOut, nextCards);
       }
       await api.saveContactSummaryFile('contact-summary.templated.js', templatedOut);
       const extras = state.raw['contact-summary.extras.js'];
       if (extras !== null) await api.saveContactSummaryFile('contact-summary.extras.js', extras);
       setDirty('contact-summary', false);
+      setState({ ...state, cardsDirty: false });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -172,6 +238,12 @@ export function ContactSummaryEditor() {
           onClick={() => setView('structured')}
         >
           Context flags ({state.order.length})
+        </button>
+        <button
+          className={view === 'cards' ? 'active' : ''}
+          onClick={() => setView('cards')}
+        >
+          Cards ({state.parsedCards?.shape === 'array' ? state.cards.length : 'raw'})
         </button>
         <button
           className={view === 'helpers' ? 'active' : ''}
@@ -233,6 +305,16 @@ export function ContactSummaryEditor() {
         </>
       )}
 
+      {view === 'cards' && (
+        <CardsTab
+          parsed={state.parsedCards}
+          cards={state.cards}
+          contactTypeIds={contactTypeIds}
+          contactForms={contactForms}
+          onChange={patchCards}
+        />
+      )}
+
       {view === 'raw' && (
         <>
           <div className="tabs">
@@ -257,6 +339,22 @@ export function ContactSummaryEditor() {
       )}
     </div>
   );
+}
+
+/**
+ * Locate + parse the `cards = [ ... ]` block inside a
+ * contact-summary.templated.js source. Returns null when the file has no
+ * cards declaration we recognize — the UI then shows a hint pointing at
+ * the Raw tab. When the array is present but its contents can't be
+ * split (e.g. `.map(...)` generator or spread element), `parseCards`
+ * returns `shape: 'raw'`, which the CardsTab renders as a read-only
+ * fallback.
+ */
+function readCardsFromFile(source: string): ParsedCards | null {
+  const bounds = findCardsArrayBounds(source);
+  if (!bounds) return null;
+  const arrayText = source.slice(bounds.start, bounds.end + 1);
+  return parseCards(arrayText);
 }
 
 function HelpersTab(props: {
@@ -334,6 +432,302 @@ function HelpersTab(props: {
       )}
     </div>
   );
+}
+
+/**
+ * Cards editor surface. Renders each entry in `cards` as either:
+ *   - a `StructuredCardEditor` (label + appliesToType + reorderable
+ *     {label,value} field list) when the entry is a Card, or
+ *   - a read-only `RawCardBlock` with the verbatim source and a hint
+ *     to edit it in the Raw tab, when the entry is a RawCard.
+ *
+ * When the whole array degraded to raw (`.map(...)` / spread), we show
+ * a single fallback block and no "+ Add card" button — offering one
+ * would silently drop the generator on save.
+ */
+function CardsTab(props: {
+  parsed: ParsedCards | null;
+  cards: (Card | RawCard)[];
+  contactTypeIds: string[];
+  contactForms: ContactFormFields[];
+  onChange: (next: (Card | RawCard)[]) => void;
+}) {
+  const { parsed, cards, contactTypeIds, contactForms, onChange } = props;
+
+  if (!parsed) {
+    return (
+      <p className="muted">
+        Couldn&apos;t find <code>cards = [...]</code> in contact-summary.templated.js. Edit raw
+        text in the &quot;Raw files&quot; tab.
+      </p>
+    );
+  }
+
+  if (parsed.shape === 'raw') {
+    return (
+      <>
+        <p className="muted">
+          The <code>cards</code> array uses a generator expression (e.g. <code>.map()</code>) or a
+          spread element the editor can&apos;t safely lift. The full expression is preserved on
+          save. Edit it in the &quot;Raw files&quot; tab.
+        </p>
+        <pre className="small">{parsed.raw}</pre>
+      </>
+    );
+  }
+
+  function updateAt(idx: number, next: Card | RawCard) {
+    onChange(cards.map((c, i) => (i === idx ? next : c)));
+  }
+  function removeAt(idx: number) {
+    onChange(cards.filter((_, i) => i !== idx));
+  }
+  function moveCard(idx: number, delta: -1 | 1) {
+    const target = idx + delta;
+    if (target < 0 || target >= cards.length) return;
+    const next = cards.slice();
+    const [pulled] = next.splice(idx, 1);
+    if (!pulled) return;
+    next.splice(target, 0, pulled);
+    onChange(next);
+  }
+  function addCard() {
+    const fresh: Card = {
+      shape: 'card',
+      label: '',
+      appliesToType: 'report',
+      fields: [],
+    };
+    onChange([...cards, fresh]);
+  }
+
+  return (
+    <div className="cs-cards">
+      <p className="muted">
+        Cards render report-driven summaries on a contact&apos;s profile (e.g. an
+        &ldquo;Active pregnancy&rdquo; card). Editable rows show{' '}
+        <code>{'{ label, appliesToType, fields: [...] }'}</code>; cards that compute their fields
+        with JS code or carry extra keys are preserved verbatim below.
+      </p>
+      <datalist id="cs-contact-types">
+        <option value="report" />
+        <option value="person" />
+        {contactTypeIds.map((id) => (
+          <option key={id} value={id} />
+        ))}
+      </datalist>
+      <div className="cards-list">
+        {cards.map((c, idx) =>
+          c.shape === 'card' ? (
+            <StructuredCardEditor
+              key={idx}
+              card={c}
+              contactForms={contactForms}
+              canMoveUp={idx > 0}
+              canMoveDown={idx < cards.length - 1}
+              onChange={(next) => updateAt(idx, next)}
+              onRemove={() => removeAt(idx)}
+              onMoveUp={() => moveCard(idx, -1)}
+              onMoveDown={() => moveCard(idx, 1)}
+            />
+          ) : (
+            <RawCardBlock
+              key={idx}
+              card={c}
+              canMoveUp={idx > 0}
+              canMoveDown={idx < cards.length - 1}
+              onMoveUp={() => moveCard(idx, -1)}
+              onMoveDown={() => moveCard(idx, 1)}
+              onRemove={() => removeAt(idx)}
+            />
+          ),
+        )}
+        <button onClick={addCard}>+ Add card</button>
+      </div>
+    </div>
+  );
+}
+
+function StructuredCardEditor(props: {
+  card: Card;
+  contactForms: ContactFormFields[];
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onChange: (next: Card) => void;
+  onRemove: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+}) {
+  const { card, contactForms, canMoveUp, canMoveDown, onChange, onRemove, onMoveUp, onMoveDown } =
+    props;
+
+  function patch(patchObj: Partial<Card>) {
+    onChange({ ...card, ...patchObj });
+  }
+  function updateField(idx: number, next: CardField) {
+    onChange({ ...card, fields: card.fields.map((f, i) => (i === idx ? next : f)) });
+  }
+  function removeField(idx: number) {
+    onChange({ ...card, fields: card.fields.filter((_, i) => i !== idx) });
+  }
+  function moveField(idx: number, delta: -1 | 1) {
+    const target = idx + delta;
+    if (target < 0 || target >= card.fields.length) return;
+    const next = card.fields.slice();
+    const [pulled] = next.splice(idx, 1);
+    if (!pulled) return;
+    next.splice(target, 0, pulled);
+    onChange({ ...card, fields: next });
+  }
+  function addField() {
+    onChange({ ...card, fields: [...card.fields, { label: '', valueRaw: '' }] });
+  }
+
+  return (
+    <div className="task-card">
+      <header className="row gap">
+        <strong>{card.label || '(unnamed card)'}</strong>
+        <span className="muted small">appliesToType: {card.appliesToType}</span>
+        <span style={{ marginLeft: 'auto' }} />
+        <button
+          className="link small"
+          onClick={onMoveUp}
+          disabled={!canMoveUp}
+          title="Move up"
+        >
+          ↑
+        </button>
+        <button
+          className="link small"
+          onClick={onMoveDown}
+          disabled={!canMoveDown}
+          title="Move down"
+        >
+          ↓
+        </button>
+        <button className="link danger" onClick={onRemove}>
+          delete
+        </button>
+      </header>
+      <label className="expr-field">
+        <span className="expr-label">
+          <code>label</code>
+        </span>
+        <input
+          value={card.label}
+          onChange={(e) => patch({ label: e.target.value })}
+          placeholder="contact.profile.pregnancy.active"
+        />
+      </label>
+      <label className="expr-field">
+        <span className="expr-label">
+          <code>appliesToType</code>
+        </span>
+        <input
+          value={card.appliesToType}
+          onChange={(e) => patch({ appliesToType: e.target.value })}
+          list="cs-contact-types"
+          placeholder="report"
+        />
+      </label>
+
+      <div className="expr-field">
+        <span className="expr-label">
+          <code>fields</code>
+          <em className="muted"> — rows shown inside the card</em>
+        </span>
+        <div className="cards-fields-list">
+          {card.fields.map((f, idx) => (
+            <div key={idx} className="row gap card-field-row">
+              <input
+                value={f.label}
+                onChange={(e) => updateField(idx, { ...f, label: e.target.value })}
+                placeholder="label (e.g. Weeks Pregnant)"
+                className="card-field-label"
+              />
+              <span className="muted small">value:</span>
+              <FieldPicker
+                value={f.valueRaw}
+                contactForms={contactForms}
+                onChange={(next) => updateField(idx, { ...f, valueRaw: next })}
+                placeholder="thisContact.age"
+              />
+              <button
+                className="link small"
+                onClick={() => moveField(idx, -1)}
+                disabled={idx === 0}
+                title="Move up"
+              >
+                ↑
+              </button>
+              <button
+                className="link small"
+                onClick={() => moveField(idx, 1)}
+                disabled={idx === card.fields.length - 1}
+                title="Move down"
+              >
+                ↓
+              </button>
+              <button className="link danger" onClick={() => removeField(idx)}>
+                delete
+              </button>
+            </div>
+          ))}
+          <button onClick={addField}>+ Add field</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RawCardBlock(props: {
+  card: RawCard;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onRemove: () => void;
+}) {
+  const { card, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onRemove } = props;
+  const preview = firstMeaningfulLine(card.raw);
+  return (
+    <div className="task-card raw-card">
+      <header className="row gap">
+        <strong>{preview}</strong>
+        <span className="muted small">preserved verbatim</span>
+        <span style={{ marginLeft: 'auto' }} />
+        <button className="link small" onClick={onMoveUp} disabled={!canMoveUp} title="Move up">
+          ↑
+        </button>
+        <button
+          className="link small"
+          onClick={onMoveDown}
+          disabled={!canMoveDown}
+          title="Move down"
+        >
+          ↓
+        </button>
+        <button className="link danger" onClick={onRemove}>
+          delete
+        </button>
+      </header>
+      <details>
+        <summary className="muted">
+          This card uses JS the visual editor can&apos;t lift (imperative <code>fields</code>,
+          <code> modifyContext</code>, or an unrecognized key). Edit in the &quot;Raw files&quot;
+          tab.
+        </summary>
+        <pre className="small">{card.raw}</pre>
+      </details>
+    </div>
+  );
+}
+
+function firstMeaningfulLine(raw: string): string {
+  const labelMatch = /label\s*:\s*(['"])([^'"\\]*(?:\\.[^'"\\]*)*)\1/.exec(raw);
+  if (labelMatch && labelMatch[2]) return labelMatch[2];
+  const firstLine = raw.trim().split('\n')[0] ?? '';
+  return firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine;
 }
 
 function FlagCard(props: {

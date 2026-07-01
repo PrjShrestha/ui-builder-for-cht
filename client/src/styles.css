@@ -602,6 +602,111 @@ code {
 .deploy-readiness-row.state-fail { background: #fffbeb; padding-left: 6px; border-radius: 3px; }
 .deploy-readiness-label { font-weight: 500; }
 
+/* Preflight panel — Tier 0 "Ready to deploy?" validator. Sibling of the
+   deploy-readiness checklist; reuses the same glyph-first status cue
+   (color is reinforcement only, never the sole channel). */
+.preflight-panel ul.preflight-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+.preflight-severity { margin-top: 10px; }
+.preflight-severity-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.preflight-severity-error .preflight-severity-header { color: #b91c1c; }
+.preflight-severity-warn  .preflight-severity-header { color: #b45309; }
+.preflight-severity-info  .preflight-severity-header { color: #4b5563; }
+.preflight-check {
+  border-left: 3px solid transparent;
+  padding: 2px 0 2px 8px;
+  margin: 2px 0;
+}
+.preflight-severity-error .preflight-check { border-left-color: #dc2626; }
+.preflight-severity-warn  .preflight-check { border-left-color: #f59e0b; }
+.preflight-severity-info  .preflight-check { border-left-color: #9ca3af; }
+.preflight-check-summary {
+  cursor: pointer;
+  display: inline-flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+}
+.preflight-check-label { font-weight: 500; }
+.preflight-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.preflight-row-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.preflight-row-message { font-weight: 500; }
+.preflight-row-subject { word-break: break-word; }
+.preflight-glyph {
+  display: inline-block;
+  min-width: 1em;
+  text-align: center;
+  font-weight: 700;
+}
+.preflight-row-pass  .preflight-glyph { color: #047857; }
+.preflight-row-error .preflight-glyph { color: #b91c1c; }
+.preflight-row-warn  .preflight-glyph { color: #b45309; }
+.preflight-row-info  .preflight-glyph { color: #4b5563; }
+.preflight-row-error { background: #fef2f2; padding-left: 6px; border-radius: 3px; }
+.preflight-row-warn  { background: #fffbeb; padding-left: 6px; border-radius: 3px; }
+.preflight-fix { flex-shrink: 0; }
+
+/* Tier 0 one-click deploy pipeline bar. Additive to the per-macro and
+   per-action buttons already on the panel — glyph-first status per step
+   mirrors the deploy-readiness + preflight visual family. */
+.deploy-oneclick { display: flex; flex-direction: column; gap: 10px; }
+.deploy-oneclick-progress {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.deploy-oneclick-step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  font-size: 13px;
+}
+.deploy-oneclick-glyph { min-width: 1em; text-align: center; font-weight: 700; }
+.deploy-oneclick-name { font-family: var(--mono, monospace); font-size: 12px; }
+.deploy-oneclick-step.state-pending  { color: #6b7280; }
+.deploy-oneclick-step.state-pending  .deploy-oneclick-glyph { color: #9ca3af; }
+.deploy-oneclick-step.state-running  { background: #eef2ff; }
+.deploy-oneclick-step.state-running  .deploy-oneclick-glyph { color: #4f46e5; }
+.deploy-oneclick-step.state-success  .deploy-oneclick-glyph { color: #047857; }
+.deploy-oneclick-step.state-fail     { background: #fef2f2; }
+.deploy-oneclick-step.state-fail     .deploy-oneclick-glyph { color: #b91c1c; }
+.deploy-oneclick-friendly { flex: 1; color: #7f1d1d; font-size: 13px; }
+.deploy-oneclick-stderr {
+  flex: 1;
+  color: #7f1d1d;
+  font-family: var(--mono, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 /* Phase 2a — structured modifyContent mappings editor. */
 .modify-content-editor {
   margin-top: 8px;
@@ -2777,3 +2882,130 @@ button.danger:hover:not(:disabled) { background: #991b1b; }
   border-radius: 3px;
 }
 .muted { color: var(--text-muted); padding: 8px; }
+
+/* --- Translations editor ------------------------------------------------- */
+.translations-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+.translations-empty {
+  padding: 24px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+}
+.translations-filter {
+  gap: 12px;
+  align-items: center;
+}
+.translations-filter input[type='search'] {
+  flex: 1;
+  min-width: 240px;
+  max-width: 480px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+}
+.translations-grid-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+}
+.translations-grid {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  font-size: 13px;
+}
+.translations-grid thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-strong);
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: 600;
+  z-index: 1;
+}
+.translations-locale-label {
+  font-family: monospace;
+  font-size: 13px;
+}
+.translations-grid tbody th.translations-key-col {
+  position: sticky;
+  left: 0;
+  background: var(--bg-card);
+  border-right: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  font-weight: 400;
+  vertical-align: top;
+  max-width: 340px;
+  z-index: 0;
+}
+.translations-grid tbody th.translations-key-col code {
+  font-size: 12px;
+  word-break: break-all;
+}
+.translations-grid thead th.translations-key-col {
+  left: 0;
+  z-index: 2;
+}
+.translations-grid td.translations-cell {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  position: relative;
+}
+.translations-input {
+  width: 100%;
+  min-width: 160px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 3px;
+  font: inherit;
+}
+.translations-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  background: var(--bg-card);
+}
+.translations-cell.dirty .translations-input {
+  background: var(--warn-bg);
+  border-color: var(--warn-text);
+}
+.translations-cell.missing {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--bg),
+    var(--bg) 6px,
+    var(--error-bg) 6px,
+    var(--error-bg) 8px
+  );
+}
+.translations-cell.missing .translations-input {
+  border: 1px dashed var(--danger);
+  background: var(--bg-card);
+}
+.translations-missing-glyph {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--danger);
+  background: var(--error-bg);
+  border: 1px solid var(--danger);
+  border-radius: 50%;
+  margin-right: 6px;
+  font-size: 11px;
+  vertical-align: middle;
+}
