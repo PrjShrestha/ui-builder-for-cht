@@ -387,12 +387,26 @@ export function DeployPanel() {
     }
     setDeployRunning(true);
     setDeployProgress(steps.map((s) => ({ step: s, status: 'pending' })));
+    // One-click means "just push my config". cht-conf's upload actions abort
+    // with an interactive overwrite prompt (which has no TTY here → the step
+    // dies) whenever a doc on the instance was last touched outside cht-conf.
+    // `--force` skips that confirmation so the one-gesture deploy actually
+    // completes. The granular per-action deploy below stays non-forced.
+    const FORCE_STEPS = new Set([
+      'upload-app-forms',
+      'upload-contact-forms',
+      'upload-app-settings',
+      'upload-resources',
+    ]);
+    const extraArgs: Record<string, string[]> = {};
+    for (const s of steps) if (FORCE_STEPS.has(s)) extraArgs[s] = ['--force'];
     try {
       for await (const evt of api.deployRun({
         url,
         user: config.user,
         password,
         steps,
+        extraArgs,
       })) {
         const kind = evt['event'];
         if (kind === 'step-start') {
