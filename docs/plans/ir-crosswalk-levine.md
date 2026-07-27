@@ -67,6 +67,67 @@ first-class rather than forcing bands. Confirm they model this.)
 | `begin/end group`, `appearance`, `style`, `hint` | — (form presentation) | **Dropped** from the decision IR (kept only if they want annotations) |
 | A blank/unmeasured input | `predicate.missing: "unknown"` (3rd state) | **Extract** — needs the missing-aware convention |
 
+## 3.5 Calculations — where the logic actually hides (the crux)
+In CHT most real logic lives in `calculation` cells, not just `relevant`. The lift must
+**classify each calc by what it RETURNS** and route it:
+- **Numeric/date output** (`edd = date(${lmp}+280)`, `dose = ${weight}*40`, age, BMI, score) → **`computed[]`** (typed). Not a predicate.
+- **Boolean/threshold output** (`fast_breathing = if(${age_mo}<12, ${rr}>=50, ${rr}>=40)`) → **`predicates[]`** (boolean-valued, numeric definition).
+- **String/plumbing** (`jr:choice-name(...)`, `coalesce`, `../../inputs/user/name`) → phraseBank / passthrough / **dropped** — not clinical logic.
+
+**Key insight — a nested `if/else` calc is a decision tree in one cell**, so calculations
+are the *best* source for recovering decision tables (better than scattered `relevant`s):
+```
+classification = if(${danger_sign}='yes','severe',
+                   if(${cough}='yes' and ${fast_breathing}='yes','pneumonia','no_pneumonia'))
+```
+→ predicates `{danger_sign, cough, fast_breathing}` + decision table:
+`{danger_sign:true} → severe`; `{false, cough:true, fast_breathing:true} → pneumonia`; else `no_pneumonia`.
+
+**Cost:** needs a real **XForm-XPath expression parser** (tokenize → AST → infer return
+type → flatten nested `if()` to rows). Our current calc handling (`calculationBuilder`/
+`calcReference`) is a **reference-focused subset + raw fallback** — it does NOT parse
+arbitrary nested if/else into a tree. So fully handling calc logic = build/borrow an
+XPath AST parser. Heuristics cover the common shapes (single comparison, nested-if,
+arithmetic); the long tail (Nepali-calendar math, exotic `jr:` functions, deep state
+logic) stays raw/opaque or is handed to their AI. This is why their pipeline builds
+decisions from the **guideline text** — reading intent from prose beats reverse-
+engineering a 200-char nested `if()`.
+
+## 3.6 Schema for the calculation lift (the parse target)
+**Our code has no general calc-expression schema today** — `calculationBuilder` /
+`calcReference` model a reference-focused subset (`${ref}`, contact-input / contact-
+summary) + raw fallback. A full lift needs two new schemas:
+
+**(a) Expression AST** — the parse of one XForm-XPath calculation:
+```jsonc
+Expr =
+  | { "kind":"ref",   "name": string }                       // ${weight}, ../../inputs/user/name
+  | { "kind":"lit",   "value": number|string|boolean }       // 280, 'yes'
+  | { "kind":"binop", "op": "+|-|*|div|mod|=|!=|<|<=|>|>=|and|or", "l":Expr, "r":Expr }
+  | { "kind":"not",   "arg":Expr }
+  | { "kind":"if",    "cond":Expr, "then":Expr, "else":Expr } // XForm if() — the decision node
+  | { "kind":"call",  "fn":string, "args":Expr[] }            // selected(), date(), jr:choice-name(), coalesce(), sum()…
+```
+
+**(b) Classified-calc record** — what the lift emits per `calculation` cell:
+```jsonc
+CalcLift {
+  "name": string,
+  "source": string,                 // original XPath — ALWAYS kept verbatim (round-trip anchor)
+  "returnType": "boolean"|"number"|"date"|"string"|"unknown",   // = inferType(ast)
+  "ast": Expr | null,               // null when unparseable → route:"raw"
+  "route": "predicate"|"computed"|"decision"|"passthrough"|"raw",
+  "confidence": "exact"|"heuristic"|"unparsed"
+}
+```
+Routing rule: boolean & no nested-`if` → `predicate`; boolean/enum & nested-`if` →
+`decision` (flatten); number/date → `computed`; string/plumbing → `passthrough`;
+`ast===null` → `raw` (kept verbatim, surfaced for a human/AI).
+
+**Nested-`if` → decision-table flatten** (the whole decision-extraction algorithm):
+`if(c1, a, if(c2, b, c))` → `[{when: c1 → a}, {when: ¬c1 ∧ c2 → b}, {when: ¬c1 ∧ ¬c2 → c}]`;
+each `when`'s atomic comparisons become `predicates`.
+
 ## 4. Honest caveats (say these to Emett/Levine)
 1. **The reliable part is inputs + phraseBank + simple predicates.** Type-mapping the
    questions, pulling every label into the phrase bank, and lifting single-comparison
