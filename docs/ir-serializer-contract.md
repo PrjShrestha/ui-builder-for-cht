@@ -61,3 +61,37 @@ Every one follows the rule: **structured where we own it, raw/verbatim where we 
 - **Forms:** `XLSForm` object + `serializeXlsForm` = a complete, shareable contract today.
 - **Tasks:** `ParsedTaskFile`/`TaskEntry[]` + the (client-side) rebuild = the contract; move the rebuild into `shared` to finish it.
 - Anything — an AI pipeline (e.g. Levine/Berkeley), an importer, another front-end — that produces these IRs "directly fits here." See [[ir-crosswalk-levine]] for mapping a *different* IR into ours.
+
+## 6. Complete IR inventory
+
+> **⚠ Maturity note — read before relying on these.** The **Forms**, **Hierarchy**, and
+> **Tasks** IRs are the most exercised (real configs, round-trip tests, the POC build).
+> **Contact-summary** (context / cards / helpers) and **FHIR mapping** are **newer and
+> less battle-tested — treat their shapes as PROVISIONAL; they may change.** **Targets
+> has no IR at all** yet (out of MVP; `targets.js` ships only as a stub) — if a targets
+> editor is built later, its IR is TBD.
+
+| Surface → artifact | IR (module in `shared/src/`) | Covers | Stability |
+|---|---|---|---|
+| **Form** → `forms/**/*.xlsx` | `XLSForm` — `xlsform/{types,parse,serialize}` | whole form: survey rows, choices, settings, headers, extra sheets | **stable** |
+| ↳ a survey cell | `xlsform/relevantParser` | `relevant` / `constraint` / `choice_filter` rules (+ raw fallback) | stable |
+| ↳ a survey cell | `xlsform/calculationBuilder` + `calcReference` | `calculation` — computed values + cross-form refs | stable |
+| ↳ (engine) | `conditionBuilder/conditionReducer` | AND/OR clause chain behind the builders | stable |
+| **Hierarchy** → `base_settings.json` + `place-types.json` | `hierarchy/hierarchyOrder` | contact_types, place_hierarchy_types, parent chain, labels | **stable** |
+| **Tasks** → `tasks.js` | `tasks/jsParser` (`ParsedTaskFile`/`TaskEntry`/`FieldValue`) | task list; each task's fields (typed + raw JS bodies) | **stable** |
+| ↳ a task field | `tasks/appliesIfParser` | `appliesIf` — when it fires | stable |
+| ↳ a task field | `tasks/resolvedIfParser` | `resolvedIf` — when it's done | stable |
+| ↳ a task field | `tasks/eventsParser` | `events[]` — schedule (anchor + offset, window, dueDate) | stable |
+| ↳ a task field | `tasks/actionsParser` | `actions[]` + `modifyContent` field mappings | stable |
+| **Contact summary** → `contact-summary.templated.js` (+ `-extras.js`) | `tasks/contactSummaryParser` (context), `contactSummary/cardsParser` (cards/fields), `tasks/helpersParser` (helpers) | `summary.X` eligibility flags + profile cards/fields + helper fns | **⚠ provisional** |
+| **Form eligibility** → `forms/app/<form>.properties.json` | plain JSON (`FormProperties`) + `tasks/contextExpressionParser` (the `context.expression`) | title, icon, person/place, "who sees this form" (`ContextRule[]`) | stable-ish |
+| **Translations** → `translations/messages-*.properties` | `translations/propertiesParser` | key → value, per locale | new |
+| **FHIR mapping** → `forms/app/<form>.fhir-mapping.json` | `fhir/{types,parse,serialize}` (+ `key`/`reconcile`/`coverage`) | form field/choice ↔ LOINC/ICD/CIEL codes + coverage | **⚠ provisional** |
+| **Targets** → `targets.js` | **none yet** (stub only) | — | **⚠ no IR** |
+
+**Not IRs (they *operate on* the IRs above):** generators (`buildContactForm`,
+`buildHierarchyBlock`, `buildLinearHierarchy`, `scaffolds`, `fhir/starterPack`); edit
+macros/utilities (`surveyEdits`, `renameSurveyRow`, `renameChoiceValue`, `renameList`,
+`structuralBalance`, `diff`, `dependencies`); the Tier-0 validator (`preflight/*` —
+requiredFiles, xlsformIdentifiers, metaXpathHops, selectChoices, danglingRefs); FHIR
+support (`dictionary`, `snomedFilter`).
