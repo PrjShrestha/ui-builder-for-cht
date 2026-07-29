@@ -6,6 +6,21 @@ This consolidates four audits run against the live repo at HEAD. The audits are 
 
 ## ▶ Do next (in order)
 
+### 🔥 CURRENT TOP PRIORITY — 2026-07-29 — field notes from the live Geriatric + ANC build
+
+A health-post officer is building the **real** Geriatric-care + ANC use case in the tool and filed 6 improvement notes. These are field blockers hit **today**, so they jump **ahead of the roadmap tiers below**. Full grounding (`file:line`) + design shape + test bar per note: **`docs/handoff-improvement-notes-2026-07-29.md`**. Key result: notes 3/5/6 have their hard half **already shipped** — fix the small gap, don't rebuild.
+
+**Wave 1 — ship together this week (all cheap, high-impact):**
+1. **[BLOCKER, ~1 line] Unhide the Group tile.** The `begin_group` tile exists and auto-pairs `begin`/`end` correctly — it's just `hiddenInSimple:true` (`QuestionTypeCatalog.ts:335`) and Simple is the default mode (`FormEditor.tsx:498`), so a no-code user never sees "Add group." Remove the flag (or relax the Simple filter at `QuestionTypePicker.tsx:117`). Insert machinery (`FormEditor.tsx:822-851`) unchanged. **Real forms are unbuildable without this.**
+2. **[BUG, silent corrupter] Numeric condition input can't clear "0".** `ContextExpressionBuilder.tsx:361-366` (age_years row) coerces `Number('')===0` on keystroke. Mirror the already-fixed `contact_field` string-value pattern (`:410-443`). Every age/threshold condition is silently wrong until fixed.
+3. **[deploy trap] New-form title → slugify.** Create flow *rejects* non-identifier input instead of slugifying (`FormsIndex.tsx:59`, `forms.ts:325`); scaffold uses basename as both `form_id` and `form_title` (`scaffolds.ts:169-170`). Collect a human title, derive `form_id` via `slugifyHierarchyId` (`buildLinearHierarchy.ts:108`), keep the title as `form_title`. Same family as the greenlit question-name autoderive + rename-macro (below).
+
+**Wave 2:** section-authoring UX (proper `+ Add section` flow) → inline EN/NE labels + an "Add language" control (no add-locale UI exists today) → label insert-field / "insert contact field" button. **Wave 3:** cross-form "Context values" builder (pull latest value from another form via the contact-summary bridge — the calc-side picker is already wired; the contact-summary population is raw-JS-only today).
+
+**MUST-HAVE round-trip regressions:** nested-group byte-stability (Wave 1 #1 / Wave 2), add-locale column-append (Wave 2), contact-summary `context`-only rewrite (Wave 3).
+
+---
+
 > **Refreshed 2026-06-28** (twice). The quick hierarchy creator (`b4d837b`) and the Phase-1 UI wiring gap (`be8279f`) are now **DONE**. The 2026-06-26 list's items 1–4 are also done (lineage, LOINC/CIEL, Phase-0, contact-form generator `6d65502`). The §2 table and §3 detail below are from 2026-06-26 and **partly superseded**; trust `docs/reviews/after_hierarchy_and_contacts.md` where they conflict. Two new contact-form bugs found in the pregnancy POC review (full spec: **`docs/handoff-contact-form-bugs-2026-06-28.md`**).
 
 1. **[BUG, functional] Contact-form generator `created_by*` off-by-one XPath.** `shared/src/xlsform/buildContactForm.ts` meta calculates emit `../../inputs/user/...` but the field sits at `/data/<type>/meta/...` — needs **`../../../inputs/user/...`** (cht-default uses 3 hops for the identical nesting). As-is, every generated contact gets **empty** `created_by*` / `last_edited_by*` (silent audit-trail gap). Fix the 5 paths + add a `node --test` asserting the emitted calc strings. See bug doc §A.
