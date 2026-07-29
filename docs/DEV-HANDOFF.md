@@ -8,7 +8,10 @@ This consolidates four audits run against the live repo at HEAD. The audits are 
 
 ### 🔥 CURRENT TOP PRIORITY — 2026-07-29 — field notes from the live Geriatric + ANC build
 
-A health-post officer is building the **real** Geriatric-care + ANC use case in the tool and filed 6 improvement notes. These are field blockers hit **today**, so they jump **ahead of the roadmap tiers below**. Full grounding (`file:line`) + design shape + test bar per note: **`docs/handoff-improvement-notes-2026-07-29.md`**. Key result: notes 3/5/6 have their hard half **already shipped** — fix the small gap, don't rebuild.
+A health-post officer is building the **real** Geriatric-care + ANC use case in the tool and filed 6 improvement notes. These are field blockers hit **today**, so they jump **ahead of the roadmap tiers below**. Key result: notes 3/5/6 have their hard half **already shipped** — fix the small gap, don't rebuild.
+
+- **▶ Execute from:** **`docs/handoff-waves-1-3-2026-07-29.md`** — the consolidated wave-organized design + dev plan (all 3 waves, meant to be handed off together; shipped-foundations-to-reuse box up top; Wave 1 review fixes folded in).
+- **Grounding reference:** `docs/handoff-improvement-notes-2026-07-29.md` — note-by-note evidence + PO/Designer/QA triad + the Wave 1 WIP review addendum.
 
 **Wave 1 — ship together this week (all cheap, high-impact):**
 1. **[BLOCKER, ~1 line] Unhide the Group tile.** The `begin_group` tile exists and auto-pairs `begin`/`end` correctly — it's just `hiddenInSimple:true` (`QuestionTypeCatalog.ts:335`) and Simple is the default mode (`FormEditor.tsx:498`), so a no-code user never sees "Add group." Remove the flag (or relax the Simple filter at `QuestionTypePicker.tsx:117`). Insert machinery (`FormEditor.tsx:822-851`) unchanged. **Real forms are unbuildable without this.**
