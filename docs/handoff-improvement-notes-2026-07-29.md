@@ -22,6 +22,7 @@ Lorena). This is the developer-actionable compilation. 2026-07-29.
 | 4 | **Inline EN/NE labels + Add-language** | Edit-time conditional; add-time none; no add-locale UI | 🟠 High | 2 |
 | 5 | **Insert contact field into label** | Calc picker wired; label `${}` insert absent | 🟠 High | 2 |
 | 6 | **Cross-form value (latest from form X)** | Value picker wired; from-other-form is raw-JS only | 🟡 Medium (biggest lift) | 3 |
+| 3c | **Wrap selected into a section** | Needs a multi-select mechanism (none today); does NOT gate 3b | ⚪ Low (convenience) | Later |
 
 **Wave 1 = ship together, all cheap:** unhide the Group tile (unblocks the #1 blocker), fix the numeric-input bug (silently corrupts every age/threshold condition), and slugify new-form titles (stops invalid names reaching deploy). PO (Bhishan) flagged all three as non-negotiable this week.
 
@@ -46,7 +47,10 @@ Lorena). This is the developer-actionable compilation. 2026-07-29.
 - Section names are **label-first, slug auto-derived** (ties to Note 1).
 - Toggle **"Show all on one screen"** = `field-list` appearance.
 - Render the group as a **collapsible, indented container tile** with an **empty drop-zone**: *"Drag questions here, or + Add question."*
-- Also a **"Wrap selected in section"** on multi-select (this is the deferred survey-A5 item in `DEV-HANDOFF.md` §P2 — needs a multi-select mechanism first).
+
+> **This flow needs NO multi-select.** Create an empty section, then add/drag questions in one at a time (reuse the existing group-as-unit move). **Create-empty + drag-in fully clears the "can't build sections" blocker** — do not let the wrap gesture (3c) gate it.
+
+**3c — "Wrap selected in section" (DEFERRED follow-up, does NOT gate 3b):** a one-gesture bundle of several *existing* questions into a new group. This is the **only** groups-related path that requires a **multi-select mechanism** — a way to select >1 survey row at once (checkboxes / shift-click); none exists today (the editor is strictly one-row-at-a-time). It then reuses the begin/end-pair insert (`handlePickerCommit`) around the first/last of the selection (must also handle a non-contiguous selection). Same item as the deferred **Survey A5 "Group these"** in `DEV-HANDOFF.md` §P2 (ungroup already shipped; wrap needs the selection UI first). Build only **after** 3b lands and the multi-select affordance is judged worth it.
 
 ```
 ▼ Danger signs  [Show all on one screen ✓]        ⠿
@@ -160,12 +164,13 @@ Lorena). This is the developer-actionable compilation. 2026-07-29.
 ## Cross-references to the existing queue (avoid rebuilds / dedupe)
 
 - **Note 1** is the *form-name* sibling of the greenlit **question-name autoderive + rename-macro** (`DEV-HANDOFF.md:44-45`). Same `slugifyHierarchyId` + same rename-macro dependency — build them as one family.
-- **Note 3b "wrap selected"** = the deferred **Survey A5 "Group these"** P2 item (`DEV-HANDOFF.md` §P2) — still needs a multi-select mechanism.
+- **Note 3c "wrap selected"** = the deferred **Survey A5 "Group these"** P2 item (`DEV-HANDOFF.md` §P2) — needs a multi-select mechanism; split out of 3b so it does **not** gate the core groups work.
 - **Notes 5/6 calc-side** are the **shipped** "Form-data-passing" work (`DEV-HANDOFF.md` §4). Do **not** rebuild the `contact-input`/`contact-summary` reference kinds — only add the label-insert (5) and the contact-summary population + coordination (6).
 - **Note 6** is adjacent to Tier-2 **Contact-summary cards editor** and Phase-1 **conditions cross-form refs**, but distinct: it populates the `context` *flags*, not cards, and not condition cards.
 
 ## Suggested commit sequencing for the Developer session
 
 1. **Wave 1 (one PR, this week):** unhide Group tile (3a) + numeric-input fix (2) + new-form slugify (1, with the `deriveName` unit test). All small, all high-impact, no serializer risk except the slugify unit test.
-2. **Wave 2:** section-authoring UX (3b) → inline locales + Add-language (4, with the add-locale round-trip test) → label insert-field + contact-field (5). Each gets its round-trip/e2e test.
+2. **Wave 2:** section-authoring UX (3b — **create-empty + drag-in, no multi-select**) → inline locales + Add-language (4, with the add-locale round-trip test) → label insert-field + contact-field (5). Each gets its round-trip/e2e test.
 3. **Wave 3:** cross-form "Context values" builder + form-calc "from another form" group (6, with the two-serializer round-trip test).
+4. **Later / optional:** 3c "wrap selected in section" — needs a multi-select mechanism first; not a blocker, build only if the convenience earns it.
