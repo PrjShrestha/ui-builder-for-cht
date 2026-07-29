@@ -174,3 +174,23 @@ Lorena). This is the developer-actionable compilation. 2026-07-29.
 2. **Wave 2:** section-authoring UX (3b — **create-empty + drag-in, no multi-select**) → inline locales + Add-language (4, with the add-locale round-trip test) → label insert-field + contact-field (5). Each gets its round-trip/e2e test.
 3. **Wave 3:** cross-form "Context values" builder + form-calc "from another form" group (6, with the two-serializer round-trip test).
 4. **Later / optional:** 3c "wrap selected in section" — needs a multi-select mechanism first; not a blocker, build only if the convenience earns it.
+
+---
+
+## Review addendum — Wave 1 WIP audit (2026-07-29, planner)
+
+Reviewed the uncommitted Wave 1 changes (groups tile, numeric-input bug, slugify) against this spec. **3a is done correctly.** Notes **2 and 1 have their hard parts right but each has one thing to fix before commit** — neither is a rebuild.
+
+### ✅ 3a — Groups tile unhidden — correct
+`QuestionTypeCatalog.ts:335` — `hiddenInSimple` removed from `begin_group`, insert machinery untouched. **Open decision (not a bug):** `begin_repeat` is still `hiddenInSimple:true` (`:349`). Fine if intentional, but a repeat block (e.g. repeating medications) will hit the same invisible-tile wall — make it a conscious call.
+
+### 🟠 2 — Numeric bug fixed, but the save has no validity gate — FIX BEFORE COMMIT
+Core fix is correct (IR `number → string` at `contextExpressionParser.ts:34`, raw `onChange`, `addRule` seeds `'18'`, select-on-focus, inline warning). Two gaps:
+1. **No save-gate.** `PropertiesEditor.tsx` never blocks on an invalid rule; the warning is display-only. An **empty** age value serializes to `ageInYears(contact) >= ` (empty operand — `contextExpressionParser.ts:182`) = an **invalid expression that fails at deploy**. This is the same clear-the-field path the bug was about. **Fix:** gate save (or omit / fall the rule back to raw) when the age value is empty or non-numeric.
+2. **Minor round-trip.** Parse regex is integer-only (`\d+`, `:96`) but `isValidNumberLiteral` accepts decimals → `60.5` serializes but **demotes to raw on reload**. Restrict input to integers or widen the regex. Low severity.
+
+### 🟠 1 — Slugify excellent, but collision resolution breaks across the client↔server boundary — FIX BEFORE COMMIT
+`deriveFormName.ts` + tests are thorough; the dialog is properly label-first with a "Saved as `…`" hint; `scaffolds.ts` correctly keeps `form_title` = human title / `form_id` = slug. **Defect:** the client resolves collisions (`deriveFormName(title, existing)` → `patient_age_2`) and shows the user that suffixed name, but the server (`forms.ts:352`) does `source = title ?? rawBasename` and **re-derives from the title WITHOUT the `existing` set** — dropping the suffix back to `patient_age` — then the 409 guard (`forms.ts:362`) fires. **Net: creating a second form whose title slugifies to an existing basename fails with "already exists," despite the UI promising a suffixed name.** Fails QA's "duplicate → numeric suffix, never collides" criterion end-to-end (the unit test passes because it only exercises `deriveFormName` in isolation, not the flow).
+- **Fix:** server should honor the client's already-resolved `basename` (defensively re-slugify via `slugifyHierarchyId`, do **not** re-derive from `title`; use `title` only for `form_title`), **and/or** collision-resolve server-side by listing the category dir into `deriveFormName`'s `existing`. Keep the 409 as a race backstop. Add a flow-level test (create "Patient Age" twice → second lands as `patient_age_2`, not a 409).
+
+**Gate reminder:** run `pnpm --filter @cht-ui/shared build && pnpm --filter @cht-ui/shared test` (deriveFormName + contextExpression round-trip) and `pnpm --filter @cht-ui/client build` before committing — per the "verify app runs after client change" rule.
