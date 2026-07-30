@@ -38,7 +38,7 @@ import {
   type RawCard,
 } from '@cht-ui/shared';
 import { api } from '../api.js';
-import { useApp } from '../state/store.js';
+import { useApp, type ContactSummarySubView } from '../state/store.js';
 import { AppliesIfBuilder, type ContactFormFields } from './AppliesIfBuilder.js';
 import { FieldPicker } from './FieldPicker.js';
 import { ReportFieldPicker } from './ReportFieldPicker.js';
@@ -50,6 +50,20 @@ type CSFile = 'contact-summary.templated.js' | 'contact-summary.extras.js';
  *  cross-form context-value bridges (populated from another form's latest
  *  report); `structured` = the pre-existing context flags. */
 type CSView = 'structured' | 'values' | 'cards' | 'helpers' | 'raw';
+
+/** Map a store-level deep-link sub-view onto the editor's local tab id
+ *  (the store calls the flags tab `flags`; locally it's `structured`). */
+function csViewFromSubView(sub: ContactSummarySubView | undefined): CSView {
+  switch (sub) {
+    case 'values':
+    case 'cards':
+    case 'helpers':
+    case 'raw':
+      return sub;
+    default:
+      return 'structured';
+  }
+}
 
 interface CSState {
   raw: Record<CSFile, string | null>;
@@ -79,20 +93,25 @@ export function ContactSummaryEditor() {
   // Wave 3 · Note 6 — the calc builder's "From another form" empty-state
   // link sets `view.subView = 'values'`, so a form-side jump lands on
   // the Context values tab, not the default flags tab.
-  const initialSubView: CSView =
-    appView.kind === 'contact-summary' && appView.subView === 'values'
-      ? 'values'
-      : appView.kind === 'contact-summary' && appView.subView === 'cards'
-        ? 'cards'
-        : appView.kind === 'contact-summary' && appView.subView === 'helpers'
-          ? 'helpers'
-          : appView.kind === 'contact-summary' && appView.subView === 'raw'
-            ? 'raw'
-            : 'structured';
+  const initialSubView: CSView = csViewFromSubView(
+    appView.kind === 'contact-summary' ? appView.subView : undefined,
+  );
 
   const [state, setState] = useState<CSState | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<CSView>(initialSubView);
+
+  // Audit item 15 — honor the deep link even when this editor is ALREADY
+  // mounted: `useState(initialSubView)` seeds only on first mount, so a
+  // repeat navigation to {kind:'contact-summary', subView:'values'} was a
+  // no-op (React keeps the component instance when the view kind doesn't
+  // change). Every store navigation constructs a fresh view object, so a
+  // reference-equality dep re-fires exactly on navigation — a local tab
+  // change afterwards is not overridden (appView is untouched by it).
+  useEffect(() => {
+    if (appView.kind !== 'contact-summary' || !appView.subView) return;
+    setView(csViewFromSubView(appView.subView));
+  }, [appView]);
   const [activeRaw, setActiveRaw] = useState<CSFile>('contact-summary.templated.js');
   const [editingHelper, setEditingHelper] = useState<string | null>(null);
   const [contactTypeIds, setContactTypeIds] = useState<string[]>([]);

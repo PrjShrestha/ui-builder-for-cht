@@ -242,8 +242,11 @@ function CreateFormDialog(props: {
         <div className="muted small">
           Saved as <code>{derived.basename}</code>
           {derived.collided && (
-            <> — a form called <code>{creating.title}</code> already exists, so the filename
-            gets a numeric suffix.</>
+            // Audit item 15 — print the COLLIDING SLUG, not the typed
+            // title: "Patient age" collides with `patient_age.xlsx` even
+            // when no form was ever titled "Patient age".
+            <> — a form file named <code>{derived.slug}</code> already exists, so the
+            filename gets a numeric suffix.</>
           )}
         </div>
       )}

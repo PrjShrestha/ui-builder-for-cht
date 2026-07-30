@@ -225,3 +225,29 @@ test('§G5 — validator is byte-safe: `parse→validate→serialize` never muta
   validateContextExpression(src);
   assert.equal(src, before, 'input string not mutated');
 });
+
+/* ---- audit item 10 — INVALID (not just empty) numeric operands are gated ---- */
+
+test('§G6 — `1e5` age operand is flagged (saves clean, demotes to raw on reload)', () => {
+  // `ageInYears(contact) >= 1e5` doesn't match the age parse regex
+  // (plain decimals only) so it lands as `raw`; before this gate it
+  // passed validation, wrote to disk, and the visual rule row silently
+  // became a raw-JS row on reload.
+  const errors = validateContextExpression('ageInYears(contact) >= 1e5');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0]!, /not a plain number/);
+});
+
+test('§G7 — invalid numeric RHS on a contact-field comparison is flagged', () => {
+  assert.equal(validateContextExpression('contact.visit_count > 1,000').length, 1);
+  assert.equal(validateContextExpression('ageInYears(contact) === 1e5').length, 1);
+  assert.equal(validateContextExpression('ageInYears(contact) >= .5').length, 1);
+});
+
+test('§G8 — symbol RHS stays saveable (raw-fallback invariant): field-to-field compare', () => {
+  // Deliberate raw JS with no numeric intent must NOT be blocked — the
+  // visual builders' contract is to preserve unrecognized expressions,
+  // not reject them.
+  assert.deepEqual(validateContextExpression('contact.visit_count >= contact.expected_visits'), []);
+  assert.deepEqual(validateContextExpression('contact.enrolled === true'), []);
+});

@@ -122,3 +122,39 @@ test('app category (default): hyphens still fold to underscore', () => {
   assert.ok(!('error' in out));
   assert.equal(out.basename, 'patient_edit');
 });
+
+/* ==== explicit-basename duplicates are a strict 409 conflict (audit item 15) ==== */
+
+test('explicit basename whose slug already exists → conflict (route answers 409)', () => {
+  // An exact basename is a demand, not a suggestion — silently handing a
+  // legacy caller `foo_2` breaks its follow-up reads. The title-driven
+  // dialog path keeps auto-suffixing (it sends the pre-resolved suffix
+  // as `basename`, so it never lands here with a duplicate).
+  const out = resolveCreateFormBasename(undefined, 'patient_age', ['patient_age']);
+  assert.ok('error' in out);
+  assert.equal(out.conflict, true);
+  assert.match(out.error, /already exists/);
+});
+
+test('explicit-basename conflict check is case-insensitive (win32/macOS filesystems)', () => {
+  const out = resolveCreateFormBasename(undefined, 'patient_age', ['Patient_Age']);
+  assert.ok('error' in out);
+  assert.equal(out.conflict, true);
+});
+
+test('client-resolved suffixed basename does NOT conflict (its suffix is the resolution)', () => {
+  const out = resolveCreateFormBasename('Patient Age', 'patient_age_2', ['patient_age']);
+  assert.ok(!('error' in out));
+  assert.equal(out.basename, 'patient_age_2');
+});
+
+/* ======== title-only collision set is case-insensitive (audit item 9) ======== */
+
+test('title-only path: Patient_Age.xlsx on disk still yields patient_age_2, not a 409 dead end', () => {
+  // A case-sensitive taken-set said "patient_age is free"; the write-time
+  // exists check (case-insensitive on win32/macOS) then said "taken" —
+  // an unescapable 409 with no client-side suffix to rescue it.
+  const out = resolveCreateFormBasename('patient age', undefined, ['Patient_Age']);
+  assert.ok(!('error' in out));
+  assert.equal(out.basename, 'patient_age_2');
+});

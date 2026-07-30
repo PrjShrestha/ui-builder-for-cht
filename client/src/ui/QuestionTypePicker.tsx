@@ -141,8 +141,12 @@ export function QuestionTypePicker(props: Props) {
   // (same helper Quick Hierarchy Creator / deriveFormName use, so the
   // shape of "type friendly, auto-slug" is consistent across the tool).
   // `sectionAppearance` toggles the `field-list` XLSForm appearance.
+  // `sectionKind` (audit item 15 resolution) lets the same entry point
+  // author a Repeat — "+ Section" used to bypass the tile grid entirely,
+  // making `begin_repeat` unreachable from it.
   const [sectionLabel, setSectionLabel] = useState('');
   const [sectionAppearance, setSectionAppearance] = useState<'default' | 'field-list'>('default');
+  const [sectionKind, setSectionKind] = useState<'group' | 'repeat'>('group');
   const sectionSlug = useMemo(() => slugifyHierarchyId(sectionLabel), [sectionLabel]);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -269,18 +273,23 @@ export function QuestionTypePicker(props: Props) {
 
   const canCommitFromPickType = Boolean(activeTile && !activeTile.needsListName);
 
-  // Wave 2 §3b — commit a section. Uses the shared `begin_group` tile
-  // catalog entry so `handlePickerCommit`'s existing begin+end pair
-  // insert machinery (FormEditor.tsx:844) stays authoritative. We only
-  // supply the label + slug + optional appearance override.
+  // Wave 2 §3b — commit a section (or, audit item 15, a repeat). Uses the
+  // shared `begin_group` / `begin_repeat` tile catalog entries so
+  // `handlePickerCommit`'s existing begin+end pair insert machinery
+  // (FormEditor.tsx:844) stays authoritative — it already pairs both
+  // kinds. We only supply the label + slug + optional appearance override.
   function commitSection() {
-    const beginGroupTile = QUESTION_TYPE_TILES.find((t) => t.id === 'begin_group');
+    const tileId = sectionKind === 'repeat' ? 'begin_repeat' : 'begin_group';
+    const beginGroupTile = QUESTION_TYPE_TILES.find((t) => t.id === tileId);
     if (!beginGroupTile) return;
     const label = sectionLabel.trim();
     const slug = sectionSlug;
     if (!label || !slug) return;
     const extras: Record<string, string> = { ...(beginGroupTile.defaultExtras ?? {}) };
-    if (sectionAppearance === 'field-list') {
+    // `field-list` is one-screen-per-GROUP semantics; a repeat gets its
+    // own screen per iteration, so the toggle only applies to sections
+    // (the checkbox is hidden for repeats below).
+    if (sectionKind === 'group' && sectionAppearance === 'field-list') {
       extras.appearance = 'field-list';
     }
     // Build the per-locale labels map: the section title lands in the
@@ -324,8 +333,43 @@ export function QuestionTypePicker(props: Props) {
              CreateFormDialog). */}
         {props.sectionMode && (
           <>
+            {/* Audit item 15 — Section vs Repeat choice. "+ Section" skips
+                 the tile grid, so without this the (now-unhidden)
+                 begin_repeat tile was unreachable from the toolbar's
+                 primary structural entry point. */}
+            <fieldset className="qtype-name-field">
+              <legend className="muted small">What kind of block?</legend>
+              <label className="row gap" style={{ alignItems: 'center' }}>
+                <input
+                  type="radio"
+                  name="section-kind"
+                  value="group"
+                  checked={sectionKind === 'group'}
+                  onChange={() => setSectionKind('group')}
+                />
+                <span>
+                  <strong>Section</strong>{' '}
+                  <span className="muted small">— asked once, groups related questions</span>
+                </span>
+              </label>
+              <label className="row gap" style={{ alignItems: 'center' }}>
+                <input
+                  type="radio"
+                  name="section-kind"
+                  value="repeat"
+                  checked={sectionKind === 'repeat'}
+                  onChange={() => setSectionKind('repeat')}
+                />
+                <span>
+                  <strong>Repeat</strong>{' '}
+                  <span className="muted small">
+                    — asked once per item (e.g. per medication, per child)
+                  </span>
+                </span>
+              </label>
+            </fieldset>
             <label className="qtype-name-field">
-              <span>Section title</span>
+              <span>{sectionKind === 'repeat' ? 'Repeat title' : 'Section title'}</span>
               <input
                 ref={sectionLabelInputRef}
                 value={sectionLabel}
@@ -355,7 +399,9 @@ export function QuestionTypePicker(props: Props) {
                  the translator grid, never a stray label::en column. */}
             {activeLocales.length > 1 && (
               <fieldset className="qtype-labels-field">
-                <span className="qtype-labels-legend">Section heading in other languages</span>
+                <span className="qtype-labels-legend">
+                  {sectionKind === 'repeat' ? 'Repeat' : 'Section'} heading in other languages
+                </span>
                 {activeLocales.slice(1).map((loc) => (
                   <label key={loc} className="qtype-locale-label">
                     <span className="muted small">label::{loc}</span>
@@ -371,25 +417,27 @@ export function QuestionTypePicker(props: Props) {
                 ))}
               </fieldset>
             )}
-            <label className="qtype-name-field">
-              <input
-                type="checkbox"
-                checked={sectionAppearance === 'field-list'}
-                onChange={(e) =>
-                  setSectionAppearance(e.target.checked ? 'field-list' : 'default')
-                }
-              />{' '}
-              Show all questions on one screen{' '}
-              <span className="muted small">
-                (XLSForm <code>field-list</code> appearance)
-              </span>
-            </label>
+            {sectionKind === 'group' && (
+              <label className="qtype-name-field">
+                <input
+                  type="checkbox"
+                  checked={sectionAppearance === 'field-list'}
+                  onChange={(e) =>
+                    setSectionAppearance(e.target.checked ? 'field-list' : 'default')
+                  }
+                />{' '}
+                Show all questions on one screen{' '}
+                <span className="muted small">
+                  (XLSForm <code>field-list</code> appearance)
+                </span>
+              </label>
+            )}
             <div className="qtype-actions">
               <button className="link" onClick={props.onCancel}>
                 Cancel
               </button>
               <button onClick={commitSection} disabled={!canCommitSection}>
-                {props.commitLabel ?? 'Add section'}
+                {sectionKind === 'repeat' ? 'Add repeat' : (props.commitLabel ?? 'Add section')}
               </button>
             </div>
           </>

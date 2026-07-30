@@ -215,6 +215,10 @@ function ruleToSource(rule: ContextRule): string {
  *     comparison operator (i.e. the same "hanging operator" shape,
  *     surfaced generically since the raw fallback catches every legacy
  *     path — the empty-age case survives round-trip as a raw rule).
+ *   - a numeric comparison whose RHS has numeric intent but isn't a
+ *     plain decimal literal (`1e5`, `1,000`) — these save clean, then
+ *     silently demote the visual rule row to raw JS on reload
+ *     (audit item 10).
  *
  * Returns an array of human-readable error strings. Empty array = OK.
  * Idempotent — re-runs on the same input yield the same list.
@@ -251,6 +255,27 @@ export function validateContextExpression(expression: string): string[] {
         errors.push(
           `Rule ${idx + 1}: "${t}" ends with a comparison operator but no value — this is invalid JS and will fail at deploy.`,
         );
+      } else {
+        // Audit item 10 — INVALID (not just empty) numeric operands. A
+        // comparison whose RHS isn't a plain decimal literal (`1e5`,
+        // `1,000`, `12abc`) doesn't match the age/contact_field parse
+        // regexes, so the whole clause lands here as `raw` — it passed
+        // the builder's inline warning AND this gate, wrote to disk,
+        // then silently demoted the visual row to a raw row on reload.
+        // Only flag RHS with numeric INTENT (starts with a digit, `-`,
+        // or `.`): a symbol RHS like `contact.a >= contact.b` is
+        // deliberate raw JS and must stay saveable (raw-fallback
+        // invariant).
+        const demoted =
+          /^(?:ageInYears\(\s*contact\s*\)|contact\.[a-zA-Z_$][\w$]*)\s*(?:>=|<=|===|!==|==|!=|>|<)\s*(.+)$/.exec(
+            t,
+          );
+        const rhs = demoted?.[1]?.trim() ?? '';
+        if (demoted && /^[-.\d]/.test(rhs) && !/^-?\d+(?:\.\d+)?$/.test(rhs)) {
+          errors.push(
+            `Rule ${idx + 1}: "${rhs}" is not a plain number — write digits only (e.g. 100000, 5.5). Values like 1e5 or 1,000 would turn this row into raw JS on reload.`,
+          );
+        }
       }
     }
   });

@@ -1294,7 +1294,7 @@ function SurveyTab(props: {
              pair splice, unchanged). */}
         <button
           onClick={() => addSection(defaultInsertIndex(form.survey))}
-          title="Add a section — a labelled group of related questions"
+          title="Add a section (labelled group of related questions) or a repeat (asked once per item)"
         >
           + Section
         </button>
@@ -1372,7 +1372,7 @@ function SurveyTab(props: {
         <QuestionTypePicker
           title={
             pickerSectionMode
-              ? 'Add section'
+              ? 'Add section or repeat'
               : pickerEditRowId
                 ? 'Change question type'
                 : 'Add question'

@@ -89,6 +89,35 @@ async function roundTrip(form: XLSForm): Promise<XLSForm> {
   return parseXlsForm(buf);
 }
 
+/**
+ * Cell-matrix oracle (audit item 11): assert two serialized xlsx buffers
+ * agree header-for-header and cell-for-cell on every sheet the builder
+ * emits. This is the honest "byte-identical" check the §3b tests claim —
+ * `stripRowIds` deep-equals the parsed IR, which is lossy by construction
+ * (anything the parser normalizes away compares equal even if the on-disk
+ * cells drifted). Raw zip-byte compare would flake on xlsx timestamps;
+ * the cell matrix is the level at which "what lands in git" is defined.
+ * Uses the §4 readers below (function declarations hoist).
+ */
+async function assertSheetsCellIdentical(
+  bufA: Buffer,
+  bufB: Buffer,
+  sheets: string[] = ['survey', 'choices', 'settings'],
+): Promise<void> {
+  for (const sheet of sheets) {
+    assert.deepEqual(
+      await readSheetHeaders(bufB, sheet),
+      await readSheetHeaders(bufA, sheet),
+      `${sheet} sheet headers must be cell-identical across round-trips`,
+    );
+    assert.deepEqual(
+      await readSheetRows(bufB, sheet),
+      await readSheetRows(bufA, sheet),
+      `${sheet} sheet rows must be cell-identical across round-trips`,
+    );
+  }
+}
+
 /** Compare two surveys ignoring `rowId` (the parser assigns fresh ids on
  *  reload; every other field is content the serializer/parser must round-
  *  trip byte-for-byte). */
@@ -152,8 +181,10 @@ test('Wave 2 §3b — 2-deep nested groups round-trip byte-identical through par
   assert.equal(isStructurallyBalanced(authored), true);
 
   const form = buildForm(authored);
-  const reloaded1 = await roundTrip(form);
-  const reloaded2 = await roundTrip(reloaded1);
+  const buf1 = await serializeXlsForm(form);
+  const reloaded1 = await parseXlsForm(buf1);
+  const buf2 = await serializeXlsForm(reloaded1);
+  const reloaded2 = await parseXlsForm(buf2);
 
   // First round-trip: authored → reloaded content matches (ignoring rowIds).
   assert.deepEqual(stripRowIds(reloaded1.survey), stripRowIds(authored));
@@ -161,6 +192,10 @@ test('Wave 2 §3b — 2-deep nested groups round-trip byte-identical through par
   // form of the parse↔serialize pair). This is the tighter guarantee:
   // any drift the first pass introduced would surface on the second.
   assert.deepEqual(stripRowIds(reloaded2.survey), stripRowIds(reloaded1.survey));
+  // Audit item 11 — the honest byte-level oracle: the two serialized
+  // buffers must agree cell-for-cell on every sheet, not just deep-equal
+  // through the (lossy) parsed IR.
+  await assertSheetsCellIdentical(buf1, buf2);
   // Balance survives too — the authoring UX's save-guard relies on
   // parse-then-check, so the parser must not silently rewrite the shape.
   assert.deepEqual(findStructuralViolations(reloaded1.survey), []);
@@ -234,17 +269,21 @@ test('Wave 2 §3b — group with `field-list` appearance ("Show all on one scree
   ];
 
   const form = buildForm(authored);
-  const reloaded1 = await roundTrip(form);
-  const reloaded2 = await roundTrip(reloaded1);
+  const buf1 = await serializeXlsForm(form);
+  const reloaded1 = await parseXlsForm(buf1);
+  const buf2 = await serializeXlsForm(reloaded1);
+  const reloaded2 = await parseXlsForm(buf2);
 
   // Appearance stays on the begin row.
   const begin = reloaded1.survey.find((r) => r.type.trim().toLowerCase() === 'begin group');
   assert.ok(begin, 'reloaded form must have a begin group row');
   assert.equal(begin!.extras['appearance'], 'field-list');
 
-  // Full survey content matches, and a second round-trip is a fixpoint.
+  // Full survey content matches, and a second round-trip is a fixpoint —
+  // pinned at cell level, not just through the parsed IR (audit item 11).
   assert.deepEqual(stripRowIds(reloaded1.survey), stripRowIds(authored));
   assert.deepEqual(stripRowIds(reloaded2.survey), stripRowIds(reloaded1.survey));
+  await assertSheetsCellIdentical(buf1, buf2);
 });
 
 /* ======= 5. Combined: 2-deep + field-list + label on outer ======= */
@@ -284,14 +323,18 @@ test('Wave 2 §3b — combined shape (2-deep, outer field-list, friendly labels)
   assert.deepEqual(findStructuralViolations(authored), []);
 
   const form = buildForm(authored);
-  const reloaded1 = await roundTrip(form);
-  const reloaded2 = await roundTrip(reloaded1);
+  const buf1 = await serializeXlsForm(form);
+  const reloaded1 = await parseXlsForm(buf1);
+  const buf2 = await serializeXlsForm(reloaded1);
+  const reloaded2 = await parseXlsForm(buf2);
 
   // Structural balance survives.
   assert.deepEqual(findStructuralViolations(reloaded1.survey), []);
-  // Content matches (ignoring rowIds) — first pass and fixpoint.
+  // Content matches (ignoring rowIds) — first pass and fixpoint, pinned
+  // at cell level too (audit item 11).
   assert.deepEqual(stripRowIds(reloaded1.survey), stripRowIds(authored));
   assert.deepEqual(stripRowIds(reloaded2.survey), stripRowIds(reloaded1.survey));
+  await assertSheetsCellIdentical(buf1, buf2);
 });
 
 /* ============= 6. Add-language: appending `ne` to a single-locale form ============= */

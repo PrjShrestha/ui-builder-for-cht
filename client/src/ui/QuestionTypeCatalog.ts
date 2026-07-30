@@ -346,7 +346,12 @@ export const QUESTION_TYPE_TILES: QuestionTypeTile[] = [
     category: 'structural',
     xlsformType: 'begin repeat',
     isStructural: true,
-    hiddenInSimple: true,
+    // Was hiddenInSimple: true — the same invisible-tile wall the Group
+    // tile had (Wave 1 §3a): Simple is the default mode, so no-code users
+    // could never author "repeat per medication"-style blocks at all.
+    // handlePickerCommit already emits balanced begin/end repeat pairs;
+    // visibility was the only gate. Audit item 15 resolution (planner,
+    // 2026-07-30): unhide + offer Repeat from the "+ Section" entry point.
   },
 ];
 

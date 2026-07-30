@@ -111,3 +111,29 @@ test('allowHyphens: collision suffix still applies', () => {
   assert.equal(out.basename, 'household-create_2');
   assert.equal(out.collided, true);
 });
+
+/* ---- audit item 9 — case-insensitive collision (win32/macOS filesystems) ---- */
+
+test('collision is case-insensitive: Patient_Age.xlsx on disk blocks derived patient_age', () => {
+  // Windows/macOS filesystems are case-insensitive: a case-sensitive
+  // taken-set said "patient_age is free", then the write-time exists
+  // check said "taken" → an unescapable 409 dead end.
+  const out = deriveFormName('patient age', ['Patient_Age']);
+  assert.equal(out.basename, 'patient_age_2');
+  assert.equal(out.collided, true);
+});
+
+test('case-insensitive collision walks past mixed-case suffixed names too', () => {
+  const out = deriveFormName('patient age', ['Patient_Age', 'PATIENT_AGE_2']);
+  assert.equal(out.basename, 'patient_age_3');
+  assert.equal(out.collided, true);
+});
+
+test('result carries the pre-suffix slug so collision hints can print the colliding name', () => {
+  const collided = deriveFormName('Patient Age', ['patient_age']);
+  assert.equal(collided.slug, 'patient_age');
+  assert.equal(collided.basename, 'patient_age_2');
+  const clean = deriveFormName('Patient Age');
+  assert.equal(clean.slug, 'patient_age');
+  assert.equal(deriveFormName('').slug, '');
+});

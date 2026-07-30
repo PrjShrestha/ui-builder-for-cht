@@ -243,11 +243,15 @@ export const api = {
     }),
 
   /**
-   * Create a new form. Preferred call shape is title-first (`{title}`);
-   * the server slugifies to derive the filename. The legacy `basename`
-   * positional is still accepted and slugified defensively so older
-   * call sites keep working (see FormsIndex.tsx doCreate for the
-   * label-first flow).
+   * Create a new form. The dialog flow (FormsIndex.doCreate) resolves the
+   * filename client-side via `deriveFormName` (slugify + auto-suffix on
+   * collision) and passes it as the positional plus the friendly title in
+   * `opts.title`. The positional is ALWAYS sent as `basename`, so every
+   * caller hits the server's strict path: an explicit basename that
+   * already exists answers 409 (audit item 15) — a legacy 2-arg caller
+   * passing an exact name must never be silently handed `foo_2`. The
+   * server's title-driven auto-suffix path only serves callers that send
+   * `title` without a basename (raw HTTP / older clients).
    */
   createForm: (
     category: 'app' | 'contact',
@@ -259,11 +263,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({
         category,
-        // Pass both if the caller supplied a distinct title. When the
-        // client dialog collects the friendly title first, it sends just
-        // `title` and lets the server derive the filename.
-        title: opts?.title ?? basenameOrTitle,
-        basename: opts?.title ? basenameOrTitle : undefined,
+        title: opts?.title,
+        basename: basenameOrTitle,
         scaffold,
       }),
     }),

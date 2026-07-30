@@ -24,20 +24,30 @@
  * @param title      human-facing form title (may contain spaces, punctuation,
  *                   Unicode). Empty / all-non-ASCII inputs return `''` — the
  *                   caller decides whether to prompt or error.
- * @param existing   basenames already taken in this project. Case-sensitive
- *                   match; the returned name is never in the set (numeric
- *                   suffix `_2`, `_3`, … appended until unique).
+ * @param existing   basenames already taken in this project. Matched
+ *                   CASE-INSENSITIVELY — Windows/macOS filesystems are
+ *                   case-insensitive, so `Patient_Age.xlsx` on disk must
+ *                   collide with a derived `patient_age` (a case-sensitive
+ *                   set said "free", then the write-time exists-check said
+ *                   "taken" → an unescapable 409; audit item 9). The
+ *                   returned name is never in the set (numeric suffix
+ *                   `_2`, `_3`, … appended until unique).
  * @param opts       `allowHyphens` — preserve hyphenated segments (contact
  *                   forms). Default `false` (app forms; XLSForm `form_id`
  *                   convention is underscore-only).
- * @returns `{ basename, collided }` — `collided:true` when a suffix was
- *          appended, so callers can surface "saved as `foo_2`" hints.
+ * @returns `{ basename, collided, slug }` — `collided:true` when a suffix
+ *          was appended, so callers can surface "saved as `foo_2`" hints;
+ *          `slug` is the pre-suffix slug, i.e. the name that actually
+ *          collided (hint copy should print this, not the typed title —
+ *          audit item 15).
  */
 import { slugifyHierarchyId } from '../hierarchy/buildLinearHierarchy.js';
 
 export interface DerivedFormName {
   basename: string;
   collided: boolean;
+  /** The slug derived from the title BEFORE any collision suffix. */
+  slug: string;
 }
 
 export interface DeriveFormNameOptions {
@@ -64,10 +74,13 @@ export function deriveFormName(
   opts: DeriveFormNameOptions = {},
 ): DerivedFormName {
   const slug = opts.allowHyphens ? slugifyWithHyphens(title) : slugifyHierarchyId(title);
-  if (!slug) return { basename: '', collided: false };
+  if (!slug) return { basename: '', collided: false, slug: '' };
 
-  const taken = new Set(existing);
-  if (!taken.has(slug)) return { basename: slug, collided: false };
+  // Case-insensitive taken-set: the slug is always lowercase, but on-disk
+  // basenames may not be (`Patient_Age.xlsx`), and the filesystems this
+  // runs on (win32/macOS) treat those as the same file.
+  const taken = new Set(existing.map((n) => n.toLowerCase()));
+  if (!taken.has(slug.toLowerCase())) return { basename: slug, collided: false, slug };
 
   // Append the smallest numeric suffix that produces a name not in `existing`.
   // Starts at `_2` — the first collision means one already exists, so we're
@@ -75,9 +88,9 @@ export function deriveFormName(
   // pure and predictable; nobody should ever hit 100 collisions in practice.
   for (let i = 2; i < 1000; i++) {
     const candidate = `${slug}_${i}`;
-    if (!taken.has(candidate)) return { basename: candidate, collided: true };
+    if (!taken.has(candidate.toLowerCase())) return { basename: candidate, collided: true, slug };
   }
   // Fell off the end — return the raw slug so the caller sees the intent;
   // the create step will fail its own "already exists" check.
-  return { basename: slug, collided: true };
+  return { basename: slug, collided: true, slug };
 }

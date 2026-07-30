@@ -96,18 +96,25 @@ async function pathsForForm(category: FormCategory, basename: string) {
  * Contract (matches docs/handoff-waves-1-3-2026-07-29.md §Wave 1 · 1):
  *  - When the client resolved a `basename` (its `FormsIndex.doCreate` runs
  *    `deriveFormName(title, existingBasenamesInCategory)` first — e.g.
- *    "Patient Age" twice → `patient_age_2`), the server MUST honor it
+ *    "Patient Age" twice → `patient_age_2`), the server honors it
  *    verbatim (defensively re-slugified so a malicious/legacy client can't
- *    smuggle raw user text through as a filename). Re-deriving from
- *    `title` here without the `existing` set would collapse the suffix
- *    back to `patient_age` and trip the 409 guard below.
+ *    smuggle raw user text through as a filename) — but a basename whose
+ *    slug ALREADY EXISTS (case-insensitive; win32/macOS filesystems) is a
+ *    `conflict` → the route answers 409. That's the strict contract
+ *    explicit-basename callers rely on (audit item 15): an exact name is
+ *    a demand, never silently rewritten to `foo_2`. Re-deriving from
+ *    `title` here without the `existing` set would collapse the client's
+ *    suffix back to `patient_age` and trip that conflict.
  *  - When only `title` is present (legacy call shape), collision-resolve
  *    server-side using the provided `existing` list so the same second-
- *    create still gets a `_2` suffix.
+ *    create still gets a `_2` suffix — auto-suffixing is the intended
+ *    no-code behavior for the title-driven path ONLY.
  *  - Falls back to `title` as the display name; `basename` alone is
  *    also acceptable (returns friendly title = basename in that case).
  *
- * Returns `{ basename, humanTitle }` on success, `{ error }` on failure.
+ * Returns `{ basename, humanTitle }` on success, `{ error }` on failure —
+ * with `conflict: true` when the failure is an explicit-basename duplicate
+ * (route maps it to 409 instead of 400).
  */
 export interface ResolvedFormName {
   basename: string;
@@ -118,7 +125,7 @@ export function resolveCreateFormBasename(
   rawBasename: string | undefined,
   existing: readonly string[],
   category: FormCategory = 'app',
-): ResolvedFormName | { error: string } {
+): ResolvedFormName | { error: string; conflict?: boolean } {
   const trimmedTitle = (title ?? '').trim();
   const trimmedRaw = (rawBasename ?? '').trim();
   if (trimmedTitle === '' && trimmedRaw === '') {
@@ -135,9 +142,13 @@ export function resolveCreateFormBasename(
   // Prefer the client-resolved basename when supplied. Re-slugify
   // defensively — the API contract lets older callers pass raw text as
   // `basename`, and we never want unsanitised input to hit the filesystem.
-  // Skipping the `existing` set here is deliberate: the client has already
-  // resolved collisions with its full view of the folder; second-guessing
-  // that would clobber the very suffix we want to honour.
+  // NEVER auto-suffix here: the dialog client has already resolved
+  // collisions with its full view of the folder (honour its suffix), and
+  // a legacy caller passing an exact basename relies on the strict
+  // "already exists → 409" contract (audit item 15) — silently handing
+  // back `foo_2` would break its follow-up reads. Case-insensitive match:
+  // win32/macOS filesystems treat `Patient_Age.xlsx` and `patient_age.xlsx`
+  // as the same file (audit item 9).
   if (trimmedRaw !== '') {
     const slug = allowHyphens ? slugifyWithHyphens(trimmedRaw) : slugifyHierarchyId(trimmedRaw);
     if (slug === '') {
@@ -145,6 +156,10 @@ export function resolveCreateFormBasename(
         error:
           'Could not derive a filename from that basename. Provide ASCII letters (e.g. "pregnancy_registration").',
       };
+    }
+    const takenLower = new Set(existing.map((n) => n.toLowerCase()));
+    if (takenLower.has(slug.toLowerCase())) {
+      return { error: `Form ${slug} already exists`, conflict: true };
     }
     return { basename: slug, humanTitle };
   }
@@ -440,7 +455,9 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
       const existingBasenames = await listExistingXlsxBasenames(dir);
       const resolved = resolveCreateFormBasename(title, rawBasename, existingBasenames, category);
       if ('error' in resolved) {
-        return reply.code(400).send({ error: resolved.error });
+        // Explicit-basename duplicates are the strict-contract 409
+        // (audit item 15); every other resolution failure is a 400.
+        return reply.code(resolved.conflict ? 409 : 400).send({ error: resolved.error });
       }
       const { basename, humanTitle } = resolved;
       const paths = await pathsForForm(category, basename);
