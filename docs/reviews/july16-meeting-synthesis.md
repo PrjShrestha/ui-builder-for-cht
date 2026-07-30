@@ -48,6 +48,27 @@ plan they drew** in several places.
 5. **Versioning/rollback** — we're local-first + git-tracked, so the substrate exists; an in-UI version/rollback surface is a future Tier-3 item they explicitly want.
 6. **FHIR compliance stays in scope** (Andra) — we already lead here; keep it.
 
+## Addendum 2026-07-30 — "Direction agreed to date" (squad's consolidated MVP scope)
+
+The squad's post-meeting scope note (pasted by the PO 2026-07-30) refines the July-16 direction. Mapping against our shipped state:
+
+**Already shipped (their Phase-1 editable set):** question labels ✅ · hints ✅ (per-locale) · choices add/edit ✅ · typo/translation fixes ✅ (translations editor + add-language) · mandatory↔optional toggle ✅ (`FormEditor.tsx:2044-2052`) · question order ✅ (dependency-guarded reorder) · simple new form ✅ (label-first create + scaffold) · templates ✅ · hierarchy ✅ (they rank it "good to have" — we're ahead) · contact hydration ✅ mostly (lineage builder + inputs scaffold).
+
+**Their Phase 2 (calculations / relevance / constraints):** ✅ already shipped — we remain a phase ahead.
+
+**Net-new signals (NOT currently covered) — the four gaps their MVP scope opens:**
+
+| # | Gap | Their words | Our state | Shape of the work |
+|---|---|---|---|---|
+| A | **Variable-name freeze on deployed forms** | "Not editable: variable names — changing them mid-collection breaks the meaning of longitudinal data" | We *allow* name edits (advanced `NameInput`) and have greenlit the rename-macro. The macro keeps the **form** consistent but cannot fix **already-collected reports** — their concern is data continuity, not ref integrity | Policy layer: block (or hard-warn) `name` edits on forms that are deployed / have collected data; rename-macro stays for pre-deployment. Needs a "deployed" signal (git tag? deploy history? explicit flag) |
+| B | **Icons/images editor = properties + resources.json + form media** | "icons/logos live in form properties and resources, not the XLS — the tool must edit properties and resources too" | Properties `icon` is a raw string field; `resources.json` has **no editor** (only a preflight warn); no `media::image`/`<form>-media` handling | Small resources manager: list/upload images, maintain `resources.json` key→file map, icon *picker* in PropertiesEditor; later `media::image` on questions |
+| C | **Persona/role form assignment** | "assigning it to a persona via form properties. Whole-form visibility per role is easy" | ContextExpressionBuilder has **no user-role rule kind** (verified — contact-type/age/summary-flag only) | Add a "logged-in user role/type" rule kind to the builder + parser (canonical CHT mechanism to be confirmed via cht-specialist: `user.*` in the context expression vs the properties `permission` key). Per-question role visibility stays out (matches their scope note) |
+| D | **WYSIWYG rendered editing surface** | Phase 1 is "simple edits… through a rendered, WYSIWYG-style view" | Our editor is tile-based; live preview is greenlit Tier 1 but as *preview* | Raises Tier-1 preview from "see it" to "the editing surface": minimum viable = click-a-question-in-preview → opens its editor card (bridge), full inline editing later |
+
+**Caveat they recorded** (only the first survived the paste): every interface works best de novo; editing arbitrary existing forms is hard for all of them — forms built in the tool's own grammar re-edit easily. **This is our moat restated** — we are the only proposal that edits existing configs losslessly in place.
+
+**Planner recommendation:** A and C are small and land squarely inside their MVP definition — do first. B is medium (new file surface + upload plumbing) but explicitly named in-scope by the squad. D folds into the existing Tier-1 preview plan (upgrade its acceptance criteria rather than opening a new item).
+
 ## Recommended planner actions
 - **Reaffirm roadmap order** — current queue → live preview → workflow simulator; the meeting validates both Tier-1 items as externally demanded.
 - **Add "AI → XLSForm-IR" as an explicit roadmap item** (JSON Schema over the `XLSForm` object + preflight gate) — it's the integration seam with Ben's AI pipeline that Josh wants paired with WYSIWYG.
