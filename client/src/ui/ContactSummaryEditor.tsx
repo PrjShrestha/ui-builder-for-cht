@@ -18,9 +18,11 @@
  * Falls back to raw code editor if the file doesn't contain a parseable
  * context object.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
+  emitContextValueBridge,
   parseContactSummary,
+  recognizeContextValueBridge,
   serializeContactSummary,
   parseHelpers,
   patchHelper,
@@ -30,6 +32,7 @@ import {
   findCardsArrayBounds,
   type Card,
   type CardField,
+  type ContextValueBridge,
   type ParsedCards,
   type ParsedContactSummary,
   type RawCard,
@@ -38,10 +41,14 @@ import { api } from '../api.js';
 import { useApp } from '../state/store.js';
 import { AppliesIfBuilder, type ContactFormFields } from './AppliesIfBuilder.js';
 import { FieldPicker } from './FieldPicker.js';
+import { ReportFieldPicker } from './ReportFieldPicker.js';
 import { useContactFormFields } from './useContactFormFields.js';
 
 type CSFile = 'contact-summary.templated.js' | 'contact-summary.extras.js';
-type CSView = 'structured' | 'cards' | 'helpers' | 'raw';
+/** Sub-tabs inside the Contact Summary editor. `values` = Wave 3 · Note 6
+ *  cross-form context-value bridges (populated from another form's latest
+ *  report); `structured` = the pre-existing context flags. */
+type CSView = 'structured' | 'values' | 'cards' | 'helpers' | 'raw';
 
 interface CSState {
   raw: Record<CSFile, string | null>;
@@ -59,10 +66,24 @@ export function ContactSummaryEditor() {
   const setSaving = useApp((s) => s.setSaving);
   const dirty = useApp((s) => s.dirty['contact-summary'] ?? false);
   const saving = useApp((s) => s.saving['contact-summary'] ?? false);
+  const appView = useApp((s) => s.view);
+  // Wave 3 · Note 6 — the calc builder's "From another form" empty-state
+  // link sets `view.subView = 'values'`, so a form-side jump lands on
+  // the Context values tab, not the default flags tab.
+  const initialSubView: CSView =
+    appView.kind === 'contact-summary' && appView.subView === 'values'
+      ? 'values'
+      : appView.kind === 'contact-summary' && appView.subView === 'cards'
+        ? 'cards'
+        : appView.kind === 'contact-summary' && appView.subView === 'helpers'
+          ? 'helpers'
+          : appView.kind === 'contact-summary' && appView.subView === 'raw'
+            ? 'raw'
+            : 'structured';
 
   const [state, setState] = useState<CSState | null>(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<CSView>('structured');
+  const [view, setView] = useState<CSView>(initialSubView);
   const [activeRaw, setActiveRaw] = useState<CSFile>('contact-summary.templated.js');
   const [editingHelper, setEditingHelper] = useState<string | null>(null);
   const [contactTypeIds, setContactTypeIds] = useState<string[]>([]);
@@ -195,7 +216,15 @@ export function ContactSummaryEditor() {
       // sequence — `spliceCards` operates on `const cards = [ ... ]` which
       // never overlaps the `context: {...}` object.
       let templatedOut = state.raw['contact-summary.templated.js'] ?? '';
-      if (state.parsed && state.parsed.contextBounds && view === 'structured') {
+      // Wave 3 · Note 6 — the Context values sub-tab writes into the same
+      // `context: {}` object as the flags tab (bridges are just flags whose
+      // value happens to be the canonical IIFE shape). Save whenever the
+      // user is on EITHER structured surface.
+      if (
+        state.parsed &&
+        state.parsed.contextBounds &&
+        (view === 'structured' || view === 'values')
+      ) {
         templatedOut = serializeContactSummary(state.parsed, state.flags, state.order);
       }
       if (state.parsedCards && state.parsedCards.shape === 'array' && state.cardsDirty) {
@@ -214,10 +243,46 @@ export function ContactSummaryEditor() {
     }
   }
 
+  /**
+   * Add a fresh context-value bridge row to the shared flags map. The
+   * new key defaults to a placeholder (`ctx_value_N`) and its value to
+   * an empty bridge — the user then picks a source form + field, which
+   * triggers `patchBridge` to overwrite the value with the emitted IIFE.
+   */
+  function addBridgeValue(): void {
+    if (!state) return;
+    const existing = new Set(state.order);
+    let base = 'ctx_value';
+    let name = base;
+    for (let i = 1; existing.has(name); i++) name = `${base}_${i + 1}`;
+    // Seed with an intentionally-invalid-JS placeholder that recognizes
+    // as a bridge with EMPTY sourceForm/sourceField. The user MUST pick
+    // a source form + field before saving; the empty state is rendered
+    // as a picker prompt, not a raw-JS badge.
+    const seed = emitContextValueBridge({ sourceForm: '', sourceField: '' });
+    setState({
+      ...state,
+      flags: { ...state.flags, [name]: seed },
+      order: [...state.order, name],
+    });
+    setDirty('contact-summary', true);
+  }
+
   if (loading) return <div className="loading">Loading contact summary…</div>;
   if (!state) return <div className="loading">No contact summary data.</div>;
 
   const hasContext = state.parsed?.contextBounds != null;
+  // Partition the shared flags map into (bridges, flags) so each sub-tab
+  // shows only the shape it edits. The state is one map — sub-tabs are
+  // views over it. A key whose value doesn't recognize as a bridge stays
+  // in "Context flags" (which retains its raw-JS textarea escape hatch).
+  const bridgeKeys: string[] = [];
+  const flagKeys: string[] = [];
+  for (const key of state.order) {
+    const expr = state.flags[key] ?? '';
+    if (recognizeContextValueBridge(expr)) bridgeKeys.push(key);
+    else flagKeys.push(key);
+  }
 
   return (
     <div className="cs-editor">
@@ -237,7 +302,14 @@ export function ContactSummaryEditor() {
           className={view === 'structured' ? 'active' : ''}
           onClick={() => setView('structured')}
         >
-          Context flags ({state.order.length})
+          Context flags ({flagKeys.length})
+        </button>
+        <button
+          className={view === 'values' ? 'active' : ''}
+          onClick={() => setView('values')}
+          title="Context keys populated from another form's most-recent report"
+        >
+          Context values ({bridgeKeys.length})
         </button>
         <button
           className={view === 'cards' ? 'active' : ''}
@@ -289,7 +361,7 @@ export function ContactSummaryEditor() {
           )}
           {hasContext && (
             <div className="cs-flags">
-              {state.order.map((name) => (
+              {flagKeys.map((name) => (
                 <FlagCard
                   key={name}
                   name={name}
@@ -299,10 +371,30 @@ export function ContactSummaryEditor() {
                   onRemove={() => removeFlag(name)}
                 />
               ))}
+              {flagKeys.length === 0 && (
+                <p className="muted">
+                  No context flags defined. Cross-form values live under the
+                  &quot;Context values&quot; tab.
+                </p>
+              )}
               <button onClick={addFlag}>+ Add flag</button>
             </div>
           )}
         </>
+      )}
+
+      {view === 'values' && (
+        <ContextValuesTab
+          hasContext={hasContext}
+          bridgeKeys={bridgeKeys}
+          flags={state.flags}
+          onRename={renameFlag}
+          onRemove={removeFlag}
+          onPatchBridge={(name, next) =>
+            patchFlag(name, emitContextValueBridge(next))
+          }
+          onAdd={addBridgeValue}
+        />
       )}
 
       {view === 'cards' && (
@@ -762,6 +854,142 @@ function FlagCard(props: {
         spellCheck={false}
         placeholder={'function () { return true; }'}
       />
+    </div>
+  );
+}
+
+/**
+ * Wave 3 · Note 6 — "Context values" sub-tab. Lists context keys whose
+ * value is derived from another form's most-recent report; each row is
+ * a `ReportFieldPicker` (source form + source field) whose selection
+ * emits the canonical IIFE bridge via `emitContextValueBridge`.
+ *
+ * Non-bridge keys stay in the sibling Context flags tab (with its raw-JS
+ * `<textarea>` escape hatch). This tab NEVER shows a raw-JS badge: the
+ * partition on `recognizeContextValueBridge` upstream guarantees every
+ * key rendered here re-hydrates through the recognizer. If a user
+ * hand-edits a bridge into a shape the recognizer can't lift, it
+ * falls back to the flags tab on the next re-mount.
+ */
+function ContextValuesTab(props: {
+  hasContext: boolean;
+  bridgeKeys: string[];
+  flags: Record<string, string>;
+  onRename: (oldName: string, newName: string) => void;
+  onRemove: (name: string) => void;
+  onPatchBridge: (name: string, next: ContextValueBridge) => void;
+  onAdd: () => void;
+}) {
+  const { hasContext, bridgeKeys, flags, onRename, onRemove, onPatchBridge, onAdd } = props;
+  return (
+    <div className="cs-context-values">
+      <p className="muted">
+        Cross-form values pulled from another form&apos;s most-recent report.
+        Each row emits a <code>context.&lt;key&gt;</code> populated by{' '}
+        <code>Utils.getMostRecentReport</code> — form calcs can then reference
+        the key via <code>instance(&apos;contact-summary&apos;)/context/&lt;key&gt;</code>
+        (see the Calculation builder&apos;s &quot;From another form&quot; picker).
+      </p>
+      {!hasContext && (
+        <p className="muted">
+          Couldn&apos;t find <code>context: {'{...}'}</code> in
+          contact-summary.templated.js. Edit raw text in the &quot;Raw files&quot; tab.
+        </p>
+      )}
+      {hasContext && (
+        <div className="cs-flags">
+          {bridgeKeys.map((name) => {
+            const bridge = recognizeContextValueBridge(flags[name] ?? '');
+            // The partition guarantees this recognizer succeeds. If it
+            // ever returns null (defensive), we render a stub picker
+            // seeded with empty strings — the row still round-trips.
+            const safe: ContextValueBridge = bridge ?? { sourceForm: '', sourceField: '' };
+            return (
+              <ContextValueCard
+                key={name}
+                name={name}
+                bridge={safe}
+                onRename={(newName) => onRename(name, newName)}
+                onChange={(next) => onPatchBridge(name, next)}
+                onRemove={() => onRemove(name)}
+              />
+            );
+          })}
+          {bridgeKeys.length === 0 && (
+            <p className="muted">
+              No cross-form context values yet. Click <em>+ Add value</em> below
+              to pull the latest report field from another form (e.g. BMI from
+              the Diabetes screening form).
+            </p>
+          )}
+          <button onClick={onAdd}>+ Add value</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContextValueCard(props: {
+  name: string;
+  bridge: ContextValueBridge;
+  onRename: (newName: string) => void;
+  onChange: (next: ContextValueBridge) => void;
+  onRemove: () => void;
+}) {
+  const [nameDraft, setNameDraft] = useState(props.name);
+  useEffect(() => setNameDraft(props.name), [props.name]);
+  // ReportFieldPicker's `availableForms` prop scopes its form dropdown to
+  // a task's appliesToType. On this surface we don't have that — we want
+  // the picker to expose ALL app forms in the project — so an empty
+  // array falls through to the "all app forms" fallback in the picker.
+  const availableForms = useMemo<string[]>(() => [], []);
+  return (
+    <div className="task-card">
+      <header className="row gap">
+        <code>summary.</code>
+        <input
+          value={nameDraft}
+          onChange={(e) => setNameDraft(e.target.value)}
+          onBlur={() => {
+            if (nameDraft !== props.name) props.onRename(nameDraft);
+          }}
+          className="name-input"
+        />
+        <button className="link danger" onClick={props.onRemove}>
+          delete
+        </button>
+      </header>
+      <label className="expr-field">
+        <span className="expr-label">
+          <code>source</code>
+          <em className="muted"> — latest report from another form</em>
+        </span>
+        <ReportFieldPicker
+          value={props.bridge.sourceField}
+          availableForms={availableForms}
+          pickedForm={props.bridge.sourceForm}
+          onFormChange={(sourceForm) => {
+            // Changing the form clears the field — the field list is
+            // form-specific and re-derives once the new form loads.
+            props.onChange({ sourceForm, sourceField: '' });
+          }}
+          onChange={(sourceField) => {
+            props.onChange({ ...props.bridge, sourceField });
+          }}
+          placeholder="field.path"
+        />
+      </label>
+      <p className="muted small">
+        {props.bridge.sourceForm && props.bridge.sourceField ? (
+          <>
+            Reads <code>{props.bridge.sourceField}</code> from the most-recent{' '}
+            <code>{props.bridge.sourceForm}</code> report; <code>undefined</code>
+            {' '}when the patient has none.
+          </>
+        ) : (
+          <>Pick a source form and field above.</>
+        )}
+      </p>
     </div>
   );
 }

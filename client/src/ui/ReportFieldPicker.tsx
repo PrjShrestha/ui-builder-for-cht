@@ -18,10 +18,22 @@ interface Props {
   /** Form basenames that this rule's task runs against (from appliesToType). */
   availableForms: string[];
   placeholder?: string;
+  /**
+   * Optional controlled-mode inputs. When `pickedForm` is provided, the
+   * form dropdown becomes controlled from outside — the parent owns the
+   * form-choice state and receives updates via `onFormChange`. Used by
+   * the Contact Summary "Context values" tab, where the picked form is
+   * part of the persisted structured bridge (not just internal UI).
+   * Existing callers that only care about the field value can omit both;
+   * the picker keeps the internal state it always had.
+   */
+  pickedForm?: string;
+  onFormChange?: (next: string) => void;
 }
 
 export function ReportFieldPicker(props: Props) {
-  const { value, onChange, availableForms } = props;
+  const { value, onChange, availableForms, pickedForm: controlledForm, onFormChange } = props;
+  const controlled = controlledForm !== undefined;
   // Zustand snapshot stability — selectors must return the SAME REFERENCE
   // when the underlying slice hasn't changed. A `s.forms.filter().map()`
   // builds a new array on every call → useSyncExternalStore considers the
@@ -39,19 +51,30 @@ export function ReportFieldPicker(props: Props) {
   );
   const formOptions = availableForms.length > 0 ? availableForms : allAppForms;
 
-  const [pickedForm, setPickedForm] = useState<string | null>(() => formOptions[0] ?? null);
+  const [internalForm, setInternalForm] = useState<string | null>(() => formOptions[0] ?? null);
   const [useCustom, setUseCustom] = useState<boolean>(() => formOptions.length === 0);
+
+  const pickedForm = controlled ? controlledForm || null : internalForm;
+
+  function setPickedForm(next: string | null): void {
+    if (controlled) {
+      onFormChange?.(next ?? '');
+    } else {
+      setInternalForm(next);
+    }
+  }
 
   // If availableForms changes (task appliesToType edited), reset to first option.
   useEffect(() => {
+    if (controlled) return; // parent owns the value; do not overwrite
     if (formOptions.length === 0) {
-      setPickedForm(null);
+      setInternalForm(null);
       setUseCustom(true);
-    } else if (!pickedForm || !formOptions.includes(pickedForm)) {
-      setPickedForm(formOptions[0] ?? null);
+    } else if (!internalForm || !formOptions.includes(internalForm)) {
+      setInternalForm(formOptions[0] ?? null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formOptions.join('|')]);
+  }, [formOptions.join('|'), controlled]);
 
   const { fields, loading } = useReportFormFields(useCustom ? null : pickedForm);
 

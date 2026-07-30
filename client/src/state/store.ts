@@ -8,6 +8,16 @@
  */
 import { create } from 'zustand';
 
+/**
+ * Optional deep-link target for the Contact Summary editor's sub-tabs.
+ * The Wave 3 · Note 6 empty-state link in `CalculationBuilder`'s
+ * "From another form" picker source group uses this to jump straight
+ * into the Context values tab, so the user isn't dumped on the default
+ * (Context flags) tab and left to hunt. When omitted, the editor
+ * lands on its usual default.
+ */
+export type ContactSummarySubView = 'flags' | 'values' | 'cards' | 'helpers' | 'raw';
+
 export type View =
   | { kind: 'no-project' }
   | { kind: 'project-overview' }
@@ -15,7 +25,7 @@ export type View =
   | { kind: 'form'; id: string }
   | { kind: 'forms-index' }
   | { kind: 'tasks' }
-  | { kind: 'contact-summary' }
+  | { kind: 'contact-summary'; subView?: ContactSummarySubView }
   | { kind: 'flowchart'; id: string }
   | { kind: 'decisions' }
   | { kind: 'deploy' }

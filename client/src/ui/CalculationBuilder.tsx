@@ -37,7 +37,9 @@ import {
   type ParsedCalculation,
   type ParsedExpression,
 } from '@cht-ui/shared';
+import { useApp } from '../state/store.js';
 import { RelevantRuleBuilder } from './RelevantRuleBuilder.js';
+import { useContactSummaryBridgeKeys, type ContextBridgeKey } from './useContactSummaryContextKeys.js';
 
 interface Props {
   value: string;
@@ -154,6 +156,7 @@ type OutputKind =
   | 'field-ref'
   | 'contact-input'
   | 'contact-summary'
+  | 'cross-form'
   | 'expression';
 
 /** Subset the table-cell TypedOutputInput renders radios for. Unchanged
@@ -333,6 +336,7 @@ export function CalculationBuilder(props: Props) {
             fieldOptions={props.fieldOptions}
             inputContactFields={props.inputContactFields ?? []}
             contextKeys={props.contextKeys ?? []}
+            onCancel={props.onCancel}
           />
         )}
 
@@ -404,6 +408,7 @@ const VALUE_KINDS: ReadonlyArray<OutputKind> = [
   'field-ref',
   'contact-input',
   'contact-summary',
+  'cross-form',
   'expression',
 ];
 
@@ -443,9 +448,20 @@ function SingleValuePanel(props: {
   fieldOptions: string[];
   inputContactFields: string[];
   contextKeys: string[];
+  onCancel: () => void;
 }) {
-  const detectedKind = inferOutputKind(props.value);
+  const bridgeKeys = useContactSummaryBridgeKeys();
+  const bridgeKeySet = useMemo(() => new Set(bridgeKeys.map((b) => b.key)), [bridgeKeys]);
   const detectedRef = recognizeReference(props.value);
+  // Wave 3 · Note 6 — a `contact-summary` reference whose key is a known
+  // bridge AND whose wrapper is `fallback-to-current` is a cross-form
+  // bridge calc. Route it to the dedicated "From another form" radio so
+  // the user sees the labeled source form, not just the ctx key.
+  const isCrossFormBridge =
+    detectedRef?.kind === 'contact-summary' &&
+    detectedRef.wrapper === 'fallback-to-current' &&
+    bridgeKeySet.has(detectedRef.argument);
+  const detectedKind: OutputKind = isCrossFormBridge ? 'cross-form' : inferOutputKind(props.value);
   const [activeKind, setActiveKind] = useState<OutputKind>(detectedKind);
   // Resync when the underlying value changes from outside (template insert,
   // mode switch). Cheap effect — `detectedKind` is a pure string check.
@@ -480,6 +496,13 @@ function SingleValuePanel(props: {
   function pickContactSummary(key: string, wrapper: ContextWrapper): void {
     setContextWrapper(wrapper);
     props.onChange(key ? emitContactSummary(key, wrapper) : '');
+  }
+  function pickCrossFormKey(key: string): void {
+    // Bridge calcs always use the fallback-to-current wrapper: if the
+    // contact-summary's bridge value is `undefined` (patient has no
+    // report of that form yet), the user's typed answer is preserved.
+    // This is the whole point of the wrapper for the cross-form pattern.
+    props.onChange(key ? emitContactSummary(key, 'fallback-to-current') : '');
   }
 
   return (
@@ -637,6 +660,15 @@ function SingleValuePanel(props: {
         </div>
       )}
 
+      {activeKind === 'cross-form' && (
+        <CrossFormPicker
+          value={props.value}
+          bridgeKeys={bridgeKeys}
+          onPick={pickCrossFormKey}
+          onCancel={props.onCancel}
+        />
+      )}
+
       {activeKind === 'expression' && (
         <label className="row gap" style={{ alignItems: 'flex-start' }}>
           <span className="muted">Expression:</span>
@@ -654,6 +686,79 @@ function SingleValuePanel(props: {
   );
 }
 
+/**
+ * Wave 3 · Note 6 — the "From another form (via contact summary)" picker
+ * source group. Lists the bridge keys defined in the Contact Summary
+ * editor's Context values sub-tab; selecting one emits the
+ * `fallback-to-current`-wrapped bridge calc via the existing engine.
+ *
+ * Empty-state carries a deep link that switches the app view to the
+ * Contact Summary editor's Context values sub-tab, so the user isn't
+ * dumped on the default (flags) tab and left to hunt.
+ */
+function CrossFormPicker(props: {
+  value: string;
+  bridgeKeys: ContextBridgeKey[];
+  onPick: (key: string) => void;
+  onCancel: () => void;
+}) {
+  const setView = useApp((s) => s.setView);
+  const detectedRef = recognizeReference(props.value);
+  const currentKey =
+    detectedRef?.kind === 'contact-summary' ? detectedRef.argument : '';
+
+  if (props.bridgeKeys.length === 0) {
+    return (
+      <div className="cross-form-empty">
+        <p className="muted">
+          No cross-form values defined yet. Define one in the Contact
+          Summary editor&apos;s <strong>Context values</strong> tab, then
+          come back and pick it here.
+        </p>
+        <button
+          type="button"
+          className="link"
+          onClick={() => {
+            // Close the modal first so the sidebar's dirty-check
+            // prompt (if any) speaks for the form, not the calc modal.
+            props.onCancel();
+            setView({ kind: 'contact-summary', subView: 'values' });
+          }}
+        >
+          Define a context value in Contact Summary →
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="cross-form-picker">
+      <label className="row gap" style={{ alignItems: 'center' }}>
+        <span className="muted">Cross-form value:</span>
+        <select
+          value={currentKey}
+          onChange={(e) => props.onPick(e.target.value)}
+          aria-label="Cross-form context value"
+        >
+          <option value="">— pick a value —</option>
+          {props.bridgeKeys.map((b) => (
+            <option key={b.key} value={b.key}>
+              {b.key} — latest {b.sourceField} from {b.sourceForm}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="muted small">
+        If the patient has no matching report yet, the user&apos;s typed
+        answer is kept (fallback-to-current wrapper).
+      </p>
+      <code className="muted">
+        saved as <strong>{props.value || "if(ctx, ctx, .)"}</strong>
+      </code>
+    </div>
+  );
+}
+
 function kindLabel(k: OutputKind): string {
   switch (k) {
     case 'literal':
@@ -666,6 +771,8 @@ function kindLabel(k: OutputKind): string {
       return 'From the patient / household';
     case 'contact-summary':
       return 'From the contact summary';
+    case 'cross-form':
+      return 'From another form (via contact summary)';
     case 'expression':
       return 'Custom XPath';
   }
@@ -687,6 +794,8 @@ function kindHelp(k: OutputKind): string {
       return 'Pull a value the form was launched with (patient ID, name, date of birth). Saved as `../inputs/contact/<field>`.';
     case 'contact-summary':
       return 'Pull a flag computed by the contact summary (gestational age, latest BP, …). Saved as `instance(\'contact-summary\')/context/<key>`.';
+    case 'cross-form':
+      return 'Pull the latest value from another form (e.g. BMI from the Diabetes screening form). Defined in Contact Summary → Context values.';
     case 'expression':
       return 'Hand-write any XPath. Use this only when none of the above fit.';
   }
