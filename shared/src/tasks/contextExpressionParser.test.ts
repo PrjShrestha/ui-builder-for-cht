@@ -21,6 +21,7 @@ import { strict as assert } from 'node:assert';
 import {
   parseContextExpression,
   serializeContextExpression,
+  validateContextExpression,
   type ContextRule,
 } from './contextExpressionParser.js';
 
@@ -160,4 +161,67 @@ test('§E1 — unsupported shapes preserve verbatim via raw kind', () => {
 test('§E2 — empty source serializes to empty (no surprise true/false)', () => {
   assert.equal(roundtrip(''), '');
   assert.equal(roundtrip('   '), '');
+});
+
+/* ============================ §F — decimal age operand ============================ */
+
+test('§F1 — decimal ageInYears round-trips (was integer-only before Wave 1)', () => {
+  // Widened the age regex from `\d+` to `-?\d+(?:\.\d+)?` so a `60.5`
+  // typed into the age input doesn't demote to raw on reload.
+  assert.equal(roundtrip('ageInYears(contact) >= 60.5'), 'ageInYears(contact) >= 60.5');
+  const p = parseContextExpression('ageInYears(contact) < 0.5');
+  assert.equal(p.rules[0]!.kind, 'age_years');
+  assert.equal(
+    (p.rules[0] as { kind: 'age_years'; value: string }).value,
+    '0.5',
+  );
+});
+
+test('§F2 — negative ageInYears literal round-trips (defensive; not typical use)', () => {
+  assert.equal(roundtrip('ageInYears(contact) > -1'), 'ageInYears(contact) > -1');
+});
+
+/* ============================ §G — validateContextExpression (Wave 1 · Note 2) ============================ */
+
+test('§G1 — empty age operand serializes to a raw hanging-op rule and is flagged', () => {
+  // Pins the deploy-trap: an in-memory age_years rule with value ''
+  // serializes to `ageInYears(contact) >= ` (invalid JS). On save the
+  // validator must reject this so the file never reaches deploy.
+  const errors = validateContextExpression('ageInYears(contact) >= ');
+  assert.ok(errors.length > 0, 'validator flags the empty operand');
+  assert.match(errors[0]!, /comparison operator but no value|no number/);
+});
+
+test('§G2 — hanging operator inside an AND-combined expression is flagged', () => {
+  const errors = validateContextExpression(
+    "contact.contact_type === 'patient' && ageInYears(contact) >= ",
+  );
+  assert.ok(errors.length > 0);
+  // Idempotent — re-running yields the same list.
+  const again = validateContextExpression(
+    "contact.contact_type === 'patient' && ageInYears(contact) >= ",
+  );
+  assert.deepEqual(errors, again);
+});
+
+test('§G3 — a valid age expression produces no errors', () => {
+  assert.deepEqual(validateContextExpression('ageInYears(contact) >= 60'), []);
+  assert.deepEqual(
+    validateContextExpression(
+      "contact.contact_type === 'patient' && ageInYears(contact) >= 60.5",
+    ),
+    [],
+  );
+});
+
+test('§G4 — empty / whitespace-only expression is treated as OK (no rules to check)', () => {
+  assert.deepEqual(validateContextExpression(''), []);
+  assert.deepEqual(validateContextExpression('   '), []);
+});
+
+test('§G5 — validator is byte-safe: `parse→validate→serialize` never mutates input string', () => {
+  const src = "contact.contact_type === 'patient' && ageInYears(contact) >= ";
+  const before = src;
+  validateContextExpression(src);
+  assert.equal(src, before, 'input string not mutated');
 });

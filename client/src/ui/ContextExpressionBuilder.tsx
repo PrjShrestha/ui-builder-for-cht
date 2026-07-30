@@ -124,7 +124,7 @@ export function ContextExpressionBuilder({
         r = { kind: 'contact_field', field: 'role', op: '===', value: 'patient' };
         break;
       case 'age_years':
-        r = { kind: 'age_years', op: '>=', value: 18 };
+        r = { kind: 'age_years', op: '>=', value: '18' };
         break;
       case 'summary_flag':
         r = { kind: 'summary_flag', flag: summaryFlags[0] ?? 'show_form', negated: false };
@@ -343,30 +343,60 @@ function ContextRuleRow(props: {
         </div>
       );
 
-    case 'age_years':
+    case 'age_years': {
+      // Mirror the contact_field pattern: hold the raw string, validate
+      // separately. The prior `Number(e.target.value)` on keystroke coerced
+      // `''` → `0`, so backspacing to clear the input snapped back to `0`
+      // — every age condition was silently `age >= 0` until the user
+      // noticed. Kept as `type="number"` for the on-screen numeric keypad
+      // + spin controls; the browser will accept empty freely.
+      const valueInvalid = r.value !== '' && !isValidNumberLiteral(r.value);
+      const valueEmpty = r.value.trim() === '';
       return (
-        <div className="row gap rule-row">
-          <span>Age in years</span>
-          <select
-            value={r.op}
-            onChange={(e) => props.onChange({ ...r, op: e.target.value as ContextRule extends { kind: 'age_years' } ? never : never & ('>=' | '<=' | '>' | '<' | '===' | '!==') })}
-          >
-            <option value=">=">≥</option>
-            <option value="<=">≤</option>
-            <option value=">">&gt;</option>
-            <option value="<">&lt;</option>
-            <option value="===">=</option>
-            <option value="!==">≠</option>
-          </select>
-          <input
-            type="number"
-            value={r.value}
-            onChange={(e) => props.onChange({ ...r, value: Number(e.target.value) })}
-            style={{ width: 80 }}
-          />
-          {remove}
+        <div className="rule-row-block">
+          <div className="row gap rule-row">
+            <span>Age in years</span>
+            <select
+              value={r.op}
+              onChange={(e) =>
+                props.onChange({
+                  ...r,
+                  op: e.target.value as '===' | '!==' | '>' | '<' | '>=' | '<=',
+                })
+              }
+            >
+              <option value=">=">≥</option>
+              <option value="<=">≤</option>
+              <option value=">">&gt;</option>
+              <option value="<">&lt;</option>
+              <option value="===">=</option>
+              <option value="!==">≠</option>
+            </select>
+            <input
+              type="number"
+              value={r.value}
+              onChange={(e) => props.onChange({ ...r, value: e.target.value })}
+              onFocus={(e) => e.currentTarget.select()}
+              placeholder="number"
+              style={{ width: 80 }}
+              className={valueInvalid ? 'invalid' : ''}
+            />
+            {remove}
+          </div>
+          {valueInvalid && (
+            <div className="rule-row-warning">
+              <strong>Not a number.</strong> Enter an age (e.g. <code>60</code>) —
+              non-numeric values won&apos;t round-trip.
+            </div>
+          )}
+          {valueEmpty && !valueInvalid && (
+            <div className="rule-row-warning muted">
+              Enter an age for the <code>{r.op}</code> comparison.
+            </div>
+          )}
         </div>
       );
+    }
 
     case 'summary_flag': {
       const inList = props.summaryFlags.includes(r.flag);

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { deriveFormName } from '@cht-ui/shared';
 import { api } from '../api.js';
 import { useApp, type FormListEntry } from '../state/store.js';
 
@@ -16,7 +17,14 @@ export function FormsIndex() {
   const [contactTypesCount, setContactTypesCount] = useState<number | null>(null);
   const [creating, setCreating] = useState<{
     category: 'app' | 'contact';
-    basename: string;
+    /**
+     * Human-facing title the user types. Was previously called `basename`
+     * and forced to be an identifier — the field-notes handoff
+     * (2026-07-29) flagged this as the cold-start wall. Now we collect
+     * the friendly title; the filename basename is derived via
+     * `deriveFormName` and shown as a muted "saved as …" hint.
+     */
+    title: string;
     /** §B3 — `'default'` seeds the inputs scaffold; `'blank'` is the
      *  escape hatch for a power user starting from scratch. */
     scaffold: 'default' | 'blank';
@@ -56,12 +64,28 @@ export function FormsIndex() {
 
   async function doCreate() {
     if (!creating) return;
-    if (!/^[a-zA-Z0-9_-]+$/.test(creating.basename)) {
-      setError('Form name must be alphanumeric (plus _ -).');
+    const title = creating.title.trim();
+    if (title === '') {
+      setError('Please enter a form name.');
+      return;
+    }
+    // Derive locally for the pre-flight check so the user gets an
+    // inline error instead of a 400 round-trip; the server also derives
+    // defensively (see forms.ts create route).
+    const existing = forms
+      .filter((f) => f.category === creating.category)
+      .map((f) => f.filename.replace(/\.xlsx$/i, ''));
+    const { basename } = deriveFormName(title, existing);
+    if (basename === '') {
+      setError(
+        'That name has no ASCII letters to derive a filename from. Try adding a Latin word (e.g. add "ANC" or "visit").',
+      );
       return;
     }
     try {
-      const res = await api.createForm(creating.category, creating.basename, creating.scaffold);
+      const res = await api.createForm(creating.category, basename, creating.scaffold, {
+        title,
+      });
       setCreating(null);
       await reload();
       setView({ kind: 'form', id: res.id });
@@ -89,8 +113,8 @@ export function FormsIndex() {
       <header className="page-header">
         <h1>Forms</h1>
         <div className="row gap">
-          <button onClick={() => setCreating({ category: 'app', basename: '', scaffold: 'default' })}>+ App form</button>
-          <button onClick={() => setCreating({ category: 'contact', basename: '', scaffold: 'default' })}>
+          <button onClick={() => setCreating({ category: 'app', title: '', scaffold: 'default' })}>+ App form</button>
+          <button onClick={() => setCreating({ category: 'contact', title: '', scaffold: 'default' })}>
             + Contact form
           </button>
           <button className="link" onClick={() => void reload()} disabled={loading}>
@@ -123,72 +147,14 @@ export function FormsIndex() {
       )}
 
       {creating && (
-        <div className="card create-form">
-          <label>New {creating.category} form name (alphanumeric, _, -)</label>
-          <div className="row">
-            <input
-              autoFocus
-              value={creating.basename}
-              onChange={(e) =>
-                setCreating(creating ? { ...creating, basename: e.target.value } : null)
-              }
-              placeholder={creating.category === 'app' ? 'pregnancy_visit' : 'c80_household-create'}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void doCreate();
-                if (e.key === 'Escape') setCreating(null);
-              }}
-            />
-            <button onClick={() => void doCreate()} disabled={!creating.basename}>
-              Create
-            </button>
-            <button className="link" onClick={() => setCreating(null)}>
-              cancel
-            </button>
-          </div>
-          {/* §B3 — scaffold choice. Default seeds the canonical inputs
-              plumbing (B1) for app forms or the contact-type group (B2)
-              for contact forms; "Blank" is the escape hatch for a power
-              user starting from scratch. */}
-          <fieldset className="create-form-scaffold">
-            <legend className="muted small">Start from</legend>
-            <label className="row gap" style={{ alignItems: 'center' }}>
-              <input
-                type="radio"
-                name="scaffold"
-                value="default"
-                checked={creating.scaffold === 'default'}
-                onChange={() =>
-                  setCreating(creating ? { ...creating, scaffold: 'default' } : null)
-                }
-              />
-              <span>
-                <strong>Default scaffold</strong>{' '}
-                <span className="muted small">
-                  {creating.category === 'app'
-                    ? '— inputs/user/contact plumbing + patient linking calculates'
-                    : '— person contact-type group with parent + contact_type plumbing'}
-                </span>
-              </span>
-            </label>
-            <label className="row gap" style={{ alignItems: 'center' }}>
-              <input
-                type="radio"
-                name="scaffold"
-                value="blank"
-                checked={creating.scaffold === 'blank'}
-                onChange={() =>
-                  setCreating(creating ? { ...creating, scaffold: 'blank' } : null)
-                }
-              />
-              <span>
-                <strong>Blank form</strong>{' '}
-                <span className="muted small">— empty survey, no rows</span>
-              </span>
-            </label>
-          </fieldset>
-        </div>
+        <CreateFormDialog
+          creating={creating}
+          forms={forms}
+          onChange={(next) => setCreating(next)}
+          onSubmit={() => void doCreate()}
+          onCancel={() => setCreating(null)}
+        />
       )}
-
       <section>
         <h2>App forms ({appForms.length})</h2>
         <FormTable forms={appForms} onOpen={(id) => setView({ kind: 'form', id })} onDelete={(id) => void doDelete(id)} onFlowchart={(id) => setView({ kind: 'flowchart', id })} />
@@ -197,6 +163,128 @@ export function FormsIndex() {
         <h2>Contact forms ({contactForms.length})</h2>
         <FormTable forms={contactForms} onOpen={(id) => setView({ kind: 'form', id })} onDelete={(id) => void doDelete(id)} onFlowchart={(id) => setView({ kind: 'flowchart', id })} />
       </section>
+    </div>
+  );
+}
+
+/**
+ * New-form dialog — label-first. User types a friendly title
+ * ("Patient Age"); the filename basename is derived via
+ * `deriveFormName` (slugify + numeric-suffix on collision) and shown as
+ * a muted "saved as `patient_age`" hint. Blocks submission when the
+ * title has no ASCII letters to derive from (pure Devanagari/CJK, etc.)
+ * — the caller falls back to the user typing an explicit Latin word.
+ *
+ * Handoff: docs/handoff-improvement-notes-2026-07-29.md §Note 1.
+ */
+function CreateFormDialog(props: {
+  creating: {
+    category: 'app' | 'contact';
+    title: string;
+    scaffold: 'default' | 'blank';
+  };
+  forms: FormListEntry[];
+  onChange: (next: {
+    category: 'app' | 'contact';
+    title: string;
+    scaffold: 'default' | 'blank';
+  }) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  const { creating, forms, onChange, onSubmit, onCancel } = props;
+  const existing = useMemo(
+    () =>
+      forms
+        .filter((f) => f.category === creating.category)
+        .map((f) => f.filename.replace(/\.xlsx$/i, '')),
+    [forms, creating.category],
+  );
+  const derived = useMemo(
+    () => deriveFormName(creating.title, existing),
+    [creating.title, existing],
+  );
+  const trimmed = creating.title.trim();
+  const canSubmit = trimmed !== '' && derived.basename !== '';
+  return (
+    <div className="card create-form">
+      <label htmlFor="new-form-title">
+        New {creating.category} form title
+      </label>
+      <div className="row">
+        <input
+          id="new-form-title"
+          autoFocus
+          value={creating.title}
+          onChange={(e) => onChange({ ...creating, title: e.target.value })}
+          placeholder={
+            creating.category === 'app' ? 'Pregnancy visit' : 'Household — create'
+          }
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && canSubmit) onSubmit();
+            if (e.key === 'Escape') onCancel();
+          }}
+        />
+        <button onClick={onSubmit} disabled={!canSubmit}>
+          Create
+        </button>
+        <button className="link" onClick={onCancel}>
+          cancel
+        </button>
+      </div>
+      {trimmed !== '' && derived.basename !== '' && (
+        <div className="muted small">
+          Saved as <code>{derived.basename}</code>
+          {derived.collided && (
+            <> — a form called <code>{creating.title}</code> already exists, so the filename
+            gets a numeric suffix.</>
+          )}
+        </div>
+      )}
+      {trimmed !== '' && derived.basename === '' && (
+        <div className="rule-row-warning">
+          <strong>No ASCII letters to derive a filename from.</strong> Add a Latin
+          word (e.g. "ANC" or "visit") so the tool can build a valid
+          filename.
+        </div>
+      )}
+      {/* §B3 — scaffold choice. Default seeds the canonical inputs
+          plumbing (B1) for app forms or the contact-type group (B2)
+          for contact forms; "Blank" is the escape hatch for a power
+          user starting from scratch. */}
+      <fieldset className="create-form-scaffold">
+        <legend className="muted small">Start from</legend>
+        <label className="row gap" style={{ alignItems: 'center' }}>
+          <input
+            type="radio"
+            name="scaffold"
+            value="default"
+            checked={creating.scaffold === 'default'}
+            onChange={() => onChange({ ...creating, scaffold: 'default' })}
+          />
+          <span>
+            <strong>Default scaffold</strong>{' '}
+            <span className="muted small">
+              {creating.category === 'app'
+                ? '— inputs/user/contact plumbing + patient linking calculates'
+                : '— person contact-type group with parent + contact_type plumbing'}
+            </span>
+          </span>
+        </label>
+        <label className="row gap" style={{ alignItems: 'center' }}>
+          <input
+            type="radio"
+            name="scaffold"
+            value="blank"
+            checked={creating.scaffold === 'blank'}
+            onChange={() => onChange({ ...creating, scaffold: 'blank' })}
+          />
+          <span>
+            <strong>Blank form</strong>{' '}
+            <span className="muted small">— empty survey, no rows</span>
+          </span>
+        </label>
+      </fieldset>
     </div>
   );
 }

@@ -242,14 +242,30 @@ export const api = {
       body: JSON.stringify({ form, properties }),
     }),
 
+  /**
+   * Create a new form. Preferred call shape is title-first (`{title}`);
+   * the server slugifies to derive the filename. The legacy `basename`
+   * positional is still accepted and slugified defensively so older
+   * call sites keep working (see FormsIndex.tsx doCreate for the
+   * label-first flow).
+   */
   createForm: (
     category: 'app' | 'contact',
-    basename: string,
+    basenameOrTitle: string,
     scaffold: 'default' | 'blank' = 'default',
+    opts?: { title?: string },
   ) =>
-    jsonFetch<{ ok: true; id: string }>('/api/forms/create', {
+    jsonFetch<{ ok: true; id: string; basename: string }>('/api/forms/create', {
       method: 'POST',
-      body: JSON.stringify({ category, basename, scaffold }),
+      body: JSON.stringify({
+        category,
+        // Pass both if the caller supplied a distinct title. When the
+        // client dialog collects the friendly title first, it sends just
+        // `title` and lets the server derive the filename.
+        title: opts?.title ?? basenameOrTitle,
+        basename: opts?.title ? basenameOrTitle : undefined,
+        scaffold,
+      }),
     }),
 
   /** Batch contact-form generator (offered from the Hierarchy editor).

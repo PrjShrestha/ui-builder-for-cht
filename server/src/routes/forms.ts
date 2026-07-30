@@ -15,6 +15,8 @@ import {
   buildContactFormScaffold,
   buildContactForm,
   contactFormBasename,
+  deriveFormName,
+  slugifyHierarchyId,
   type ContactTypeNode,
   type XLSForm,
 } from '@cht-ui/shared';
@@ -84,6 +86,87 @@ async function pathsForForm(category: FormCategory, basename: string) {
     xml: path.join(dir, `${basename}.xml`),
     properties: path.join(dir, `${basename}.properties.json`),
   };
+}
+
+/**
+ * Pure resolver for the create-form route. Extracted so we can unit-test
+ * the client↔server collision handshake without spinning Fastify + disk.
+ *
+ * Contract (matches docs/handoff-waves-1-3-2026-07-29.md §Wave 1 · 1):
+ *  - When the client resolved a `basename` (its `FormsIndex.doCreate` runs
+ *    `deriveFormName(title, existingBasenamesInCategory)` first — e.g.
+ *    "Patient Age" twice → `patient_age_2`), the server MUST honor it
+ *    verbatim (defensively re-slugified so a malicious/legacy client can't
+ *    smuggle raw user text through as a filename). Re-deriving from
+ *    `title` here without the `existing` set would collapse the suffix
+ *    back to `patient_age` and trip the 409 guard below.
+ *  - When only `title` is present (legacy call shape), collision-resolve
+ *    server-side using the provided `existing` list so the same second-
+ *    create still gets a `_2` suffix.
+ *  - Falls back to `title` as the display name; `basename` alone is
+ *    also acceptable (returns friendly title = basename in that case).
+ *
+ * Returns `{ basename, humanTitle }` on success, `{ error }` on failure.
+ */
+export interface ResolvedFormName {
+  basename: string;
+  humanTitle: string;
+}
+export function resolveCreateFormBasename(
+  title: string | undefined,
+  rawBasename: string | undefined,
+  existing: readonly string[],
+): ResolvedFormName | { error: string } {
+  const trimmedTitle = (title ?? '').trim();
+  const trimmedRaw = (rawBasename ?? '').trim();
+  if (trimmedTitle === '' && trimmedRaw === '') {
+    return { error: 'title or basename is required' };
+  }
+  const humanTitle = trimmedTitle !== '' ? trimmedTitle : trimmedRaw;
+
+  // Prefer the client-resolved basename when supplied. Re-slugify
+  // defensively — the API contract lets older callers pass raw text as
+  // `basename`, and we never want unsanitised input to hit the filesystem.
+  // Skipping the `existing` set here is deliberate: the client has already
+  // resolved collisions with its full view of the folder; second-guessing
+  // that would clobber the very suffix we want to honour.
+  if (trimmedRaw !== '') {
+    const slug = slugifyHierarchyId(trimmedRaw);
+    if (slug === '') {
+      return {
+        error:
+          'Could not derive a filename from that basename. Provide ASCII letters (e.g. "pregnancy_registration").',
+      };
+    }
+    return { basename: slug, humanTitle };
+  }
+
+  // Title-only path (legacy client). Fold the caller-listed `existing`
+  // basenames in so a second create with the same title also gets a
+  // numeric suffix instead of hitting the 409.
+  const derived = deriveFormName(trimmedTitle, existing);
+  if (derived.basename === '') {
+    return {
+      error:
+        'Could not derive a filename from that title. Provide ASCII letters (e.g. "Pregnancy Registration") — pure non-Latin scripts have no ASCII form.',
+    };
+  }
+  return { basename: derived.basename, humanTitle };
+}
+
+/** List `.xlsx` basenames in a directory. Returns `[]` if the dir doesn't
+ *  exist yet (the create route mkdirs after resolving, so a fresh project
+ *  has an empty existing-set). */
+async function listExistingXlsxBasenames(dir: string): Promise<string[]> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((e) => e.toLowerCase().endsWith('.xlsx'))
+    .map((e) => e.replace(/\.xlsx$/i, ''));
 }
 
 /**
@@ -313,55 +396,80 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.post<{
-    Body: { category: FormCategory; basename: string; scaffold?: 'default' | 'blank' };
+    Body: {
+      category: FormCategory;
+      /** Human-facing title (e.g. "Patient Age"). Preferred input; the
+       *  server derives the filename basename from it via slugify. */
+      title?: string;
+      /** Legacy / advanced: caller passes an already-slugified basename.
+       *  Kept for the api.createForm(category, basename, ...) shape older
+       *  callers use. When both are provided, `title` wins for form_title
+       *  and `basename` is used verbatim as the filename (after being
+       *  defensively re-slugified — no more rejecting friendly input). */
+      basename?: string;
+      scaffold?: 'default' | 'blank';
+    };
   }>(
     '/api/forms/create',
     async (req, reply) => {
-      const { category, basename } = req.body;
+      const { category, title, basename: rawBasename } = req.body;
       const scaffoldKind = req.body.scaffold ?? 'default';
       if (category !== 'app' && category !== 'contact') {
         return reply.code(400).send({ error: 'category must be "app" or "contact"' });
       }
-      if (!/^[a-zA-Z0-9_-]+$/.test(basename)) {
-        return reply.code(400).send({ error: 'basename must be alphanumeric + _ -' });
-      }
       if (scaffoldKind !== 'default' && scaffoldKind !== 'blank') {
         return reply.code(400).send({ error: 'scaffold must be "default" or "blank"' });
       }
+      // Resolve filename basename via the pure helper. When the client
+      // already resolved a `basename` (its FormsIndex.doCreate slugifies
+      // + suffixes against the current forms list), we honour it after a
+      // defensive re-slugify. Only fall back to deriving from the title
+      // when the client sent title-only — in which case we still fold the
+      // on-disk basenames into the collision set so a legacy title-only
+      // caller isn't silently downgraded to a 409.
       const dir = await resolveInsideProject(path.join('forms', category));
       await fs.mkdir(dir, { recursive: true });
+      const existingBasenames = await listExistingXlsxBasenames(dir);
+      const resolved = resolveCreateFormBasename(title, rawBasename, existingBasenames);
+      if ('error' in resolved) {
+        return reply.code(400).send({ error: resolved.error });
+      }
+      const { basename, humanTitle } = resolved;
       const paths = await pathsForForm(category, basename);
       if (await fileExists(paths.xlsx)) {
+        // Race backstop only — the collision-resolution above (both
+        // client-side pre-flight and the title-only fallback) should
+        // have already picked a free basename. If we hit this, another
+        // writer landed a file with the same basename between the
+        // readdir and the writeFile.
         return reply.code(409).send({ error: `Form ${basename} already exists` });
       }
       // Per plan docs/plans/survey-groups-and-scaffold.md Part B: pick
       // the scaffold by category + user choice. Default scaffolds carry
       // the canonical inputs/contact-type plumbing the user otherwise has
-      // to hand-type; `blank` is the escape hatch (§B3).
+      // to hand-type; `blank` is the escape hatch (§B3). Threading the
+      // human title lets form_title hold the friendly text ("Patient Age")
+      // while form_id + filename get the slug (patient_age).
       const scaffold: XLSForm =
         scaffoldKind === 'blank'
-          ? buildBlankFormScaffold({ basename, category })
+          ? buildBlankFormScaffold({ basename, title: humanTitle, category })
           : category === 'app'
-            ? buildAppFormScaffold({ basename })
-            : buildContactFormScaffold({ basename });
-      // The shared scaffold leaves `version` empty so the helper stays
-      // deterministic (no Date.now() leak). The route stamps the
-      // creation date here.
+            ? buildAppFormScaffold({ basename, title: humanTitle })
+            : buildContactFormScaffold({ basename, title: humanTitle });
       scaffold.settings.version = new Date().toISOString().slice(0, 10);
       const buf = await serializeXlsForm(scaffold);
       await fs.writeFile(paths.xlsx, buf);
       invalidateParsedForm(paths.xlsx);
       if (category === 'app') {
         const props = {
-          title: [{ locale: 'en', content: basename }],
+          title: [{ locale: 'en', content: humanTitle }],
           context: { person: true, place: false, expression: 'true' },
           icon: '',
         };
         await fs.writeFile(paths.properties, JSON.stringify(props, null, 2), 'utf8');
       }
-      // Auto-maintain form-constants.js if it exists.
       await maintainFormConstants(basename);
-      return { ok: true, id: formId(category, basename) };
+      return { ok: true, id: formId(category, basename), basename };
     },
   );
 

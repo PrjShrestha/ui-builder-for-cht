@@ -332,7 +332,11 @@ export const QUESTION_TYPE_TILES: QuestionTypeTile[] = [
     category: 'structural',
     xlsformType: 'begin group',
     isStructural: true,
-    hiddenInSimple: true,
+    // Was hiddenInSimple: true — hid the tile from every no-code user, since
+    // Simple is the default mode. Section-heavy forms (geriatric assessment,
+    // ANC) were unbuildable end-to-end. Insert machinery (handlePickerCommit)
+    // already emits balanced begin/end pairs; only the tile visibility was
+    // gated. See docs/handoff-improvement-notes-2026-07-29.md §Note 3.
   },
   {
     id: 'begin_repeat',

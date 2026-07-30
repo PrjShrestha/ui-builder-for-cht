@@ -31,7 +31,15 @@ export type ContextRule =
   | { kind: 'contact_contact_type'; value: string }
   | { kind: 'contact_sex'; value: string }
   | { kind: 'contact_field'; field: string; op: '===' | '!==' | '>' | '<' | '>=' | '<='; value: string }
-  | { kind: 'age_years'; op: '>' | '<' | '>=' | '<=' | '===' | '!=='; value: number }
+  | { kind: 'age_years'; op: '>' | '<' | '>=' | '<=' | '===' | '!==';
+      /**
+       * Numeric literal as a string — matches the `contact_field` pattern.
+       * A raw string (not `number`) so the UI can express "user is currently
+       * clearing" as `''` without the input coercing back to `0` via
+       * `Number('')`. Serializer emits it verbatim; the value MUST be a
+       * valid integer/decimal when saved (validate at the builder edge).
+       */
+      value: string }
   | { kind: 'summary_flag'; flag: string; negated: boolean }
   | { kind: 'not_muted' }
   | { kind: 'not_deceased' }
@@ -81,11 +89,16 @@ function classify(expr: string): ContextRule {
     return { kind: 'summary_flag', flag: summary[1], negated };
   }
 
-  // ageInYears(contact) OP N
-  const age = /^ageInYears\(\s*contact\s*\)\s*(>=|<=|===|!==|==|!=|>|<)\s*(\d+)$/.exec(e);
+  // ageInYears(contact) OP N — `N` kept as its captured string so the UI can
+  // display / clear it without `Number('')` coercing to `0`. The regex
+  // accepts integers OR decimals (`60`, `60.5`) — the numeric-comparison
+  // rule row above the survey (see `contact_field` numeric operand at
+  // `:141`) has always allowed decimals, so this widening keeps the two
+  // paths symmetric. Callers that want to enforce integer-only can gate
+  // at the input layer.
+  const age = /^ageInYears\(\s*contact\s*\)\s*(>=|<=|===|!==|==|!=|>|<)\s*(-?\d+(?:\.\d+)?)$/.exec(e);
   if (age && age[1] && age[2]) {
-    const n = Number(age[2]);
-    return { kind: 'age_years', op: normalizeOp(age[1]), value: n };
+    return { kind: 'age_years', op: normalizeOp(age[1]), value: age[2] };
   }
 
   // contact.contact_type === 'X' (configurable / custom hierarchies) —
@@ -179,6 +192,69 @@ function ruleToSource(rule: ContextRule): string {
     case 'raw':
       return rule.text;
   }
+}
+
+/**
+ * Save-time validator for a serialized `context.expression`.
+ *
+ * The UI's ContextExpressionBuilder is a live parse→edit→serialize loop
+ * (see `client/src/ui/ContextExpressionBuilder.tsx`); every keystroke
+ * flows the current rules through `serializeContextExpression` and back
+ * into the parent editor's `properties.context.expression` slot. When
+ * the author clears a numeric-age input, the age rule's `value` becomes
+ * `''` and the serializer emits `ageInYears(contact) >= ` (empty
+ * operand). That literal fragment is invalid JS: it fails at deploy
+ * (`cht-conf compile-app-settings`) rather than at save time, and the
+ * inline "Enter an age" warning is display-only — nothing gates the
+ * write.
+ *
+ * This helper is the save-time backstop the parent editor calls before
+ * flushing properties.json to disk. It flags:
+ *   - `age_years OP <empty>` — the specific bug the handoff pins
+ *   - any other clause the parser lifted as `raw` that ends in a bare
+ *     comparison operator (i.e. the same "hanging operator" shape,
+ *     surfaced generically since the raw fallback catches every legacy
+ *     path — the empty-age case survives round-trip as a raw rule).
+ *
+ * Returns an array of human-readable error strings. Empty array = OK.
+ * Idempotent — re-runs on the same input yield the same list.
+ */
+export function validateContextExpression(expression: string): string[] {
+  const errors: string[] = [];
+  const trimmed = expression.trim();
+  if (trimmed === '') return errors;
+  const parsed = parseContextExpression(trimmed);
+  // Hanging-operator regex: any comparison operator followed only by
+  // whitespace to the end of the fragment. Matches both the age case
+  // (`ageInYears(contact) >=`) and any generic `contact.<x> OP` that
+  // fell through to raw.
+  const hangingOp = /(>=|<=|===|!==|==|!=|>|<)\s*$/;
+  parsed.rules.forEach((rule, idx) => {
+    if (rule.kind === 'age_years') {
+      const v = rule.value.trim();
+      if (v === '') {
+        errors.push(
+          `Rule ${idx + 1}: age condition (\`${rule.op}\`) has no number — enter an age or remove the row.`,
+        );
+      } else if (!/^-?\d+(?:\.\d+)?$/.test(v)) {
+        errors.push(
+          `Rule ${idx + 1}: age condition value "${rule.value}" is not a number.`,
+        );
+      }
+    } else if (rule.kind === 'raw') {
+      const t = rule.text.trim();
+      if (t === '') {
+        errors.push(`Rule ${idx + 1}: empty raw JS row — delete it or fill it in.`);
+      } else if (hangingOp.test(t)) {
+        // Catches `ageInYears(contact) >=` after it demotes to raw on
+        // re-parse — the actual on-disk symptom of the empty-age bug.
+        errors.push(
+          `Rule ${idx + 1}: "${t}" ends with a comparison operator but no value — this is invalid JS and will fail at deploy.`,
+        );
+      }
+    }
+  });
+  return errors;
 }
 
 function splitAnd(expr: string): string[] {

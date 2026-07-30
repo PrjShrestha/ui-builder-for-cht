@@ -75,7 +75,7 @@ const CONTACT_SURVEY_HEADERS = ['type', 'name', 'label::en', 'required', 'appear
  *   calculate     created_by            calculation=../inputs/user/name
  *   calculate     created_by_person_uuid calculation=../inputs/user/contact_id
  */
-export function buildAppFormScaffold(opts: { basename: string }): XLSForm {
+export function buildAppFormScaffold(opts: { basename: string; title?: string }): XLSForm {
   const r = (
     i: number,
     type: string,
@@ -111,7 +111,7 @@ export function buildAppFormScaffold(opts: { basename: string }): XLSForm {
     }),
   ];
 
-  return baseForm(opts.basename, survey, [], APP_SURVEY_HEADERS);
+  return baseForm(opts.basename, survey, [], APP_SURVEY_HEADERS, opts.title);
 }
 
 /**
@@ -124,6 +124,7 @@ export function buildAppFormScaffold(opts: { basename: string }): XLSForm {
 export function buildContactFormScaffold(opts: {
   basename: string;
   contactType?: string;
+  title?: string;
 }): XLSForm {
   const ct = opts.contactType ?? 'person';
   const r = (
@@ -141,16 +142,17 @@ export function buildContactFormScaffold(opts: {
     r(3, 'end group', ct, ''),
   ];
 
-  return baseForm(opts.basename, survey, [], CONTACT_SURVEY_HEADERS);
+  return baseForm(opts.basename, survey, [], CONTACT_SURVEY_HEADERS, opts.title);
 }
 
 /** §B3 — explicit empty scaffold; what the editor produces today. */
 export function buildBlankFormScaffold(opts: {
   basename: string;
+  title?: string;
   category: 'app' | 'contact';
 }): XLSForm {
   const headers = opts.category === 'app' ? APP_SURVEY_HEADERS : CONTACT_SURVEY_HEADERS;
-  return baseForm(opts.basename, [], [], headers);
+  return baseForm(opts.basename, [], [], headers, opts.title);
 }
 
 function baseForm(
@@ -158,6 +160,13 @@ function baseForm(
   survey: SurveyRow[],
   choices: ChoiceRow[],
   surveyHeaders: string[],
+  /**
+   * Human title (e.g. "Patient Age"). Present when the create dialog
+   * collected a friendly title alongside the auto-slugified `basename`;
+   * absent for older callers that only had the basename. Falls back to
+   * `basename` so the form_title cell is never empty.
+   */
+  title?: string,
 ): XLSForm {
   return {
     locales: ['en'],
@@ -166,7 +175,7 @@ function baseForm(
     survey,
     choices,
     settings: {
-      form_title: basename,
+      form_title: title && title.trim() !== '' ? title : basename,
       form_id: basename,
       // Caller (server route) supplies the version; scaffolds are
       // deterministic strings only, no Date.now() leak.
