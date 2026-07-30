@@ -1988,6 +1988,39 @@ button.danger:hover:not(:disabled) { background: #991b1b; }
   background: var(--border);
 }
 
+/* Wave 2 §3b — friendly heading for a section that carries a label. */
+.survey-group-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Wave 2 §3b — "Show all on one screen" toggle on a group header. */
+.group-appearance-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.group-appearance-toggle input[type="checkbox"] {
+  margin: 0;
+}
+
+/* Wave 2 §3b — empty-section drop-zone placeholder. */
+.survey-group-empty {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin: 6px 0;
+  text-align: center;
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+}
+.survey-group-empty p {
+  margin: 0;
+}
+
 /* ---- Question-type tile picker (Kobo-style) ---- */
 .qtype-backdrop {
   position: fixed;
@@ -3008,4 +3041,100 @@ button.danger:hover:not(:disabled) { background: #991b1b; }
   margin-right: 6px;
   font-size: 11px;
   vertical-align: middle;
+}
+
+/* Wave 2 §4 — missing-translation cue on survey-row label inputs.
+   Reuses the same red-dashed treatment TranslationsEditor uses in the
+   grid, so a translator recognizes the cue across both surfaces. */
+.label-row-missing input {
+  border: 1px dashed var(--danger);
+  background: var(--bg-card);
+}
+
+/* Wave 2 §4 — language chip bar above the survey editor. */
+.language-chip-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.language-chip-bar-legend {
+  margin-right: 4px;
+}
+.language-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text);
+}
+.language-chip-add-wrap {
+  position: relative;
+  display: inline-block;
+}
+.language-chip-add {
+  font-size: 12px;
+  padding: 2px 6px;
+}
+.language-chip-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  min-width: 260px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+.language-chip-popover-list {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.language-chip-popover-list li {
+  padding: 2px 0;
+}
+.language-chip-popover-list li button {
+  padding: 2px 4px;
+  text-align: left;
+}
+.language-chip-custom {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 6px;
+}
+.language-chip-custom input {
+  width: 100px;
+}
+
+/* Wave 2 §4 — add-time inline label inputs in the question picker. */
+.qtype-labels-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+}
+.qtype-labels-legend {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.qtype-locale-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.qtype-locale-label input {
+  flex: 1;
 }

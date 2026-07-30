@@ -11,6 +11,7 @@
  * or stages a draft.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { slugifyHierarchyId } from '@cht-ui/shared';
 import {
   CATEGORY_LABELS,
   CATEGORY_ORDER,
@@ -26,6 +27,23 @@ export interface PickerCommit {
   extras: Record<string, string>;
   /** Name typed in the picker (may be empty). */
   name: string;
+  /**
+   * Wave 2 §3b — label-first section authoring. When set (currently only
+   * from `sectionMode`), the parent uses this friendly label as the
+   * initial `labels.en` value on the created row. `name` is the
+   * auto-derived slug. Undefined for the legacy add-question path.
+   */
+  label?: string;
+  /**
+   * Wave 2 §4 — add-time inline labels. One entry per active locale
+   * (mirrors `labelLocales` passed in). Absent when the picker was
+   * mounted without any `labelLocales` (legacy behavior — only the `en`
+   * fallback). The parent uses this to seed the created row's
+   * `labels` map, ensuring every active locale carries an entry (empty
+   * string when the user didn't type one) so a translator's grid shows
+   * the missing cell rather than dropping the row silently.
+   */
+  labels?: Record<string, string>;
   /** Tile id that was picked (for analytics / re-opening). */
   tileId: string;
   /**
@@ -67,6 +85,24 @@ interface Props {
   hideNameField?: boolean;
   /** Label on the primary commit button. Defaults to "Add question". */
   commitLabel?: string;
+  /**
+   * Wave 2 §3b — "+ Add section" flow. When true, the picker skips the
+   * tile grid entirely and shows a section-authoring form: a friendly
+   * LABEL input (slug auto-derived via `slugifyHierarchyId`), an
+   * appearance toggle for "Show all on one screen" (= `field-list`),
+   * and commits a `begin group` tile. Prevents users from having to
+   * discover the Structure category before they can create a section.
+   */
+  sectionMode?: boolean;
+  /**
+   * Wave 2 §4 — active locales the form declares (drives the add-time
+   * inline label inputs). One stacked `<input>` renders per entry; the
+   * captured values are threaded through the commit's `labels` map so
+   * the parent can seed the created row with an entry per locale (empty
+   * string for locales the user didn't fill in). Empty / omitted →
+   * legacy single-language behavior with the built-in `en` input.
+   */
+  labelLocales?: string[];
   onCancel: () => void;
   onCommit: (commit: PickerCommit) => void;
 }
@@ -88,16 +124,41 @@ export function QuestionTypePicker(props: Props) {
     { name: '', label: '' },
     { name: '', label: '' },
   ]);
+  // Wave 2 §4 — add-time inline label per active locale. Keyed by locale
+  // code so re-orderings of the parent's `labelLocales` prop don't rebind
+  // typed values to the wrong locale. Every active locale gets an entry
+  // (even if empty) so the commit downstream can seed the row with an
+  // entry per locale — a missing key downstream would drop the row from a
+  // translator's grid when the form re-loads. The `en` slot survives even
+  // when the picker was mounted without `labelLocales` (legacy shape).
+  const activeLocales = useMemo(() => {
+    const list = props.labelLocales ?? [];
+    return list.length > 0 ? list : ['en'];
+  }, [props.labelLocales]);
+  const [localeLabels, setLocaleLabels] = useState<Record<string, string>>({});
+  // Wave 2 §3b — section-mode state. `sectionLabel` is the friendly name
+  // the user types; `sectionSlug` is derived via `slugifyHierarchyId`
+  // (same helper Quick Hierarchy Creator / deriveFormName use, so the
+  // shape of "type friendly, auto-slug" is consistent across the tool).
+  // `sectionAppearance` toggles the `field-list` XLSForm appearance.
+  const [sectionLabel, setSectionLabel] = useState('');
+  const [sectionAppearance, setSectionAppearance] = useState<'default' | 'field-list'>('default');
+  const sectionSlug = useMemo(() => slugifyHierarchyId(sectionLabel), [sectionLabel]);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const sectionLabelInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (props.sectionMode) {
+      sectionLabelInputRef.current?.focus();
+      return;
+    }
     if (props.hideNameField) {
       searchInputRef.current?.focus();
     } else {
       nameInputRef.current?.focus();
     }
-  }, [props.hideNameField]);
+  }, [props.hideNameField, props.sectionMode]);
 
   // Escape to dismiss.
   useEffect(() => {
@@ -171,12 +232,23 @@ export function QuestionTypePicker(props: Props) {
         };
       }
     }
+    // Wave 2 §4 — pack an entry per ACTIVE locale (never a missing key)
+    // so downstream `handlePickerCommit` can materialize an empty string
+    // for every locale the form declares. `labels[loc] === ''` is the
+    // authoring-time "missing" cue TranslationsEditor's "!" glyph is
+    // built around; a truly missing key would drop the row from the
+    // translator's grid entirely.
+    const labels: Record<string, string> = {};
+    for (const loc of activeLocales) {
+      labels[loc] = (localeLabels[loc] ?? '').trim();
+    }
     props.onCommit({
       type: typeCell,
       extras: { ...(tile.defaultExtras ?? {}) },
       name,
       tileId: tile.id,
       list,
+      labels,
     });
   }
 
@@ -197,19 +269,100 @@ export function QuestionTypePicker(props: Props) {
 
   const canCommitFromPickType = Boolean(activeTile && !activeTile.needsListName);
 
+  // Wave 2 §3b — commit a section. Uses the shared `begin_group` tile
+  // catalog entry so `handlePickerCommit`'s existing begin+end pair
+  // insert machinery (FormEditor.tsx:844) stays authoritative. We only
+  // supply the label + slug + optional appearance override.
+  function commitSection() {
+    const beginGroupTile = QUESTION_TYPE_TILES.find((t) => t.id === 'begin_group');
+    if (!beginGroupTile) return;
+    const label = sectionLabel.trim();
+    const slug = sectionSlug;
+    if (!label || !slug) return;
+    const extras: Record<string, string> = { ...(beginGroupTile.defaultExtras ?? {}) };
+    if (sectionAppearance === 'field-list') {
+      extras.appearance = 'field-list';
+    }
+    props.onCommit({
+      type: beginGroupTile.xlsformType,
+      extras,
+      name: slug,
+      label,
+      tileId: beginGroupTile.id,
+    });
+  }
+  const canCommitSection = Boolean(sectionLabel.trim() && sectionSlug);
+
   return (
     <div className="qtype-backdrop" onMouseDown={(e) => {
       if (e.target === e.currentTarget) props.onCancel();
     }}>
-      <div className="qtype-modal" role="dialog" aria-label="Pick question type">
+      <div className="qtype-modal" role="dialog" aria-label={props.sectionMode ? 'Add section' : 'Pick question type'}>
         <div className="qtype-header">
-          <h2>{props.title ?? 'Add question'}</h2>
+          <h2>{props.title ?? (props.sectionMode ? 'Add section' : 'Add question')}</h2>
           <button className="link" onClick={props.onCancel} aria-label="Close">
             ✕
           </button>
         </div>
 
-        {step === 'pick-type' && (
+        {/* Wave 2 §3b — section-mode short-form. Skips the tile grid
+             (the Structure category is the only choice) and captures the
+             friendly label. The slug is auto-derived via
+             `slugifyHierarchyId`; users never type an XLSForm identifier
+             (mirrors the label-first pattern from ChoiceNameInput /
+             CreateFormDialog). */}
+        {props.sectionMode && (
+          <>
+            <label className="qtype-name-field">
+              <span>Section title</span>
+              <input
+                ref={sectionLabelInputRef}
+                value={sectionLabel}
+                onChange={(e) => setSectionLabel(e.target.value)}
+                placeholder="e.g. Danger signs"
+                autoComplete="off"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && canCommitSection) {
+                    e.preventDefault();
+                    commitSection();
+                  }
+                }}
+              />
+              <span className="muted small">
+                {sectionSlug ? (
+                  <>
+                    Saved as <code>{sectionSlug}</code>
+                  </>
+                ) : (
+                  <>Type a friendly name — used as the section heading.</>
+                )}
+              </span>
+            </label>
+            <label className="qtype-name-field">
+              <input
+                type="checkbox"
+                checked={sectionAppearance === 'field-list'}
+                onChange={(e) =>
+                  setSectionAppearance(e.target.checked ? 'field-list' : 'default')
+                }
+              />{' '}
+              Show all questions on one screen{' '}
+              <span className="muted small">
+                (XLSForm <code>field-list</code> appearance)
+              </span>
+            </label>
+            <div className="qtype-actions">
+              <button className="link" onClick={props.onCancel}>
+                Cancel
+              </button>
+              <button onClick={commitSection} disabled={!canCommitSection}>
+                {props.commitLabel ?? 'Add section'}
+              </button>
+            </div>
+          </>
+        )}
+
+        {!props.sectionMode && step === 'pick-type' && (
           <>
             {!props.hideNameField && (
               <label className="qtype-name-field">
@@ -225,6 +378,42 @@ export function QuestionTypePicker(props: Props) {
                   Used in expressions as <code>${'${' + (name || 'name') + '}'}</code>. No spaces.
                 </span>
               </label>
+            )}
+
+            {/* Wave 2 §4 — add-time inline labels, one input per active
+                 locale. Rendered only when the picker is in ADD mode
+                 (hideNameField is set only on edit-type reopens, which
+                 re-type an existing row and leave labels alone). Stacked
+                 layout mirrors the row card's labels-grid. Empty inputs
+                 still ship an entry so translators see a missing cue
+                 rather than a dropped row. */}
+            {!props.hideNameField && (
+              <div className="qtype-labels-field">
+                <span className="qtype-labels-legend">Label{activeLocales.length > 1 ? 's' : ''}</span>
+                {activeLocales.map((loc) => (
+                  <label key={loc} className="qtype-locale-label">
+                    <span className="locale-tag">label::{loc}</span>
+                    <input
+                      value={localeLabels[loc] ?? ''}
+                      onChange={(e) =>
+                        setLocaleLabels((prev) => ({ ...prev, [loc]: e.target.value }))
+                      }
+                      placeholder={
+                        activeLocales.length > 1
+                          ? `Question text in ${loc}`
+                          : 'What the user reads (e.g. "Do you feel chest pain?")'
+                      }
+                      autoComplete="off"
+                    />
+                  </label>
+                ))}
+                {activeLocales.length > 1 && (
+                  <span className="muted small">
+                    Leave a locale blank and it will show a missing-translation cue in the
+                    editor.
+                  </span>
+                )}
+              </div>
             )}
 
             <div className="qtype-toolbar">
@@ -304,7 +493,7 @@ export function QuestionTypePicker(props: Props) {
           </>
         )}
 
-        {step === 'configure-list' && activeTile && (
+        {!props.sectionMode && step === 'configure-list' && activeTile && (
           <>
             <p className="muted">
               <strong>{activeTile.label}</strong> needs a list of options. Add them now or pick

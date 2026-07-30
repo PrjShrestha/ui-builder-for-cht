@@ -256,3 +256,42 @@ test('§H2 — `begin` row with empty name is also tolerated (symmetric)', () =>
   ];
   assert.deepEqual(findStructuralViolations(survey), []);
 });
+
+/* =========== Wave 2 §3b — section-authoring balance oracle =========== */
+
+test('Wave 2 §3b — 2-deep well-formed nesting has zero violations and is balanced', () => {
+  // Sibling to serialize.roundtrip.test.ts's 2-deep case: the balance
+  // oracle the save-guard runs must return [] on the shape the "+ Add
+  // section" flow produces. If this ever regresses, the save-guard would
+  // block writes for a well-formed survey.
+  const survey: SurveyRow[] = [
+    row({ type: 'begin group', name: 'danger_signs', rowId: 'gA' }),
+    row({ type: 'begin group', name: 'chest', rowId: 'gB' }),
+    row({ type: 'text', name: 'chest_pain', rowId: 'q1' }),
+    row({ type: 'end group', name: 'chest', rowId: 'gB_end' }),
+    row({ type: 'end group', name: 'danger_signs', rowId: 'gA_end' }),
+  ];
+  assert.deepEqual(findStructuralViolations(survey), []);
+  assert.equal(isStructurallyBalanced(survey), true);
+});
+
+test('Wave 2 §3b — 2-deep well-formed nesting with outer `field-list` appearance is still balanced', () => {
+  // The "Show all on one screen" toggle stores `extras.appearance =
+  // 'field-list'` on the begin row. Balance is orthogonal to extras;
+  // this test pins that the oracle ignores appearance (it never should
+  // — it's a name/kind check — but the invariant is worth an explicit
+  // assertion).
+  const survey: SurveyRow[] = [
+    row({
+      type: 'begin group',
+      name: 'vitals',
+      rowId: 'gA',
+      extras: { appearance: 'field-list' },
+    }),
+    row({ type: 'integer', name: 'sys', rowId: 'q1' }),
+    row({ type: 'integer', name: 'dia', rowId: 'q2' }),
+    row({ type: 'end group', name: 'vitals', rowId: 'gA_end' }),
+  ];
+  assert.deepEqual(findStructuralViolations(survey), []);
+  assert.equal(isStructurallyBalanced(survey), true);
+});

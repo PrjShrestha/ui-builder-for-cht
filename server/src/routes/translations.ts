@@ -126,13 +126,24 @@ export async function registerTranslationRoutes(app: FastifyInstance): Promise<v
       const requestedDir = req.query.dir;
       // Resolve which file to update. If ?dir= is given, honour it (must be
       // one of the two known dirs); otherwise pick the first dir on disk
-      // that contains this locale.
+      // that contains this locale. Wave 2 §4 — when NO existing file is
+      // found for the locale, fall back to creating a new file in the
+      // canonical `translations/` dir so the Add-language chip bar can
+      // register a brand-new locale without a manual `touch`. Callers
+      // that don't want the auto-create behavior can still pass ?dir=
+      // pinning the exact location.
       let targetRel: string | null = null;
+      let createIfMissing = false;
       if (requestedDir !== undefined) {
         if (!(DIRS as readonly string[]).includes(requestedDir)) {
           return reply.code(400).send({ error: `unknown translations dir: ${requestedDir}` });
         }
         targetRel = `${requestedDir}/messages-${locale}.properties`;
+        // ?dir= pinning: create-if-missing is opt-in there too (harmless
+        // — the previous behavior was a 400 on a missing file, so any
+        // caller supplying ?dir= for a non-existent file was broken
+        // anyway).
+        createIfMissing = true;
       } else {
         for (const d of DIRS) {
           const rel = `${d}/messages-${locale}.properties`;
@@ -144,9 +155,11 @@ export async function registerTranslationRoutes(app: FastifyInstance): Promise<v
             // try next
           }
         }
-      }
-      if (targetRel === null) {
-        return reply.code(400).send({ error: `no messages-${locale}.properties on disk` });
+        if (targetRel === null) {
+          // Fall back to creating a new file in the canonical dir.
+          targetRel = `${DIRS[0]}/messages-${locale}.properties`;
+          createIfMissing = true;
+        }
       }
       let abs: string;
       try {
@@ -154,9 +167,22 @@ export async function registerTranslationRoutes(app: FastifyInstance): Promise<v
       } catch (e) {
         return reply.code(400).send({ error: (e as Error).message });
       }
-      const raw = await readTextSafe(abs);
+      let raw = await readTextSafe(abs);
       if (raw === null) {
-        return reply.code(400).send({ error: `file missing: ${targetRel}` });
+        if (!createIfMissing) {
+          return reply.code(400).send({ error: `file missing: ${targetRel}` });
+        }
+        // Materialize an empty file (empty PropertiesFile serializes to
+        // ''). We also need to ensure the directory exists — a fresh
+        // project may not carry `translations/` yet.
+        try {
+          await fs.mkdir(path.dirname(abs), { recursive: true });
+        } catch (e) {
+          return reply
+            .code(500)
+            .send({ error: `could not create translations dir: ${(e as Error).message}` });
+        }
+        raw = '';
       }
       let file = parseProperties(raw);
       for (const { key, value } of req.body.updates) {

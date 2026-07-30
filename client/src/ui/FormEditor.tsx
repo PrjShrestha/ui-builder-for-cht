@@ -49,7 +49,9 @@ import {
   renameListInType,
   renameChoiceValue,
   renameSurveyRow,
+  insertContactFieldRef,
   slugifyHierarchyId,
+  validateContextExpression,
   type StructuralViolation,
   type FieldKind,
   type OrderingViolation,
@@ -86,6 +88,7 @@ import { findTileForRowType } from './QuestionTypeCatalog.js';
 import { LineageBuilder } from './LineageBuilder.js';
 import { InlineChoicesEditor } from './InlineChoicesEditor.js';
 import { ChoiceNameInput } from './ChoiceNameInput.js';
+import { InsertLabelRefButton } from './InsertLabelRefButton.js';
 import { useHistory } from '../state/useHistory.js';
 import { showUndoToast } from './UndoToast.js';
 
@@ -177,6 +180,22 @@ export function FormEditor({ formId }: { formId: string }) {
         `Can't save — the form has unbalanced groups/repeats. First issue: ${first.message}`,
       );
       return;
+    }
+    // Wave 1 · Note 2 — refuse to write an invalid `context.expression`
+    // to properties.json (e.g. an empty age operand, which the inline
+    // ContextExpressionBuilder warning surfaces but cannot itself block).
+    // Deploy would otherwise choke on `ageInYears(contact) >= ` at
+    // `cht-conf compile-app-settings`; catching it here surfaces the
+    // author-visible fix at save time.
+    const contextExpr = properties?.context?.expression;
+    if (typeof contextExpr === 'string') {
+      const contextErrors = validateContextExpression(contextExpr);
+      if (contextErrors.length > 0) {
+        setError(
+          `Can't save — properties.json context expression has issues. First: ${contextErrors[0]}`,
+        );
+        return;
+      }
     }
     setPendingSaveDiff(diffXlsForms(originalForm, form));
   }
@@ -640,6 +659,11 @@ function SurveyTab(props: {
   // re-types the row whose rowId is `pickerEditRowId` instead of inserting.
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerEditRowId, setPickerEditRowId] = useState<string | null>(null);
+  // Wave 2 §3b — "+ Add section" opens the same picker in section-mode
+  // (skips the tile grid, jumps to a label-first section-authoring form).
+  // The commit path still routes through `handlePickerCommit`, which auto-
+  // pairs begin/end via the existing (unchanged) machinery.
+  const [pickerSectionMode, setPickerSectionMode] = useState(false);
   // §A3 — when the user clicks "+ add inside <group>", remember the index
   // we should insert the new row(s) at. `null` means "append to the end"
   // (the legacy default). Cleared after every commit/cancel.
@@ -761,11 +785,30 @@ function SurveyTab(props: {
   function addQuestion(insertIndex?: number) {
     setPickerEditRowId(null);
     setPendingInsertIndex(insertIndex ?? null);
+    setPickerSectionMode(false);
+    setPickerOpen(true);
+  }
+
+  /**
+   * Wave 2 §3b — open the picker in section-authoring mode. Reuses the
+   * same commit path (`handlePickerCommit` → begin/end pair splice), so
+   * balance / undo / toast machinery is unchanged. Distinguished only by
+   * the picker's UX (label-first, no tile grid, appearance toggle).
+   */
+  function addSection(insertIndex?: number) {
+    setPickerEditRowId(null);
+    setPendingInsertIndex(insertIndex ?? null);
+    setPickerSectionMode(true);
     setPickerOpen(true);
   }
 
   function handlePickerCommit(commit: import('./QuestionTypePicker.js').PickerCommit) {
     setPickerOpen(false);
+    // Wave 2 §3b — the section-mode flag is a picker-only concern; clear
+    // it on every commit so the next open of the picker starts in the
+    // default (question) flow. Section-authored commits still enter the
+    // begin-group branch below via the same shared machinery.
+    setPickerSectionMode(false);
     // Lineage handoff — the picker's `lineage_block` tile is a sentinel
     // that opens a second modal (LineageBuilder) instead of committing a
     // single row. Capture `pendingInsertIndex` into a dedicated lineage
@@ -819,6 +862,30 @@ function SurveyTab(props: {
       return [...form.survey.slice(0, insertAt), ...rows, ...form.survey.slice(insertAt)];
     }
 
+    // Wave 2 §4 — build the seed `labels` map for a new row. Every ACTIVE
+    // form locale gets an entry (empty string when the user didn't type
+    // one in the picker) so the row is visible in every locale's slot in
+    // the translator's grid. §3b's section-mode commit still routes its
+    // friendly `commit.label` through the `en` slot when the picker
+    // didn't collect a per-locale map (older commit shape).
+    const activeLocales = form.surveyHeaders.labelLocales.length > 0
+      ? form.surveyHeaders.labelLocales
+      : ['en'];
+    function seedLabels(sectionFallback?: string): Record<string, string> {
+      const out: Record<string, string> = {};
+      const provided = commit.labels ?? {};
+      for (const loc of activeLocales) {
+        out[loc] = provided[loc] ?? '';
+      }
+      // §3b — section flow may not carry a labels map; fall back to
+      // seating the friendly label in `en` (the default authoring locale)
+      // if that's the only useful signal we have.
+      if (sectionFallback !== undefined && !commit.labels) {
+        out['en'] = sectionFallback;
+      }
+      return out;
+    }
+
     // §A1 — committing a structural tile inserts a MATCHED begin/end pair
     // as one edit. The picker only offers the `begin` tile; the user never
     // adds an `end` row directly. Without this, the picker emitted an
@@ -826,13 +893,23 @@ function SurveyTab(props: {
     // (docs/plans/survey-groups-and-scaffold.md §A1).
     if (isBeginGroup || isBeginRepeat) {
       const groupName = commit.name || `g${counter}`;
+      // Wave 2 §3b — a section-mode commit carries a friendly LABEL; use
+      // it as `labels.en` so the group renders with a real heading in
+      // Enketo / CHT (structural rows tolerate label cells — pyxform
+      // treats them as the group heading). Wave 2 §4 — additional active
+      // locales are seeded as empty strings so a translator sees a
+      // missing cell rather than the row dropping from the grid.
+      const beginLabels = seedLabels(commit.label ?? '');
+      // Ensure every active locale has an entry on the end row (empty
+      // string) — pyxform ignores end-row labels but the extras-preserve
+      // invariant means we should not synthesize a partial locale map.
+      const endLabels: Record<string, string> = {};
+      for (const loc of activeLocales) endLabels[loc] = '';
       const beginRow: SurveyRow = {
         rowId: `r_new_${stamp}_${counter}_begin`,
         type: commit.type,
         name: groupName,
-        // CHT convention: structural rows carry NO_LABEL when label cells exist;
-        // the picker's user-typed label (if any) lives in extras already.
-        labels: { en: '' },
+        labels: beginLabels,
         required: '',
         extras: { ...commit.extras },
       };
@@ -842,7 +919,7 @@ function SurveyTab(props: {
         // CHT-conf convention: the `end` row repeats the group name so that
         // re-serialize keeps it. Some templates omit it; both round-trip.
         name: groupName,
-        labels: { en: '' },
+        labels: endLabels,
         required: '',
         extras: {},
       };
@@ -854,15 +931,27 @@ function SurveyTab(props: {
       rowId: `r_new_${stamp}_${counter}`,
       type: commit.type,
       name: commit.name || `q${counter}`,
-      labels: { en: '' },
+      labels: seedLabels(),
       required: '',
       extras: { ...commit.extras },
     };
     let nextChoices = form.choices;
     if (commit.list && commit.list.choices.length > 0) {
+      // Wave 2 §4 — mirror the survey-side per-locale seed for inline
+      // choice rows, so a new list's choices don't render a "!" for
+      // every non-`en` locale on their first appearance.
+      const choiceLocales = form.choicesHeaders.labelLocales.length > 0
+        ? form.choicesHeaders.labelLocales
+        : activeLocales;
       const additions: ChoiceRow[] = commit.list.choices.map((c, i) => {
         const labels: Record<string, string> = {};
-        if (c.label) labels['en'] = c.label;
+        for (const loc of choiceLocales) labels[loc] = '';
+        // The picker collects a single `label` per draft choice today
+        // (no per-locale choice inputs yet — a follow-up). Seat it in
+        // the default locale (`en` if present, otherwise the first
+        // active locale).
+        const primary = choiceLocales.includes('en') ? 'en' : choiceLocales[0] ?? 'en';
+        if (c.label) labels[primary] = c.label;
         return {
           rowId: `c_new_${stamp}_${i}`,
           list_name: commit.list!.list_name,
@@ -1132,14 +1221,81 @@ function SurveyTab(props: {
         ungroup={ungroup}
         formSurvey={form.survey}
         staleLineageRowIds={staleLineageRowIds}
+        updateRow={updateRow}
       />
     );
   }
 
+  // Wave 2 §4 — Add-language handler. Registers a new locale on the form
+  // (both the survey and choices sheets) and materializes a
+  // `translations/messages-<locale>.properties` file on disk so the
+  // Translate tab picks it up on next refresh. Idempotent: adding a
+  // locale that already exists is a no-op. The server call is
+  // fire-and-forget; failures surface via the shared error toast but
+  // don't roll back the in-memory locale add (the user can still author
+  // labels; a missing .properties file just means CHT falls back to key
+  // text at runtime).
+  function addLocale(locale: string): void {
+    const norm = locale.trim().toLowerCase();
+    if (!norm) return;
+    // Already present — nothing to do.
+    if (
+      form.locales.includes(norm) &&
+      form.surveyHeaders.labelLocales.includes(norm) &&
+      form.choicesHeaders.labelLocales.includes(norm)
+    ) {
+      return;
+    }
+    const nextLocales = form.locales.includes(norm) ? form.locales : [...form.locales, norm];
+    const nextSurveyLL = form.surveyHeaders.labelLocales.includes(norm)
+      ? form.surveyHeaders.labelLocales
+      : [...form.surveyHeaders.labelLocales, norm];
+    const nextChoicesLL = form.choicesHeaders.labelLocales.includes(norm)
+      ? form.choicesHeaders.labelLocales
+      : [...form.choicesHeaders.labelLocales, norm];
+    patch({
+      ...form,
+      locales: nextLocales,
+      surveyHeaders: { ...form.surveyHeaders, labelLocales: nextSurveyLL },
+      choicesHeaders: { ...form.choicesHeaders, labelLocales: nextChoicesLL },
+    });
+    // Kick off the messages-<locale>.properties creation in the
+    // background. Doesn't block the UI edit; failures surface via the
+    // shared error toast, and the file can be re-created by clicking
+    // Add-language again (idempotent on the server too).
+    void api
+      .putTranslations(norm, [])
+      .catch((e: Error) => setError(`Could not create messages-${norm}.properties: ${e.message}`));
+  }
+
   return (
     <div className="survey-tab">
+      {/* Wave 2 §4 — language chip bar. Shows the form's active locales
+          as read-only chips + a "+ Add language" affordance that opens a
+          curated locale picker (ISO 639-1 shortlist + free-text
+          escape hatch). Adding a locale threads through `addLocale`
+          which mutates `form.locales`/`labelLocales` for both sheets AND
+          calls the server to create the .properties file. Missing state
+          cue (the "!" glyph pattern from TranslationsEditor) is
+          surfaced at the row-card label inputs — a chip here just names
+          the locale. */}
+      <LanguageChipBar locales={form.surveyHeaders.labelLocales} onAdd={addLocale} />
+
       <div className="row gap toolbar">
         <button onClick={() => addQuestion(defaultInsertIndex(form.survey))}>+ Question</button>
+        {/* Wave 2 §3b — a first-class "+ Add section" toolbar entry beside
+             "+ Question". Section-heavy forms (geriatric assessment, ANC)
+             were unbuildable end-to-end when the Group tile was hidden in
+             Simple mode; surfacing this as a peer toolbar action means a
+             no-code author never has to know about the Structure category.
+             The commit path routes through `handlePickerCommit` (begin+end
+             pair splice, unchanged). */}
+        <button
+          onClick={() => addSection(defaultInsertIndex(form.survey))}
+          title="Add a section — a labelled group of related questions"
+        >
+          + Section
+        </button>
         <div className="row gap mode-toggle">
           <button
             className={mode === 'simple' ? 'active' : 'link'}
@@ -1212,11 +1368,32 @@ function SurveyTab(props: {
 
       {pickerOpen && (
         <QuestionTypePicker
-          title={pickerEditRowId ? 'Change question type' : 'Add question'}
-          commitLabel={pickerEditRowId ? 'Change type' : 'Add question'}
+          title={
+            pickerSectionMode
+              ? 'Add section'
+              : pickerEditRowId
+                ? 'Change question type'
+                : 'Add question'
+          }
+          commitLabel={
+            pickerSectionMode
+              ? 'Add section'
+              : pickerEditRowId
+                ? 'Change type'
+                : 'Add question'
+          }
           mode={mode}
+          sectionMode={pickerSectionMode}
           formCategory={props.formCategory}
           existingLists={existingListNames}
+          // Wave 2 §4 — thread the form's active locales so the picker
+          // renders one label input per locale at add-time. Fallback to
+          // `en` if the form has never declared any (blank scaffolds).
+          labelLocales={
+            form.surveyHeaders.labelLocales.length > 0
+              ? form.surveyHeaders.labelLocales
+              : ['en']
+          }
           hideNameField={Boolean(pickerEditRowId)}
           initialName={
             pickerEditRowId
@@ -1236,6 +1413,7 @@ function SurveyTab(props: {
             setPickerOpen(false);
             setPickerEditRowId(null);
             setPendingInsertIndex(null);
+            setPickerSectionMode(false);
           }}
           onCommit={handlePickerCommit}
         />
@@ -1510,6 +1688,9 @@ function SurveyGroupAccordion(props: {
    *  a non-destructive yellow chip on these rows so the author knows to
    *  re-open the LineageBuilder to regenerate. */
   staleLineageRowIds: Set<string>;
+  /** Wave 2 §3b — mutate the begin row for the "Show all on one screen"
+   *  toggle. Persists via `extras.appearance = 'field-list'`. */
+  updateRow: (rowId: string, updater: (r: SurveyRow) => SurveyRow) => void;
 }) {
   const { item } = props;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -1535,6 +1716,33 @@ function SurveyGroupAccordion(props: {
   const lineageLevels = isLineageBlock
     ? countBeginGroups(item.children, 0) + 1
     : 0;
+
+  // Wave 2 §3b — read the begin row so the header can render the
+  // "Show all on one screen" toggle. The appearance cell is a
+  // space-separated token list in XLSForm, so we treat presence of
+  // `field-list` as the switch. Toggling preserves any other tokens
+  // the user (or a future tile) may have set.
+  const beginRow = props.formSurvey.find((r) => r.rowId === item.beginRowId);
+  const appearanceTokens = (beginRow?.extras['appearance'] ?? '')
+    .split(/\s+/)
+    .filter((t) => t.length > 0);
+  const isFieldList = appearanceTokens.includes('field-list');
+  function toggleFieldList(nextEnabled: boolean) {
+    props.updateRow(item.beginRowId, (r) => {
+      const tokens = (r.extras['appearance'] ?? '')
+        .split(/\s+/)
+        .filter((t) => t.length > 0);
+      const rest = tokens.filter((t) => t !== 'field-list');
+      const nextTokens = nextEnabled ? [...rest, 'field-list'] : rest;
+      const nextExtras = { ...r.extras };
+      if (nextTokens.length === 0) {
+        delete nextExtras['appearance'];
+      } else {
+        nextExtras['appearance'] = nextTokens.join(' ');
+      }
+      return { ...r, extras: nextExtras };
+    });
+  }
   return (
     <div
       ref={setNodeRef}
@@ -1586,13 +1794,47 @@ function SurveyGroupAccordion(props: {
             </>
           ) : (
             <>
-              <code>{item.name || '(unnamed)'}</code>
-              <span className="muted small">
-                {item.innerRowCount} row{item.innerRowCount === 1 ? '' : 's'} inside ({kindLabel})
-              </span>
+              {/* Wave 2 §3b — surface the friendly label when a section
+                   carries one (label-first section-authoring); fall back
+                   to the raw slug when no label was authored (existing
+                   parsed forms). */}
+              {beginRow?.labels['en'] ? (
+                <>
+                  <span className="survey-group-title">{beginRow.labels['en']}</span>
+                  <span className="muted small">
+                    <code>{item.name || '(unnamed)'}</code> · {item.innerRowCount} row
+                    {item.innerRowCount === 1 ? '' : 's'} inside ({kindLabel})
+                  </span>
+                </>
+              ) : (
+                <>
+                  <code>{item.name || '(unnamed)'}</code>
+                  <span className="muted small">
+                    {item.innerRowCount} row{item.innerRowCount === 1 ? '' : 's'} inside ({kindLabel})
+                  </span>
+                </>
+              )}
             </>
           )}
         </button>
+        {/* Wave 2 §3b — "Show all on one screen" toggles the XLSForm
+             `field-list` appearance on the begin-group row. Only exposed
+             for `begin group` (not `begin repeat`, where field-list
+             semantics differ). Lineage blocks hide the toggle — their
+             appearance is auto-generated. */}
+        {item.structuralType === 'group' && !isLineageBlock && (
+          <label
+            className="group-appearance-toggle muted small"
+            title="Render every question in this section on the same screen (XLSForm field-list appearance)."
+          >
+            <input
+              type="checkbox"
+              checked={isFieldList}
+              onChange={(e) => toggleFieldList(e.target.checked)}
+            />{' '}
+            Show all on one screen
+          </label>
+        )}
         {/* §A5 Ungroup — removes the begin/end shell, keeping children
             at the parent depth. Hidden behind a low-emphasis link so it
             doesn't compete with the header's collapse toggle. */}
@@ -1607,21 +1849,51 @@ function SurveyGroupAccordion(props: {
       </div>
       {!isCollapsed && (
         <div id={`group-children-${item.beginRowId}`} className="survey-group-children">
-          {item.children.map(props.renderItem)}
-          {/* §A3 — "+ add inside" inserts a new row at the end of this group,
-               just BEFORE the matching `end` row. */}
-          <button
-            type="button"
-            className="link survey-add-inside"
-            onClick={() => {
-              const endIdx = props.formSurvey.findIndex((r) => r.rowId === item.endRowId);
-              if (endIdx < 0) return;
-              props.addQuestion(endIdx);
-            }}
-            title={`Insert a new row inside this ${item.structuralType}`}
-          >
-            + add inside {item.name || `(${item.structuralType})`}
-          </button>
+          {/* Wave 2 §3b — empty section drop-zone. When the group has
+               zero children, surface a friendly placeholder instead of
+               a lone "+ add inside" link. The button reuses the same
+               insert-at-index flow (§A3 — insert before the matching
+               `end` row), so balance / undo / toast machinery stays
+               unchanged. */}
+          {item.children.length === 0 && !isLineageBlock ? (
+            <div className="survey-group-empty">
+              <p className="muted small">
+                Drag questions here, or{' '}
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() => {
+                    const endIdx = props.formSurvey.findIndex(
+                      (r) => r.rowId === item.endRowId,
+                    );
+                    if (endIdx < 0) return;
+                    props.addQuestion(endIdx);
+                  }}
+                >
+                  + Add question
+                </button>
+                .
+              </p>
+            </div>
+          ) : (
+            <>
+              {item.children.map(props.renderItem)}
+              {/* §A3 — "+ add inside" inserts a new row at the end of this group,
+                   just BEFORE the matching `end` row. */}
+              <button
+                type="button"
+                className="link survey-add-inside"
+                onClick={() => {
+                  const endIdx = props.formSurvey.findIndex((r) => r.rowId === item.endRowId);
+                  if (endIdx < 0) return;
+                  props.addQuestion(endIdx);
+                }}
+                title={`Insert a new row inside this ${item.structuralType}`}
+              >
+                + add inside {item.name || `(${item.structuralType})`}
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -1654,6 +1926,10 @@ function SurveyRowCard(props: {
   onChangeType: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // Wave 2 §5 — per-locale label input refs so the "insert" popover can
+  // splice `${...}` at the current caret. Keyed by locale so each label's
+  // popover reads the caret from its own input, not a sibling locale's.
+  const labelInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: props.row.rowId,
   });
@@ -1668,6 +1944,51 @@ function SurveyRowCard(props: {
     .map((c) => (row.extras[c] ? `${c}: ${row.extras[c]}` : null))
     .filter(Boolean)
     .join('  ·  ');
+
+  // Wave 2 §5a — splice `${name}` into the label at the tracked caret.
+  // Row-scoped `props.update` is sufficient here — no form-level rows
+  // are added.
+  function spliceLabelToken(locale: string, token: string) {
+    const input = labelInputRefs.current[locale];
+    const caret =
+      input && typeof input.selectionStart === 'number'
+        ? input.selectionStart
+        : (row.labels[locale] ?? '').length;
+    props.update((r) => {
+      const current = r.labels[locale] ?? '';
+      const pos = Math.max(0, Math.min(caret, current.length));
+      const next = current.slice(0, pos) + token + current.slice(pos);
+      return { ...r, labels: { ...r.labels, [locale]: next } };
+    });
+  }
+
+  // Wave 2 §5b — insert a contact-field reference. Delegates to the
+  // shared helper for the harvest calc row (idempotent, structural
+  // balance preserved) AND splices `${<harvestName>}` at the caret in
+  // one form-level patch so undo restores both halves together.
+  function insertContactFieldToken(locale: string, contactField: string) {
+    const input = labelInputRefs.current[locale];
+    const caret =
+      input && typeof input.selectionStart === 'number'
+        ? input.selectionStart
+        : (row.labels[locale] ?? '').length;
+    const result = insertContactFieldRef(props.form, contactField);
+    if (!result.harvestName) return;
+    const token = `\${${result.harvestName}}`;
+    const nextForm = {
+      ...result.form,
+      survey: result.form.survey.map((r) => {
+        if (r.rowId !== row.rowId) return r;
+        const current = r.labels[locale] ?? '';
+        const pos = Math.max(0, Math.min(caret, current.length));
+        return {
+          ...r,
+          labels: { ...r.labels, [locale]: current.slice(0, pos) + token + current.slice(pos) },
+        };
+      }),
+    };
+    props.patch(nextForm);
+  }
 
   function setExtra(key: string, value: string) {
     props.update((r) => {
@@ -1727,21 +2048,63 @@ function SurveyRowCard(props: {
           </div>
         </div>
         <div className="labels-grid">
-          {props.locales.map((loc) => (
-            <label key={loc} className="label-row">
-              <span className="locale-tag">label::{loc}</span>
-              <input
-                value={row.labels[loc] ?? ''}
-                onChange={(e) =>
-                  props.update((r) => ({
-                    ...r,
-                    labels: { ...r.labels, [loc]: e.target.value },
-                  }))
-                }
-                placeholder={`label in ${loc}`}
-              />
-            </label>
-          ))}
+          {props.locales.map((loc) => {
+            // Wave 2 §4 — authoring-time missing-translation cue. When a
+            // sibling locale on THIS row carries a non-empty label but
+            // this locale doesn't, show the same "!" glyph the Translate
+            // tab uses so gaps are visible without switching tabs. The
+            // check requires at least one sibling to have content — a
+            // row where every locale is empty is a brand-new row, not a
+            // missing translation.
+            const thisEmpty = !row.labels[loc] || !row.labels[loc]!.trim();
+            const anySiblingHasValue = props.locales.some(
+              (other) =>
+                other !== loc && row.labels[other] && row.labels[other]!.trim().length > 0,
+            );
+            const isMissing = thisEmpty && anySiblingHasValue;
+            return (
+              <label
+                key={loc}
+                className={`label-row${isMissing ? ' label-row-missing' : ''}`}
+              >
+                <span className="locale-tag">label::{loc}</span>
+                {isMissing && (
+                  <span
+                    className="translations-missing-glyph"
+                    aria-label="missing translation"
+                    title="Missing translation in this locale"
+                  >
+                    !
+                  </span>
+                )}
+                <input
+                  ref={(el) => {
+                    labelInputRefs.current[loc] = el;
+                  }}
+                  value={row.labels[loc] ?? ''}
+                  onChange={(e) =>
+                    props.update((r) => ({
+                      ...r,
+                      labels: { ...r.labels, [loc]: e.target.value },
+                    }))
+                  }
+                  placeholder={isMissing ? 'Add translation…' : `label in ${loc}`}
+                />
+                {/* Wave 2 §5 — insert-field / insert-contact-field popover.
+                     Suppressed on structural rows (begin/end group/repeat) —
+                     their label cell is a section heading and doesn't take
+                     `${...}` refs. */}
+                {!structural && (
+                  <InsertLabelRefButton
+                    fieldOptions={props.fieldOptions}
+                    contactFields={props.inputContactFields}
+                    onInsertField={(name) => spliceLabelToken(loc, `\${${name}}`)}
+                    onInsertContactField={(field) => insertContactFieldToken(loc, field)}
+                  />
+                )}
+              </label>
+            );
+          })}
         </div>
         <button className="link expand-toggle" onClick={() => setExpanded(!expanded)}>
           {expanded ? '▾ hide advanced' : '▸ show advanced'}
@@ -3424,6 +3787,138 @@ function SettingsTab(props: { form: XLSForm; patch: (n: XLSForm) => void }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------------------- Language chip bar (Wave 2 §4) ---------------------- */
+
+/**
+ * A curated list of common locales for the Add-language picker. ISO 639-1
+ * short codes + display names in the language's native form. Not
+ * exhaustive by design — the picker also carries a free-text escape hatch
+ * for any locale not in the list (e.g. `qu`, `bo`, or a regional variant
+ * like `en-GB`). Order roughly reflects CHT-project frequency; the
+ * escape hatch keeps this from being a hard gate.
+ */
+const CURATED_LOCALES: Array<{ code: string; name: string }> = [
+  { code: 'en', name: 'English' },
+  { code: 'ne', name: 'नेपाली (Nepali)' },
+  { code: 'hi', name: 'हिन्दी (Hindi)' },
+  { code: 'fr', name: 'Français (French)' },
+  { code: 'es', name: 'Español (Spanish)' },
+  { code: 'ar', name: 'العربية (Arabic)' },
+  { code: 'sw', name: 'Kiswahili (Swahili)' },
+  { code: 'pt', name: 'Português (Portuguese)' },
+];
+
+function localeDisplayName(code: string): string {
+  const hit = CURATED_LOCALES.find((l) => l.code === code);
+  return hit ? hit.name : code;
+}
+
+/**
+ * Wave 2 §4 — language chip bar rendered above the survey editor. Each
+ * currently-active locale renders as a read-only chip; the trailing
+ * `+ Add language` button opens a small inline popover with the curated
+ * shortlist + a free-text escape hatch. Selecting or entering a locale
+ * dispatches `onAdd(code)`; the parent handles the store mutation +
+ * .properties-file creation. Idempotent — passing a code that's already
+ * in `locales` is a no-op upstream.
+ */
+function LanguageChipBar(props: { locales: string[]; onAdd: (code: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [customCode, setCustomCode] = useState('');
+  const activeLocales = props.locales.length > 0 ? props.locales : ['en'];
+  // Curated locales not already active — the shortlist buttons.
+  const availableCurated = CURATED_LOCALES.filter((l) => !activeLocales.includes(l.code));
+
+  function close() {
+    setOpen(false);
+    setCustomCode('');
+  }
+
+  function commitCustom() {
+    // ISO 639-1 short code shape: 2–3 letters, optionally
+    // hyphen/underscore + region tag (mirrors LABEL_HEADER_RE).
+    const cleaned = customCode.trim().toLowerCase();
+    if (!/^[a-z]{2,3}(?:[-_][A-Za-z0-9]+)?$/.test(cleaned)) return;
+    props.onAdd(cleaned);
+    close();
+  }
+
+  return (
+    <div className="language-chip-bar">
+      <span className="muted small language-chip-bar-legend">Languages:</span>
+      {activeLocales.map((loc) => (
+        <span key={loc} className="language-chip" title={localeDisplayName(loc)}>
+          {localeDisplayName(loc)}
+        </span>
+      ))}
+      <div className="language-chip-add-wrap">
+        <button
+          type="button"
+          className="link language-chip-add"
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          title="Add a translation language to this form"
+        >
+          + Add language
+        </button>
+        {open && (
+          <div className="language-chip-popover" role="dialog" aria-label="Add language">
+            <p className="muted small">Pick a language to add to this form.</p>
+            <ul className="language-chip-popover-list">
+              {availableCurated.map((l) => (
+                <li key={l.code}>
+                  <button
+                    type="button"
+                    className="link"
+                    onClick={() => {
+                      props.onAdd(l.code);
+                      close();
+                    }}
+                  >
+                    <code>{l.code}</code> — {l.name}
+                  </button>
+                </li>
+              ))}
+              {availableCurated.length === 0 && (
+                <li className="muted small">All shortlisted languages already added.</li>
+              )}
+            </ul>
+            <div className="language-chip-custom">
+              <label className="muted small">
+                Or type an ISO 639-1 code (e.g. <code>bo</code>, <code>en-GB</code>):
+              </label>
+              <div className="row gap">
+                <input
+                  value={customCode}
+                  onChange={(e) => setCustomCode(e.target.value)}
+                  placeholder="xx"
+                  autoComplete="off"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      commitCustom();
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      close();
+                    }
+                  }}
+                />
+                <button type="button" onClick={commitCustom}>
+                  Add
+                </button>
+                <button type="button" className="link" onClick={close}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

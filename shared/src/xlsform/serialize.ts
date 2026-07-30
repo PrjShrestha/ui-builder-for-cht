@@ -55,13 +55,21 @@ function ensureSurveyHeaders(form: XLSForm): string[] {
   const hasLabel = headers.some((h) => LABEL_HEADER_RE.test(h.trim()));
   if (!hasLabel) headers.push('label::en');
 
-  // Add any locale label columns that exist in row data but not yet in headers.
+  // Wave 2 §4 — add label columns for any locale referenced by rows OR
+  // declared in `surveyHeaders.labelLocales` (the "active locales" the
+  // authoring UI exposes). The latter is how the Add-language chip bar
+  // registers `ne` on a form that has zero `ne` labels yet — the new
+  // `label::ne` column still needs to be appended so the empty-cell
+  // scaffolding lands in the xlsx. Dedup via `labelLocale(header)`
+  // normalization so a legacy single-colon `label:ne` header does NOT
+  // cause a duplicate `label::ne` to be appended.
   const labelLocalesInHeaders = new Set(
     headers.map((h) => labelLocale(h)).filter((l): l is string => l !== null),
   );
-  const localesInRows = new Set<string>();
-  for (const r of form.survey) for (const l of Object.keys(r.labels)) localesInRows.add(l);
-  for (const l of localesInRows) {
+  const declaredLocales = new Set<string>();
+  for (const r of form.survey) for (const l of Object.keys(r.labels)) declaredLocales.add(l);
+  for (const l of form.surveyHeaders.labelLocales) declaredLocales.add(l);
+  for (const l of declaredLocales) {
     if (!labelLocalesInHeaders.has(l)) headers.push(localeToHeader(l));
   }
 
@@ -114,12 +122,17 @@ function ensureChoicesHeaders(form: XLSForm): string[] {
   const hasLabel = headers.some((h) => LABEL_HEADER_RE.test(h.trim()));
   if (!hasLabel) headers.push('label::en');
 
+  // Wave 2 §4 — mirror the survey-sheet locale union: honor both the
+  // locales referenced by data (choice-row labels) AND the ones declared
+  // in `choicesHeaders.labelLocales`, so an Add-language flow that hasn't
+  // populated any `ne` choice label yet still gets a `label::ne` column.
   const labelLocalesInHeaders = new Set(
     headers.map((h) => labelLocale(h)).filter((l): l is string => l !== null),
   );
-  const localesInRows = new Set<string>();
-  for (const r of form.choices) for (const l of Object.keys(r.labels)) localesInRows.add(l);
-  for (const l of localesInRows) {
+  const declaredLocales = new Set<string>();
+  for (const r of form.choices) for (const l of Object.keys(r.labels)) declaredLocales.add(l);
+  for (const l of form.choicesHeaders.labelLocales) declaredLocales.add(l);
+  for (const l of declaredLocales) {
     if (!labelLocalesInHeaders.has(l)) headers.push(localeToHeader(l));
   }
 

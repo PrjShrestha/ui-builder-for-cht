@@ -32,7 +32,16 @@ import {
   recognizeReference,
   type ContextWrapper,
 } from './calcReference.js';
+import {
+  deriveHarvestName,
+  insertContactFieldRef,
+} from './insertContactFieldRef.js';
 import { parseCalculation, serializeCalculation } from './calculationBuilder.js';
+import { findStructuralViolations } from './structuralBalance.js';
+import { renameSurveyRow } from './renameSurveyRow.js';
+import { parseXlsForm } from './parse.js';
+import { serializeXlsForm } from './serialize.js';
+import type { SurveyRow, XLSForm } from './types.js';
 
 /* ============================== Bucket A ================================ */
 
@@ -269,4 +278,325 @@ test('§H1 — once() recognizer tolerates internal whitespace', () => {
     assert.equal(r!.argument, 'glucometer_ctx');
     assert.equal(r!.wrapper, 'read-once');
   }
+});
+
+/* ============== Wave 3 · Note 6 — cross-form bridge picker source ============== */
+/*
+ * The Wave-3 cross-form-value picker in `CalculationBuilder` uses the
+ * existing `emitContactSummary(key, 'fallback-to-current')` engine to
+ * emit the bridge calc for a context key defined in the contact-summary
+ * "Context values" sub-tab. Since Wave 3 adds no new emit machinery on
+ * the form-calc side — only a new source group in the picker whose keys
+ * come from the contact-summary populator — this test pins the round-
+ * trip contract the picker relies on:
+ *
+ *   1. `emitContactSummary(key, 'fallback-to-current')` produces the
+ *       canonical `if(ref, ref, .)` shape.
+ *   2. `recognizeReference` re-hydrates it to
+ *       `{ kind: 'contact-summary', argument: key, wrapper: 'fallback-to-current' }`.
+ *   3. `parseCalculation → serializeCalculation` preserves the bytes.
+ */
+test('Wave 3 · Note 6 — cross-form bridge fallback-to-current round-trips through the calc engine', () => {
+  // Simulate the picker: user has defined `bmi` in Contact Summary's
+  // Context values sub-tab, then in the form's calc builder they pick
+  // `bmi` from the "From another form (via contact summary)" source
+  // group with the wrapper set to fallback-to-current.
+  const key = 'bmi';
+  const emitted = emitContactSummary(key, 'fallback-to-current');
+  assert.equal(
+    emitted,
+    "if(instance('contact-summary')/context/bmi, instance('contact-summary')/context/bmi, .)",
+    'canonical fallback-to-current shape',
+  );
+
+  // Re-hydrate through the recognizer.
+  const r = recognizeReference(emitted);
+  assert.deepEqual(r, { kind: 'contact-summary', argument: 'bmi', wrapper: 'fallback-to-current' });
+
+  // Byte-stable through the parent calc engine (parseCalculation +
+  // serializeCalculation self-check §3.1 — the picker relies on this
+  // to guarantee no-op open/save doesn't drift the cell).
+  const parsed = parseCalculation(emitted);
+  assert.equal(serializeCalculation(parsed), emitted);
+
+  // Re-emitting from the recognized record is a fixpoint.
+  assert.equal(emitContactSummary(r!.argument, r!.wrapper), emitted);
+});
+
+test('Wave 3 · Note 6 — bridge picker keys with hyphens survive the calcReference emitter', () => {
+  // `useContactSummaryContextKeys` returns whatever `parseContactSummary`
+  // saw. The contact-summary parser tolerates hyphen-carrying string
+  // keys (via JSON.stringify quoting). Confirm the calc-side emitter +
+  // recognizer accept the same alphabet (the `[\w-]+` recognizer group).
+  const key = 'previous-bmi';
+  const emitted = emitContactSummary(key, 'fallback-to-current');
+  const r = recognizeReference(emitted);
+  assert.ok(r, 'hyphen key must be recognized');
+  assert.equal(r!.argument, key);
+  assert.equal(r!.wrapper, 'fallback-to-current');
+});
+
+/* ================ Wave 2 · §5b — insert-contact-field flow ================ */
+/*
+ * The "insert contact field" label affordance calls `insertContactFieldRef`
+ * to (idempotently) add a hidden harvest `calculate` row and returns the
+ * name to splice into the label as `${<harvestName>}`. These tests pin
+ * the four contractual guarantees from the design note
+ * (docs/handoff-waves-1-3-2026-07-29.md §5):
+ *
+ *   1. Exactly one calc row is created, with the canonical
+ *      `../inputs/contact/<field>` calculation, placed right after the
+ *      outermost `end group inputs` — i.e. as a top-level sibling of the
+ *      `inputs` group, matching pregnancy.xlsx's convention (placing it
+ *      INSIDE `inputs/contact` would break the `../` xpath).
+ *   2. Structural balance is preserved.
+ *   3. Re-inserting the same contact field is a no-op (referential
+ *      equality on the form; no new row).
+ *   4. The `${harvestName}` token spliced into a label round-trips
+ *      byte-stable through parseXlsForm → serializeXlsForm → parseXlsForm.
+ *   5. Name-collision safety: if `patient_<field>` is already taken by
+ *      an unrelated row, a numeric suffix is appended.
+ */
+
+function mkFormWithInputsScaffold(extraSurvey: SurveyRow[] = []): XLSForm {
+  // Minimal `inputs/contact` scaffold that mirrors the shape
+  // `buildAppFormScaffold` emits — enough survey rows for the helper's
+  // "insert after end group inputs" locator to fire.
+  const row = (i: number, type: string, name: string, extras: Record<string, string> = {}): SurveyRow => ({
+    rowId: `r${i}`,
+    type,
+    name,
+    labels: { en: '' },
+    extras,
+  });
+  const survey: SurveyRow[] = [
+    row(0, 'begin group', 'inputs', { appearance: 'field-list', relevant: `./source = 'user'` }),
+    row(1, 'hidden', 'source', { default: 'user' }),
+    row(2, 'begin group', 'contact'),
+    row(3, 'string', '_id', { appearance: 'select-contact type-person' }),
+    row(4, 'hidden', 'patient_id'),
+    row(5, 'end group', 'contact'),
+    row(6, 'end group', 'inputs'),
+    ...extraSurvey,
+  ];
+  return {
+    locales: ['en'],
+    surveyHeaders: {
+      ordered: ['type', 'name', 'label::en', 'appearance', 'relevant', 'calculation', 'default'],
+      labelLocales: ['en'],
+    },
+    choicesHeaders: { ordered: ['list_name', 'name', 'label::en'], labelLocales: ['en'] },
+    survey,
+    choices: [],
+    settings: { form_id: 'test', form_title: 'Test', version: '2026-07-29', extras: {} },
+    extraSheets: [],
+  };
+}
+
+test('§5b — deriveHarvestName: `patient_` prefix, no double-prefix, strips leading underscores', () => {
+  assert.equal(deriveHarvestName('name'), 'patient_name');
+  assert.equal(deriveHarvestName('sex'), 'patient_sex');
+  assert.equal(deriveHarvestName('date_of_birth'), 'patient_date_of_birth');
+  // Already-prefixed field names stay as-is (no `patient_patient_id`).
+  assert.equal(deriveHarvestName('patient_id'), 'patient_id');
+  assert.equal(deriveHarvestName('patient_name'), 'patient_name');
+  // Leading underscores stripped so `_id` produces `patient_id`, not
+  // the ugly `patient__id`. (Collision with an existing `patient_id`
+  // harvest is resolved by the caller's suffix logic — see §5b§C.)
+  assert.equal(deriveHarvestName('_id'), 'patient_id');
+  // Whitespace-only input returns empty (short-circuits the helper).
+  assert.equal(deriveHarvestName(''), '');
+  assert.equal(deriveHarvestName('   '), '');
+});
+
+test('§5b — inserting `name` creates exactly one calc row `../inputs/contact/name`', () => {
+  const form = mkFormWithInputsScaffold();
+  const result = insertContactFieldRef(form, 'name');
+  assert.equal(result.wasCreated, true, 'a new row should have been inserted');
+  assert.equal(result.harvestName, 'patient_name');
+  assert.equal(result.hadNameCollision, false);
+
+  // Exactly ONE new calculate row referencing `../inputs/contact/name`.
+  const matching = result.form.survey.filter(
+    (r) =>
+      r.type.trim().toLowerCase() === 'calculate' &&
+      (r.extras['calculation'] ?? '').trim() === '../inputs/contact/name',
+  );
+  assert.equal(matching.length, 1, 'exactly one harvest calc row');
+  assert.equal(matching[0]!.name, 'patient_name');
+});
+
+test('§5b — the new harvest calc lands right after `end group inputs` (top-level sibling)', () => {
+  // Placement matters: inside `inputs/contact` would break the
+  // `../inputs/contact/name` xpath. The helper places the row as a
+  // top-level sibling of `inputs`, matching cht-conf/pregnancy.xlsx.
+  const form = mkFormWithInputsScaffold();
+  const result = insertContactFieldRef(form, 'name');
+  const endInputsIdx = result.form.survey.findIndex(
+    (r) => r.type.trim().toLowerCase() === 'end group' && r.name === 'inputs',
+  );
+  assert.ok(endInputsIdx > 0, 'form must have an `end group inputs`');
+  const harvestIdx = result.form.survey.findIndex((r) => r.name === 'patient_name');
+  assert.equal(harvestIdx, endInputsIdx + 1, 'harvest row must sit immediately after end group inputs');
+});
+
+test('§5b — structural balance is preserved after inserting a harvest calc', () => {
+  const form = mkFormWithInputsScaffold();
+  const before = findStructuralViolations(form.survey);
+  assert.deepEqual(before, [], 'baseline scaffold must be balanced');
+  const result = insertContactFieldRef(form, 'name');
+  const after = findStructuralViolations(result.form.survey);
+  assert.deepEqual(after, [], 'balance must survive the insert');
+});
+
+test('§5b — re-inserting the same contact field is idempotent (no duplicate calc, same form ref)', () => {
+  const form = mkFormWithInputsScaffold();
+  const first = insertContactFieldRef(form, 'name');
+  assert.equal(first.wasCreated, true);
+  // Second call on the ALREADY-updated form must dedupe.
+  const second = insertContactFieldRef(first.form, 'name');
+  assert.equal(second.wasCreated, false, 'no new row on the second call');
+  assert.equal(second.harvestName, 'patient_name');
+  // Referential equality — callers can fast-path on this.
+  assert.equal(second.form, first.form, 'dedupe returns the SAME form instance');
+  // And still exactly one matching calc row.
+  const matching = second.form.survey.filter(
+    (r) =>
+      r.type.trim().toLowerCase() === 'calculate' &&
+      (r.extras['calculation'] ?? '').trim() === '../inputs/contact/name',
+  );
+  assert.equal(matching.length, 1);
+});
+
+test('§5b — dedupe reuses ANY existing row with the same calculation, even if named oddly', () => {
+  // If the form already carries a calc row named `patient_uuid` whose
+  // calculation is `../inputs/contact/name` (odd but legal), inserting
+  // `name` returns `patient_uuid` — we don't fight the author's naming.
+  const form = mkFormWithInputsScaffold([
+    {
+      rowId: 'pre-existing',
+      type: 'calculate',
+      name: 'patient_uuid',
+      labels: { en: '' },
+      extras: { calculation: '../inputs/contact/name' },
+    },
+  ]);
+  const result = insertContactFieldRef(form, 'name');
+  assert.equal(result.wasCreated, false);
+  assert.equal(result.harvestName, 'patient_uuid');
+  assert.equal(result.form, form, 'dedupe short-circuits to referential equality');
+});
+
+test('§5b — name-collision safety: default name taken by an unrelated row → numeric suffix', () => {
+  // Pre-existing row named `patient_name` pointing somewhere ELSE — the
+  // dedupe path can't reuse it, so the helper suffixes `_2` and flags
+  // `hadNameCollision` so the UI can surface a soft warning.
+  const form = mkFormWithInputsScaffold([
+    {
+      rowId: 'collision',
+      type: 'string',
+      name: 'patient_name',
+      labels: { en: '' },
+      extras: {},
+    },
+  ]);
+  const result = insertContactFieldRef(form, 'name');
+  assert.equal(result.wasCreated, true);
+  assert.equal(result.hadNameCollision, true);
+  assert.equal(result.harvestName, 'patient_name_2');
+  // The new calc row was inserted with the suffixed name.
+  const newRow = result.form.survey.find((r) => r.name === 'patient_name_2');
+  assert.ok(newRow, 'suffixed harvest row must be present');
+  assert.equal((newRow!.extras['calculation'] ?? '').trim(), '../inputs/contact/name');
+});
+
+test('§5b — no inputs group → harvest calc is appended at end (still deployable)', () => {
+  // Edge case: a survey with no `inputs` block at all (e.g. a scaffold-
+  // less test form). Helper falls back to appending; the caller's form
+  // has no plumbing to reference the calc, but at least the shape is
+  // legal and the invariant holds.
+  const form: XLSForm = {
+    locales: ['en'],
+    surveyHeaders: { ordered: ['type', 'name', 'label::en'], labelLocales: ['en'] },
+    choicesHeaders: { ordered: [], labelLocales: [] },
+    survey: [
+      { rowId: 'q1', type: 'text', name: 'q1', labels: { en: '' }, extras: {} },
+    ],
+    choices: [],
+    settings: { form_id: 't', form_title: 'T', version: 'v', extras: {} },
+    extraSheets: [],
+  };
+  const result = insertContactFieldRef(form, 'name');
+  assert.equal(result.wasCreated, true);
+  assert.equal(result.form.survey.length, 2);
+  assert.equal(result.form.survey[1]!.name, 'patient_name');
+  assert.deepEqual(findStructuralViolations(result.form.survey), []);
+});
+
+test('§5b — inserted label token `${patient_name}` round-trips through the survey serializer', async () => {
+  // Full xlsx round-trip: build a form, insert the harvest calc, splice
+  // `${patient_name}` into a real question's label, serialize to xlsx,
+  // re-parse. The label token must survive verbatim.
+  const base = mkFormWithInputsScaffold([
+    {
+      rowId: 'q_greeting',
+      type: 'note',
+      name: 'greeting',
+      labels: { en: 'Hello ' },
+      extras: {},
+    },
+  ]);
+  const result = insertContactFieldRef(base, 'name');
+  // Splice `${patient_name}` at the end of the greeting label.
+  const withLabel: XLSForm = {
+    ...result.form,
+    survey: result.form.survey.map((r) =>
+      r.name === 'greeting'
+        ? { ...r, labels: { ...r.labels, en: `Hello \${${result.harvestName}}` } }
+        : r,
+    ),
+  };
+  const buf = await serializeXlsForm(withLabel);
+  const reparsed = await parseXlsForm(buf);
+  const greeting = reparsed.survey.find((r) => r.name === 'greeting');
+  assert.ok(greeting, 'greeting must survive the round-trip');
+  assert.equal(greeting!.labels['en'], 'Hello ${patient_name}');
+  // The harvest calc row also survives with the canonical calc cell.
+  const harvest = reparsed.survey.find((r) => r.name === 'patient_name');
+  assert.ok(harvest, 'harvest calc row must survive the round-trip');
+  assert.equal((harvest!.extras['calculation'] ?? '').trim(), '../inputs/contact/name');
+});
+
+test('§5b — after insert, renaming the harvest calc rewrites the `${patient_name}` label token in lockstep', () => {
+  // The rename-macro guarantees any auto-created harvest calc can later
+  // be renamed by the user without leaving dangling label refs — the
+  // spec's "renamed field's label ref stays in lockstep" acceptance.
+  const base = mkFormWithInputsScaffold([
+    {
+      rowId: 'q_greeting',
+      type: 'note',
+      name: 'greeting',
+      labels: { en: 'Hello ' },
+      extras: {},
+    },
+  ]);
+  const inserted = insertContactFieldRef(base, 'name');
+  // Splice the token into the greeting label as the UI would.
+  const withLabel: XLSForm = {
+    ...inserted.form,
+    survey: inserted.form.survey.map((r) =>
+      r.name === 'greeting'
+        ? { ...r, labels: { ...r.labels, en: `Hello \${${inserted.harvestName}}` } }
+        : r,
+    ),
+  };
+  // Now rename the auto-created calc via the rename macro.
+  const renamed = renameSurveyRow(withLabel, 'patient_name', 'patient_display_name');
+  const harvest = renamed.survey.find((r) => r.type.trim().toLowerCase() === 'calculate' && (r.extras['calculation'] ?? '').trim() === '../inputs/contact/name');
+  assert.ok(harvest, 'harvest row must still be present');
+  assert.equal(harvest!.name, 'patient_display_name');
+  const greeting = renamed.survey.find((r) => r.name === 'greeting');
+  assert.ok(greeting, 'greeting row must be present');
+  // Label ref stays in lockstep with the rename.
+  assert.equal(greeting!.labels['en'], 'Hello ${patient_display_name}');
 });
