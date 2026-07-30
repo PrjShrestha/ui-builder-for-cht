@@ -17,6 +17,7 @@ import {
   contactFormBasename,
   deriveFormName,
   slugifyHierarchyId,
+  slugifyWithHyphens,
   type ContactTypeNode,
   type XLSForm,
 } from '@cht-ui/shared';
@@ -116,6 +117,7 @@ export function resolveCreateFormBasename(
   title: string | undefined,
   rawBasename: string | undefined,
   existing: readonly string[],
+  category: FormCategory = 'app',
 ): ResolvedFormName | { error: string } {
   const trimmedTitle = (title ?? '').trim();
   const trimmedRaw = (rawBasename ?? '').trim();
@@ -123,6 +125,12 @@ export function resolveCreateFormBasename(
     return { error: 'title or basename is required' };
   }
   const humanTitle = trimmedTitle !== '' ? trimmedTitle : trimmedRaw;
+  // Contact forms preserve hyphens — the on-disk contract is
+  // `<type>-create.xlsx` / `<type>-edit.xlsx` (buildContactForm's
+  // contactFormBasename + the batch generator's shape check). Folding
+  // `-` to `_` for this category made conformant manual creation
+  // impossible (audit P0-2).
+  const allowHyphens = category === 'contact';
 
   // Prefer the client-resolved basename when supplied. Re-slugify
   // defensively — the API contract lets older callers pass raw text as
@@ -131,7 +139,7 @@ export function resolveCreateFormBasename(
   // resolved collisions with its full view of the folder; second-guessing
   // that would clobber the very suffix we want to honour.
   if (trimmedRaw !== '') {
-    const slug = slugifyHierarchyId(trimmedRaw);
+    const slug = allowHyphens ? slugifyWithHyphens(trimmedRaw) : slugifyHierarchyId(trimmedRaw);
     if (slug === '') {
       return {
         error:
@@ -144,7 +152,7 @@ export function resolveCreateFormBasename(
   // Title-only path (legacy client). Fold the caller-listed `existing`
   // basenames in so a second create with the same title also gets a
   // numeric suffix instead of hitting the 409.
-  const derived = deriveFormName(trimmedTitle, existing);
+  const derived = deriveFormName(trimmedTitle, existing, { allowHyphens });
   if (derived.basename === '') {
     return {
       error:
@@ -430,7 +438,7 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
       const dir = await resolveInsideProject(path.join('forms', category));
       await fs.mkdir(dir, { recursive: true });
       const existingBasenames = await listExistingXlsxBasenames(dir);
-      const resolved = resolveCreateFormBasename(title, rawBasename, existingBasenames);
+      const resolved = resolveCreateFormBasename(title, rawBasename, existingBasenames, category);
       if ('error' in resolved) {
         return reply.code(400).send({ error: resolved.error });
       }

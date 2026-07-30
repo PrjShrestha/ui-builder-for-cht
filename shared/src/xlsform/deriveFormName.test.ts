@@ -78,3 +78,36 @@ test('empty derivation stays empty even with `existing` — never fabricates', (
 test('numeric title alone → empty (leading-digit strip eats everything)', () => {
   assert.equal(deriveFormName('2024').basename, '');
 });
+
+/* ============ allowHyphens — CHT contact-form naming (audit P0-2) ============ */
+
+test('allowHyphens: "Household — create" → "household-create" (em dash)', () => {
+  const out = deriveFormName('Household — create', [], { allowHyphens: true });
+  assert.equal(out.basename, 'household-create');
+});
+
+test('allowHyphens: ASCII hyphen and en dash also act as segment separators', () => {
+  assert.equal(deriveFormName('patient-edit', [], { allowHyphens: true }).basename, 'patient-edit');
+  assert.equal(deriveFormName('Ward – create', [], { allowHyphens: true }).basename, 'ward-create');
+});
+
+test('allowHyphens: segments slugify independently (spaces/punct inside a segment → _)', () => {
+  assert.equal(
+    deriveFormName('Health Facility - create form', [], { allowHyphens: true }).basename,
+    'health_facility-create_form',
+  );
+});
+
+test('allowHyphens: empty segments dropped (leading/trailing/double hyphens collapse)', () => {
+  assert.equal(deriveFormName('-patient--create-', [], { allowHyphens: true }).basename, 'patient-create');
+});
+
+test('allowHyphens: default OFF — app forms still fold hyphens to underscore', () => {
+  assert.equal(deriveFormName('patient-edit').basename, 'patient_edit');
+});
+
+test('allowHyphens: collision suffix still applies', () => {
+  const out = deriveFormName('household-create', ['household-create'], { allowHyphens: true });
+  assert.equal(out.basename, 'household-create_2');
+  assert.equal(out.collided, true);
+});

@@ -30,36 +30,58 @@ const META_FIELDS = new Set([
   'subscriberid',
 ]);
 
+/**
+ * Walk the survey emitting GROUP-QUALIFIED dotted paths (`vitals.bmi`),
+ * not bare leaf names. Report readers are path-based on both consumer
+ * sides — `Utils.getField(report, 'vitals.bmi')` in tasks and
+ * `report.fields.vitals.bmi` in contact-summary — so a bare `bmi` for a
+ * grouped field reads `undefined` at runtime, silently masked by the
+ * fallback wrappers (audit P1-5).
+ *
+ * `keep` decides whether a leaf row is included (given its row + the
+ * current group stack). Structural rows manage the stack and are never
+ * emitted. Subtrees rooted at a META group (`meta`, etc.) are skipped
+ * entirely; top-level meta leaf names are skipped as before.
+ */
+function walkFieldPaths(
+  survey: Array<{ name?: string; type: string }>,
+  keep: (row: { name?: string; type: string }) => boolean,
+): string[] {
+  const out: string[] = [];
+  const stack: string[] = [];
+  for (const r of survey) {
+    const t = r.type.trim().toLowerCase();
+    if (t === 'begin group' || t === 'begin repeat') {
+      stack.push(r.name ?? '');
+      continue;
+    }
+    if (t === 'end group' || t === 'end repeat') {
+      stack.pop();
+      continue;
+    }
+    if (!r.name) continue;
+    const lc = r.name.toLowerCase();
+    if (lc.startsWith('_')) continue;
+    // Skip meta leaves at top level, and anything inside a meta-rooted group.
+    if (stack.length === 0 && META_FIELDS.has(lc)) continue;
+    if (stack.some((g) => META_FIELDS.has(g.toLowerCase()))) continue;
+    if (!keep(r)) continue;
+    const path = [...stack.filter(Boolean), r.name].join('.');
+    out.push(path);
+  }
+  return out.filter((n, i, arr) => arr.indexOf(n) === i);
+}
+
 function extractFields(survey: Array<{ name?: string; type: string }>): string[] {
-  return survey
-    .filter((r) => {
-      if (!r.name) return false;
-      const lc = r.name.toLowerCase();
-      if (lc.startsWith('_')) return false;
-      if (META_FIELDS.has(lc)) return false;
-      const t = r.type.trim().toLowerCase();
-      // Drop pure structural rows; keep anything with a name otherwise.
-      if (t === 'begin group' || t === 'end group') return false;
-      if (t === 'begin repeat' || t === 'end repeat') return false;
-      return true;
-    })
-    .map((r) => r.name!)
-    .filter((n, i, arr) => arr.indexOf(n) === i);
+  return walkFieldPaths(survey, () => true);
 }
 
 function extractDateFields(survey: Array<{ name?: string; type: string }>): string[] {
-  return survey
-    .filter((r) => {
-      if (!r.name) return false;
-      const lc = r.name.toLowerCase();
-      if (lc.startsWith('_')) return false;
-      if (META_FIELDS.has(lc)) return false;
-      const t = r.type.trim().toLowerCase();
-      // XLSForm date-shaped question types. `today` is meta-ish; excluded by META_FIELDS above.
-      return t === 'date' || t === 'datetime' || t === 'date_time';
-    })
-    .map((r) => r.name!)
-    .filter((n, i, arr) => arr.indexOf(n) === i);
+  return walkFieldPaths(survey, (r) => {
+    const t = r.type.trim().toLowerCase();
+    // XLSForm date-shaped question types. `today` is meta-ish; excluded by META_FIELDS above.
+    return t === 'date' || t === 'datetime' || t === 'date_time';
+  });
 }
 
 async function fetchFields(basename: string): Promise<{ fields: string[]; dateFields: string[] }> {

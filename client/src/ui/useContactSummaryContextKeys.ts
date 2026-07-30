@@ -72,16 +72,19 @@ function subscribeToSnapshot(
     notify({ keys: [], bridges: [] });
     return () => {};
   }
-  if (cache && cacheKey === projectPath) {
-    notify(cache);
-    return () => {};
-  }
+  // ALWAYS register the subscriber — even on a warm cache — so a later
+  // `invalidateContactSummaryContextKeys()` reaches every mounted hook.
+  // The previous early-return left warm-cache subscribers unregistered,
+  // which is why the calc builder showed stale "No cross-form values"
+  // until a full reload (audit P1-4).
   let alive = true;
   const wrapped = (v: Snapshot) => {
     if (alive) notify(v);
   };
   subscribers.add(wrapped);
-  if (!inflight || cacheKey !== projectPath) {
+  if (cache && cacheKey === projectPath) {
+    notify(cache);
+  } else if (!inflight || cacheKey !== projectPath) {
     cacheKey = projectPath;
     inflight = loadSnapshot().then((out) => {
       cache = out;
@@ -96,6 +99,27 @@ function subscribeToSnapshot(
   };
 }
 
+/**
+ * Drop the cached snapshot and re-fetch, notifying every mounted hook.
+ * Call after any write to `contact-summary.templated.js` (the Contact
+ * Summary editor's save) so the calc builder's "From another form"
+ * picker reflects newly defined context values without a full reload —
+ * the feature's own empty-state → deep-link → define → back loop
+ * depends on this (audit P1-4). Mirrors `parsedFormCache.invalidate`.
+ */
+export function invalidateContactSummaryContextKeys(): void {
+  cache = null;
+  cacheKey = null;
+  inflight = null;
+  // Re-fetch eagerly so already-mounted consumers update in place.
+  inflight = loadSnapshot().then((out) => {
+    cache = out;
+    for (const fn of subscribers) fn(out);
+    inflight = null;
+    return out;
+  });
+}
+
 export function useContactSummaryContextKeys(): string[] {
   const projectPath = useApp((s) => s.project?.path ?? '');
   const [keys, setKeys] = useState<string[]>(cache?.keys ?? []);
@@ -107,9 +131,10 @@ export function useContactSummaryContextKeys(): string[] {
  * Wave 3 · Note 6 — the calc-side "From another form (via contact summary)"
  * picker source group's dropdown data. Returns the subset of context keys
  * whose value in `contact-summary.templated.js` is the canonical
- * `Utils.getMostRecentReport`-style IIFE the Contact Summary editor's
- * "Context values" sub-tab emits. Consumers use `.key` as the argument
- * to `emitContactSummary(key, 'fallback-to-current')` and display the
+ * self-contained reports-scan IIFE the Contact Summary editor's
+ * "Context values" sub-tab emits (or its legacy Utils-based predecessor).
+ * Consumers use `.key` as the argument to
+ * `emitContactSummary(key, 'fallback-to-current')` and display the
  * source form + field as human-readable context.
  */
 export function useContactSummaryBridgeKeys(): ContextBridgeKey[] {

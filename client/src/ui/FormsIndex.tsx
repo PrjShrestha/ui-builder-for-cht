@@ -71,11 +71,14 @@ export function FormsIndex() {
     }
     // Derive locally for the pre-flight check so the user gets an
     // inline error instead of a 400 round-trip; the server also derives
-    // defensively (see forms.ts create route).
+    // defensively (see forms.ts create route). Contact forms preserve
+    // hyphens — the on-disk contract is `<type>-create.xlsx` (audit P0-2).
     const existing = forms
       .filter((f) => f.category === creating.category)
       .map((f) => f.filename.replace(/\.xlsx$/i, ''));
-    const { basename } = deriveFormName(title, existing);
+    const { basename } = deriveFormName(title, existing, {
+      allowHyphens: creating.category === 'contact',
+    });
     if (basename === '') {
       setError(
         'That name has no ASCII letters to derive a filename from. Try adding a Latin word (e.g. add "ANC" or "visit").',
@@ -201,8 +204,11 @@ function CreateFormDialog(props: {
     [forms, creating.category],
   );
   const derived = useMemo(
-    () => deriveFormName(creating.title, existing),
-    [creating.title, existing],
+    () =>
+      deriveFormName(creating.title, existing, {
+        allowHyphens: creating.category === 'contact',
+      }),
+    [creating.title, existing, creating.category],
   );
   const trimmed = creating.title.trim();
   const canSubmit = trimmed !== '' && derived.basename !== '';

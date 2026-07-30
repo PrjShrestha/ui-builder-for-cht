@@ -2,14 +2,17 @@
  * Recognizer + emit fixpoint tests for the cross-form context-value
  * bridge (`shared/src/tasks/contextValuesParser.ts`).
  *
- * Contract:
- *   1. `emitContextValueBridge` produces a string
- *      `recognizeContextValueBridge` accepts and re-produces bit-for-bit.
+ * Contract (post audit P0-1 — no `Utils` in the contact-summary runtime):
+ *   1. `emitContextValueBridge` produces a SELF-CONTAINED `reports` scan
+ *      (no `Utils.*`, no extras import) that `recognizeContextValueBridge`
+ *      accepts and re-produces bit-for-bit.
  *   2. Whitespace variations of the canonical shape re-hydrate to the
  *      same structured record.
- *   3. Non-bridge expressions (a stock predicate call, a bare identifier,
- *      an empty string, a mismatched binding name, or the wrong falsy
- *      branch) return `null` — the UI falls back to the raw `<textarea>`.
+ *   3. The LEGACY `Utils.*` shape written by the pre-fix emitter still
+ *      recognizes (self-healing migration: re-open in the picker, next
+ *      save emits the fixed shape).
+ *   4. Non-bridge expressions return `null` — the UI falls back to the
+ *      raw `<textarea>`, which is lossless.
  */
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
@@ -27,11 +30,17 @@ test('emit → recognize is a fixpoint (canonical form)', () => {
   assert.equal(emitContextValueBridge(recognized!), emitted);
 });
 
-test('emitted string has the canonical prefix shape (readable multi-line IIFE)', () => {
+test('emitted JS is self-contained: NO Utils reference (undefined in contact-summary runtime)', () => {
+  // Audit P0-1: `Utils` is global in tasks/targets only. The contact-summary
+  // runtime exposes contact/reports/lineage. Any `Utils.` in the emitted
+  // string is a guaranteed on-device ReferenceError that kills the whole
+  // context object — this assertion is the regression gate for that class.
   const s = emitContextValueBridge({ sourceForm: 'anc_screening', sourceField: 'lmp_date' });
+  assert.equal(/\bUtils\b/.test(s), false, 'emitted bridge must not reference Utils');
   assert.match(s, /^\(function \(\) \{/);
-  assert.match(s, /Utils\.getMostRecentReport\(reports, 'anc_screening'\)/);
-  assert.match(s, /Utils\.getField\(report, 'lmp_date'\)/);
+  assert.match(s, /reports\.forEach/);
+  assert.match(s, /r\.form === 'anc_screening'/);
+  assert.match(s, /'lmp_date'\.split\('\.'\)/);
   assert.match(s, /\}\)\(\)$/);
 });
 
@@ -51,23 +60,39 @@ test('recognizer accepts dotted field paths (e.g. preg_info.delivery_date)', () 
   assert.deepEqual(recognizeContextValueBridge(s), bridge);
 });
 
-test('recognizer is whitespace-tolerant across all inter-token positions', () => {
-  const variants = [
-    // Compact one-liner (extreme end of the tolerance range)
-    `(function(){var report=Utils.getMostRecentReport(reports,'f');return report?Utils.getField(report,'x'):undefined;})()`,
-    // Extra spaces inside every group
-    `( function ( )  {  var report  =  Utils.getMostRecentReport ( reports , 'f' ) ; return report ? Utils.getField ( report , 'x' ) : undefined ; } ) ( )`,
-    // Newlines everywhere
-    `(function () {\n    var report = Utils.getMostRecentReport(reports, 'f');\n    return report ? Utils.getField(report, 'x') : undefined;\n  })()`,
-    // Trailing semicolon (some formatters add one)
-    `(function () { var report = Utils.getMostRecentReport(reports, 'f'); return report ? Utils.getField(report, 'x') : undefined; })();`,
-  ];
-  for (const v of variants) {
+test('recognizer is whitespace-tolerant across the canonical shape', () => {
+  const compact = `(function(){var newest;reports.forEach(function(r){if(r.form==='f'&&(!newest||r.reported_date>newest.reported_date)){newest=r;}});var value=newest&&newest.fields;'x'.split('.').forEach(function(p){value=value&&value[p];});return value;})()`;
+  const spaced = `( function ( ) { var newest ; reports.forEach ( function ( r ) { if ( r.form === 'f' && ( !newest || r.reported_date > newest.reported_date ) ) { newest = r ; } } ) ; var value = newest && newest.fields ; 'x'.split ( '.' ) .forEach ( function ( p ) { value = value && value [ p ] ; } ) ; return value ; } ) ( )`;
+  const trailingSemi = emitContextValueBridge({ sourceForm: 'f', sourceField: 'x' }) + ';';
+  for (const v of [compact, spaced, trailingSemi]) {
     const r = recognizeContextValueBridge(v);
-    assert.ok(r, `expected whitespace variant to recognize: ${JSON.stringify(v)}`);
+    assert.ok(r, `expected whitespace variant to recognize: ${JSON.stringify(v.slice(0, 60))}…`);
     assert.equal(r!.sourceForm, 'f');
     assert.equal(r!.sourceField, 'x');
   }
+});
+
+test('LEGACY Utils-based shape (pre-fix emitter) still recognizes — self-healing migration', () => {
+  // Files written by the broken emitter must re-open in the picker so the
+  // next save rewrites them to the fixed shape. Loss of byte-stability on
+  // that save is deliberate: the value cell is exactly what's being edited.
+  const legacy = `(function () {
+    var report = Utils.getMostRecentReport(reports, 'diabetes_screening');
+    return report ? Utils.getField(report, 'bmi') : undefined;
+  })()`;
+  const r = recognizeContextValueBridge(legacy);
+  assert.deepEqual(r, { sourceForm: 'diabetes_screening', sourceField: 'bmi' });
+  // Re-emitting produces the FIXED shape, not the legacy one.
+  const reEmitted = emitContextValueBridge(r!);
+  assert.equal(/\bUtils\b/.test(reEmitted), false);
+});
+
+test('legacy recognizer rejects a mismatched binding name (safety)', () => {
+  const bad = `(function () {
+    var report = Utils.getMostRecentReport(reports, 'f');
+    return other ? Utils.getField(other, 'x') : undefined;
+  })()`;
+  assert.equal(recognizeContextValueBridge(bad), null);
 });
 
 test('recognizer rejects an empty / non-bridge expression', () => {
@@ -81,48 +106,29 @@ test('recognizer rejects an empty / non-bridge expression', () => {
   );
 });
 
-test('recognizer rejects a mismatched binding name (safety)', () => {
-  // Same shape, but the `return` reads a different identifier from the
-  // `var` — likely a hand-authored idiom that means something else.
-  // Re-emitting under the canonical name would silently rewrite it.
-  const bad = `(function () {
-    var report = Utils.getMostRecentReport(reports, 'f');
-    return other ? Utils.getField(other, 'x') : undefined;
+test('recognizer rejects hand-renamed identifiers in the canonical shape (falls to raw editor)', () => {
+  // Canonical recognizer is strict on identifier names — a hand-edited
+  // variant with different names is preserved verbatim via the raw-JS
+  // fallback (lossless), never rewritten.
+  const renamed = `(function () {
+    var latest;
+    reports.forEach(function (rep) {
+      if (rep.form === 'f' && (!latest || rep.reported_date > latest.reported_date)) { latest = rep; }
+    });
+    var value = latest && latest.fields;
+    'x'.split('.').forEach(function (p) { value = value && value[p]; });
+    return value;
   })()`;
-  assert.equal(recognizeContextValueBridge(bad), null);
+  assert.equal(recognizeContextValueBridge(renamed), null);
 });
 
-test('recognizer rejects the wrong falsy branch (null / empty-string ≠ undefined)', () => {
-  // Falsy fallback semantics: an `undefined` ctx value flows through the
-  // `fallback-to-current` wrapper correctly. `null` and `''` are falsy
-  // too but semantically distinct — we conservatively reject them so
-  // authors don't silently gain the wrapper's undefined-only shortcut.
-  const nullBranch = `(function () {
-    var report = Utils.getMostRecentReport(reports, 'f');
-    return report ? Utils.getField(report, 'x') : null;
-  })()`;
-  const emptyBranch = `(function () {
-    var report = Utils.getMostRecentReport(reports, 'f');
-    return report ? Utils.getField(report, 'x') : '';
-  })()`;
-  assert.equal(recognizeContextValueBridge(nullBranch), null);
-  assert.equal(recognizeContextValueBridge(emptyBranch), null);
-});
-
-test('recognizer rejects a double-quoted form/field (canonical form uses single quotes)', () => {
-  // The CHT eslint config's `quotes: ['error', 'single']` rule makes
-  // double-quoted string literals a lint failure. The recognizer accepts
-  // BOTH so a hand-authored variant re-hydrates, but the emitter always
-  // produces single quotes.
-  const dq = `(function () {
-    var report = Utils.getMostRecentReport(reports, "f");
-    return report ? Utils.getField(report, "x") : undefined;
-  })()`;
+test('double-quoted literals in the canonical shape re-hydrate; emit canonicalizes to single quotes', () => {
+  const dq = emitContextValueBridge({ sourceForm: 'f', sourceField: 'x' })
+    .replace(`'f'`, `"f"`)
+    .replace(`'x'.split`, `"x".split`);
   const r = recognizeContextValueBridge(dq);
   assert.ok(r, 'double-quoted variant must re-hydrate');
   assert.equal(r!.sourceForm, 'f');
   assert.equal(r!.sourceField, 'x');
-  // Re-emitting canonicalizes to single quotes so the config re-lints clean.
   assert.match(emitContextValueBridge(r!), /'f'/);
-  assert.match(emitContextValueBridge(r!), /'x'/);
 });

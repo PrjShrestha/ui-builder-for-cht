@@ -230,7 +230,10 @@ module.exports = { context, fields, cards };
   assert.deepEqual(reparsed.contextOrder, ['alive', 'bmi', 'show_pregnancy_form']);
   assert.match(reparsed.contextFlags['alive']!, /isAlive/);
   assert.match(reparsed.contextFlags['show_pregnancy_form']!, /isReadyForNewPregnancy/);
-  assert.match(reparsed.contextFlags['bmi']!, /Utils\.getMostRecentReport/);
+  // The bridge is the self-contained reports scan — and NEVER references
+  // Utils, which is undefined in the contact-summary runtime (audit P0-1).
+  assert.match(reparsed.contextFlags['bmi']!, /reports\.forEach/);
+  assert.equal(/\bUtils\b/.test(reparsed.contextFlags['bmi']!), false);
 });
 
 /* ============================================================

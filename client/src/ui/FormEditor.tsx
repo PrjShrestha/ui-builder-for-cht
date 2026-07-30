@@ -877,11 +877,13 @@ function SurveyTab(props: {
       for (const loc of activeLocales) {
         out[loc] = provided[loc] ?? '';
       }
-      // §3b — section flow may not carry a labels map; fall back to
-      // seating the friendly label in `en` (the default authoring locale)
-      // if that's the only useful signal we have.
+      // §3b — section flow may not carry a labels map; seat the friendly
+      // label in the form's FIRST ACTIVE locale. Hard-coding `en` here
+      // injected a stray `label::en` column into non-en forms and left
+      // the title outside the visible locale set (audit P1-6).
       if (sectionFallback !== undefined && !commit.labels) {
-        out['en'] = sectionFallback;
+        const primary = activeLocales[0] ?? 'en';
+        out[primary] = sectionFallback;
       }
       return out;
     }
@@ -1723,6 +1725,10 @@ function SurveyGroupAccordion(props: {
   // `field-list` as the switch. Toggling preserves any other tokens
   // the user (or a future tile) may have set.
   const beginRow = props.formSurvey.find((r) => r.rowId === item.beginRowId);
+  // First non-empty label across the row's locales, in column order.
+  const groupTitle = beginRow
+    ? Object.values(beginRow.labels).find((v) => v && v.trim() !== '')
+    : undefined;
   const appearanceTokens = (beginRow?.extras['appearance'] ?? '')
     .split(/\s+/)
     .filter((t) => t.length > 0);
@@ -1797,10 +1803,12 @@ function SurveyGroupAccordion(props: {
               {/* Wave 2 §3b — surface the friendly label when a section
                    carries one (label-first section-authoring); fall back
                    to the raw slug when no label was authored (existing
-                   parsed forms). */}
-              {beginRow?.labels['en'] ? (
+                   parsed forms). Falls through the row's locales in
+                   column order — hard-coding `en` hid the title on
+                   non-en forms (audit P1-6). */}
+              {groupTitle ? (
                 <>
-                  <span className="survey-group-title">{beginRow.labels['en']}</span>
+                  <span className="survey-group-title">{groupTitle}</span>
                   <span className="muted small">
                     <code>{item.name || '(unnamed)'}</code> · {item.innerRowCount} row
                     {item.innerRowCount === 1 ? '' : 's'} inside ({kindLabel})
@@ -1849,16 +1857,18 @@ function SurveyGroupAccordion(props: {
       </div>
       {!isCollapsed && (
         <div id={`group-children-${item.beginRowId}`} className="survey-group-children">
-          {/* Wave 2 §3b — empty section drop-zone. When the group has
-               zero children, surface a friendly placeholder instead of
-               a lone "+ add inside" link. The button reuses the same
-               insert-at-index flow (§A3 — insert before the matching
-               `end` row), so balance / undo / toast machinery stays
-               unchanged. */}
+          {/* Wave 2 §3b — empty-section placeholder. When the group has
+               zero children, surface the "+ Add question" affordance
+               (insert-at-index flow, §A3 — before the matching `end`
+               row). Note (audit P1-7): the copy promises ONLY what
+               works — there is no per-group droppable in the flat
+               SortableContext, so a drag lands OUTSIDE the group; do not
+               reintroduce "drag here" wording until a real useDroppable
+               per group container ships. */}
           {item.children.length === 0 && !isLineageBlock ? (
             <div className="survey-group-empty">
               <p className="muted small">
-                Drag questions here, or{' '}
+                This section is empty —{' '}
                 <button
                   type="button"
                   className="link"

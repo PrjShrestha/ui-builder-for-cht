@@ -43,6 +43,7 @@ import { AppliesIfBuilder, type ContactFormFields } from './AppliesIfBuilder.js'
 import { FieldPicker } from './FieldPicker.js';
 import { ReportFieldPicker } from './ReportFieldPicker.js';
 import { useContactFormFields } from './useContactFormFields.js';
+import { invalidateContactSummaryContextKeys } from './useContactSummaryContextKeys.js';
 
 type CSFile = 'contact-summary.templated.js' | 'contact-summary.extras.js';
 /** Sub-tabs inside the Contact Summary editor. `values` = Wave 3 · Note 6
@@ -58,6 +59,14 @@ interface CSState {
   parsedCards: ParsedCards | null;
   cards: (Card | RawCard)[];
   cardsDirty: boolean;
+  /**
+   * True when flags/order have pending edits. Save serializes the
+   * context object based on THIS (edit-based), never on which sub-tab
+   * happens to be active — the previous view-gated check silently
+   * dropped context-value edits when saving from the Cards/Raw tab
+   * (audit P0-3).
+   */
+  contextDirty: boolean;
 }
 
 export function ContactSummaryEditor() {
@@ -107,6 +116,7 @@ export function ContactSummaryEditor() {
           parsedCards,
           cards: parsedCards ? [...parsedCards.cards] : [],
           cardsDirty: false,
+          contextDirty: false,
         });
         setLoading(false);
       })
@@ -139,24 +149,39 @@ export function ContactSummaryEditor() {
 
   function patchFlag(name: string, expression: string) {
     if (!state) return;
-    setState({ ...state, flags: { ...state.flags, [name]: expression } });
+    setState({ ...state, flags: { ...state.flags, [name]: expression }, contextDirty: true });
     setDirty('contact-summary', true);
   }
   function renameFlag(oldName: string, newName: string) {
     if (!state || !newName || newName === oldName) return;
+    // Keys are read as XML node names via `instance('contact-summary')/
+    // context/<key>` — a key like `0-latest-visit` compiles but is
+    // unreadable on the form side. Gate on the same identifier rule the
+    // add path uses (audit P1-8).
+    if (!/^[a-zA-Z_$][\w$]*$/.test(newName)) {
+      setError(
+        `"${newName}" is not a valid context key — use letters/digits/underscore, starting with a letter (form calcs read it as instance('contact-summary')/context/${newName}).`,
+      );
+      return;
+    }
     if (state.flags[newName] !== undefined) return;
     const flags = { ...state.flags };
     flags[newName] = flags[oldName] ?? '';
     delete flags[oldName];
     const order = state.order.map((n) => (n === oldName ? newName : n));
-    setState({ ...state, flags, order });
+    setState({ ...state, flags, order, contextDirty: true });
     setDirty('contact-summary', true);
   }
   function removeFlag(name: string) {
     if (!state) return;
     const flags = { ...state.flags };
     delete flags[name];
-    setState({ ...state, flags, order: state.order.filter((n) => n !== name) });
+    setState({
+      ...state,
+      flags,
+      order: state.order.filter((n) => n !== name),
+      contextDirty: true,
+    });
     setDirty('contact-summary', true);
   }
   function addFlag() {
@@ -173,7 +198,7 @@ export function ContactSummaryEditor() {
       return;
     }
     const flags = { ...state.flags, [name]: 'function () {\n  return true;\n}' };
-    setState({ ...state, flags, order: [...state.order, name] });
+    setState({ ...state, flags, order: [...state.order, name], contextDirty: true });
     setDirty('contact-summary', true);
   }
   function patchRaw(file: CSFile, content: string) {
@@ -185,6 +210,7 @@ export function ContactSummaryEditor() {
     let parsedCards = state.parsedCards;
     let cards = state.cards;
     let cardsDirty = state.cardsDirty;
+    let contextDirty = state.contextDirty;
     if (file === 'contact-summary.templated.js') {
       parsed = parseContactSummary(content);
       flags = { ...parsed.contextFlags };
@@ -194,8 +220,12 @@ export function ContactSummaryEditor() {
       parsedCards = readCardsFromFile(content);
       cards = parsedCards ? [...parsedCards.cards] : [];
       cardsDirty = false;
+      // Flags/order were just re-derived FROM the raw content — there is
+      // no pending structured edit to re-serialize on save; the raw bytes
+      // themselves are what will be written.
+      contextDirty = false;
     }
-    setState({ raw: nextRaw, parsed, flags, order, parsedCards, cards, cardsDirty });
+    setState({ raw: nextRaw, parsed, flags, order, parsedCards, cards, cardsDirty, contextDirty });
     setDirty('contact-summary', true);
   }
 
@@ -207,24 +237,34 @@ export function ContactSummaryEditor() {
 
   async function save() {
     if (!state) return;
+    // Bridge validation (audit P1-8): a context value whose source form
+    // or field is still unset would serialize an always-undefined scan —
+    // "looks configured, reads nothing" on every device. Block the save
+    // and point at the offending key instead.
+    for (const key of state.order) {
+      const bridge = recognizeContextValueBridge(state.flags[key] ?? '');
+      if (bridge && (bridge.sourceForm.trim() === '' || bridge.sourceField.trim() === '')) {
+        setError(
+          `Context value "${key}" has no source ${bridge.sourceForm.trim() === '' ? 'form' : 'field'} yet — pick one in the Context values tab (or delete the row) before saving.`,
+        );
+        setView('values');
+        return;
+      }
+    }
     setSaving('contact-summary', true);
     try {
       // Compose the templated file by applying the two edits that may be
-      // pending: context flags (structured tab) and the cards array (cards
-      // tab). Each splice is against the file source directly, so both edits
-      // compose cleanly against the same starting bytes even when applied in
-      // sequence — `spliceCards` operates on `const cards = [ ... ]` which
-      // never overlaps the `context: {...}` object.
+      // pending: context flags/values and the cards array. Each splice is
+      // against the file source directly, so both edits compose cleanly
+      // against the same starting bytes even when applied in sequence —
+      // `spliceCards` operates on `const cards = [ ... ]` which never
+      // overlaps the `context: {...}` object.
+      //
+      // Gating is EDIT-based (contextDirty / cardsDirty), never based on
+      // which sub-tab is active — a view-based gate silently dropped
+      // context edits when saving from the Cards/Raw tab (audit P0-3).
       let templatedOut = state.raw['contact-summary.templated.js'] ?? '';
-      // Wave 3 · Note 6 — the Context values sub-tab writes into the same
-      // `context: {}` object as the flags tab (bridges are just flags whose
-      // value happens to be the canonical IIFE shape). Save whenever the
-      // user is on EITHER structured surface.
-      if (
-        state.parsed &&
-        state.parsed.contextBounds &&
-        (view === 'structured' || view === 'values')
-      ) {
+      if (state.parsed && state.parsed.contextBounds && state.contextDirty) {
         templatedOut = serializeContactSummary(state.parsed, state.flags, state.order);
       }
       if (state.parsedCards && state.parsedCards.shape === 'array' && state.cardsDirty) {
@@ -235,7 +275,11 @@ export function ContactSummaryEditor() {
       const extras = state.raw['contact-summary.extras.js'];
       if (extras !== null) await api.saveContactSummaryFile('contact-summary.extras.js', extras);
       setDirty('contact-summary', false);
-      setState({ ...state, cardsDirty: false });
+      setState({ ...state, cardsDirty: false, contextDirty: false });
+      // The calc builder's "From another form" picker caches context keys
+      // at module scope — refresh it so a newly defined value shows up
+      // without a reload (audit P1-4).
+      invalidateContactSummaryContextKeys();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -264,6 +308,7 @@ export function ContactSummaryEditor() {
       ...state,
       flags: { ...state.flags, [name]: seed },
       order: [...state.order, name],
+      contextDirty: true,
     });
     setDirty('contact-summary', true);
   }
@@ -885,9 +930,10 @@ function ContextValuesTab(props: {
     <div className="cs-context-values">
       <p className="muted">
         Cross-form values pulled from another form&apos;s most-recent report.
-        Each row emits a <code>context.&lt;key&gt;</code> populated by{' '}
-        <code>Utils.getMostRecentReport</code> — form calcs can then reference
-        the key via <code>instance(&apos;contact-summary&apos;)/context/&lt;key&gt;</code>
+        Each row emits a <code>context.&lt;key&gt;</code> populated by a
+        self-contained scan over the <code>reports</code> global — form calcs
+        can then reference the key via{' '}
+        <code>instance(&apos;contact-summary&apos;)/context/&lt;key&gt;</code>
         (see the Calculation builder&apos;s &quot;From another form&quot; picker).
       </p>
       {!hasContext && (

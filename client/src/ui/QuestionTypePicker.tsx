@@ -283,11 +283,22 @@ export function QuestionTypePicker(props: Props) {
     if (sectionAppearance === 'field-list') {
       extras.appearance = 'field-list';
     }
+    // Build the per-locale labels map: the section title lands in the
+    // form's FIRST active locale; other locales get the translations
+    // typed in the additional inputs (or '' — a visible missing cell in
+    // the translator grid). Passing a proper `labels` map keeps
+    // `seedLabels` off its en-hardcoded fallback path (audit P1-6).
+    const labels: Record<string, string> = {};
+    for (const loc of activeLocales) {
+      labels[loc] = (localeLabels[loc] ?? '').trim();
+    }
+    labels[activeLocales[0] ?? 'en'] = label;
     props.onCommit({
       type: beginGroupTile.xlsformType,
       extras,
       name: slug,
       label,
+      labels,
       tileId: beginGroupTile.id,
     });
   }
@@ -338,6 +349,28 @@ export function QuestionTypePicker(props: Props) {
                 )}
               </span>
             </label>
+            {/* Audit P1-6 — a bilingual form gets one heading input per
+                 ADDITIONAL locale (the primary title above lands in the
+                 first active locale). Empty = a visible missing cell in
+                 the translator grid, never a stray label::en column. */}
+            {activeLocales.length > 1 && (
+              <fieldset className="qtype-labels-field">
+                <span className="qtype-labels-legend">Section heading in other languages</span>
+                {activeLocales.slice(1).map((loc) => (
+                  <label key={loc} className="qtype-locale-label">
+                    <span className="muted small">label::{loc}</span>
+                    <input
+                      value={localeLabels[loc] ?? ''}
+                      onChange={(e) =>
+                        setLocaleLabels((prev) => ({ ...prev, [loc]: e.target.value }))
+                      }
+                      placeholder="Add translation…"
+                      autoComplete="off"
+                    />
+                  </label>
+                ))}
+              </fieldset>
+            )}
             <label className="qtype-name-field">
               <input
                 type="checkbox"

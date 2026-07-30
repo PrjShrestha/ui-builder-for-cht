@@ -100,3 +100,25 @@ test('title trim: leading/trailing whitespace ignored for the empty check', () =
   assert.ok('error' in out);
   assert.match(out.error, /title or basename is required/);
 });
+
+/* ============ contact category preserves hyphens (audit P0-2) ============ */
+
+test('contact category: client basename with hyphens survives the defensive re-slug', () => {
+  // CHT contact forms MUST land as <type>-create.xlsx; the app-category
+  // slug folds `-` to `_`, which broke manual contact-form creation.
+  const out = resolveCreateFormBasename('Household — create', 'household-create', [], 'contact');
+  assert.ok(!('error' in out));
+  assert.equal(out.basename, 'household-create');
+});
+
+test('contact category: title-only path also derives with hyphens', () => {
+  const out = resolveCreateFormBasename('Household — create', undefined, [], 'contact');
+  assert.ok(!('error' in out));
+  assert.equal(out.basename, 'household-create');
+});
+
+test('app category (default): hyphens still fold to underscore', () => {
+  const out = resolveCreateFormBasename(undefined, 'patient-edit', []);
+  assert.ok(!('error' in out));
+  assert.equal(out.basename, 'patient_edit');
+});

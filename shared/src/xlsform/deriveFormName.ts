@@ -10,12 +10,26 @@
  * the tool derives the filename basename (`patient_age`); the human title
  * is what the CHT app UI shows.
  *
+ * HYPHENS (audit P0-2, docs/reviews/waves-1-3-audit-2026-07-30.md): CHT
+ * contact forms live on disk as `<type>-create.xlsx` / `<type>-edit.xlsx`
+ * (see `buildContactForm.ts` `contactFormBasename` and the batch
+ * generator's shape check). A slugify that folds every `-` to `_` makes
+ * that contract impossible to satisfy manually — the dialog's own
+ * placeholder "Household — create" would yield `household_create` and the
+ * form would never be picked up as a contact form. `allowHyphens: true`
+ * (used by the contact category) treats hyphens/en-/em-dashes in the
+ * title as segment separators: each segment slugifies independently and
+ * they re-join with `-`, so "Household — create" → `household-create`.
+ *
  * @param title      human-facing form title (may contain spaces, punctuation,
  *                   Unicode). Empty / all-non-ASCII inputs return `''` — the
  *                   caller decides whether to prompt or error.
  * @param existing   basenames already taken in this project. Case-sensitive
  *                   match; the returned name is never in the set (numeric
  *                   suffix `_2`, `_3`, … appended until unique).
+ * @param opts       `allowHyphens` — preserve hyphenated segments (contact
+ *                   forms). Default `false` (app forms; XLSForm `form_id`
+ *                   convention is underscore-only).
  * @returns `{ basename, collided }` — `collided:true` when a suffix was
  *          appended, so callers can surface "saved as `foo_2`" hints.
  */
@@ -26,8 +40,30 @@ export interface DerivedFormName {
   collided: boolean;
 }
 
-export function deriveFormName(title: string, existing: readonly string[] = []): DerivedFormName {
-  const slug = slugifyHierarchyId(title);
+export interface DeriveFormNameOptions {
+  /** Preserve `-`-separated segments (CHT contact-form naming: `<type>-create`). */
+  allowHyphens?: boolean;
+}
+
+/**
+ * Slugify preserving hyphenated segments: split on ASCII hyphen and the
+ * common typographic dashes (– —), slugify each side independently, and
+ * re-join non-empty segments with `-`.
+ */
+export function slugifyWithHyphens(title: string): string {
+  return title
+    .split(/[-–—]+/)
+    .map((seg) => slugifyHierarchyId(seg))
+    .filter(Boolean)
+    .join('-');
+}
+
+export function deriveFormName(
+  title: string,
+  existing: readonly string[] = [],
+  opts: DeriveFormNameOptions = {},
+): DerivedFormName {
+  const slug = opts.allowHyphens ? slugifyWithHyphens(title) : slugifyHierarchyId(title);
   if (!slug) return { basename: '', collided: false };
 
   const taken = new Set(existing);
