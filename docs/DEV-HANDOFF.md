@@ -17,7 +17,9 @@ A health-post officer is building the **real** Geriatric-care + ANC use case in 
 
 **⚡ STATUS 2026-07-30 (pm) — fix-queue P0 1–3 + P1 4–8 verified DONE in working-tree WIP (all gates green, 580/580 shared tests). ① COMMIT that WIP now (one commit; exclude `cht-district-form.png`). ② Then the PO-scoped follow-up batch: fix-queue items 9, 10, 11, 13, 15** (items 12 + 14 deferred — see the scope-decision block in the audit doc, which also resolves the two open decisions in 15: unhide `begin_repeat` + offer it from the `+ Section` entry; restore 409 for explicit-basename duplicates while the title path keeps auto-suffixing).
 
-The batch, one-line each (full detail in the audit doc §P2):
+**⚡ STATUS 2026-08-05 — both fix batches SHIPPED (`4ffa82d` P0 1–3 + P1 4–8, `cc76328` items 9/10/11/13/15). QA then audited the full geriatric use case for no-code buildability: verdict NO-narrowly (86 rows: 54 OK / 31 friction / 1 gap) — `docs/reviews/geriatric-nocode-buildability-2026-08-05.md`. ▶ NEXT (PO-greenlit): the 3-item batch in `docs/handoff-geriatric-blockers-2026-08-05.md`** — ① choice-value dropdowns in AppliesIfBuilder + RelevantRuleBuilder (flips 26 rows), ② display-image support (media column + upload route), ③ OR authoring in appliesIf. Then QA re-audit (expected YES) + the Playwright geriatric builder-as-driver spec.
+
+The earlier 9/10/11/13/15 batch, one-line each (SHIPPED in `cc76328`; full detail in the audit doc §P2):
 - **9** — lowercase both `existing` sets so a case-only filename collision (`Patient_Age.xlsx` vs "patient age") doesn't dead-end in a 409 on Windows.
 - **10** — age save-gate: block *invalid* (non-`isValidNumberLiteral`) values too, not just empty — `1e5` currently saves then demotes to raw on reload.
 - **11** — strengthen the "byte-identical" nested-groups test to a real cell-matrix compare (use the in-file `readSheetHeaders`/`readSheetRows`).
