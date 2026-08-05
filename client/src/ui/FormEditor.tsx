@@ -2438,6 +2438,11 @@ function MediaImageField(props: {
 }) {
   const setError = useApp((s) => s.setError);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  // Per-key refs, NOT DOM ids: every expanded row card renders this
+  // component, so `id="media-upload-media::image"` collided across cards
+  // and getElementById clicked the FIRST card's input — the filename
+  // landed on the wrong row (re-audit P0-3).
+  const fileInputs = useRef<Record<string, HTMLInputElement | null>>({});
   const keys = useMemo(() => {
     const localized = Object.keys(props.extras)
       .filter((k) => /^media::image::/i.test(k))
@@ -2483,7 +2488,9 @@ function MediaImageField(props: {
                 type="file"
                 accept="image/*"
                 style={{ display: 'none' }}
-                id={`media-upload-${key}`}
+                ref={(el) => {
+                  fileInputs.current[key] = el;
+                }}
                 onChange={(e) => {
                   const f = e.target.files?.[0];
                   if (f) void upload(key, f);
@@ -2494,7 +2501,7 @@ function MediaImageField(props: {
                 type="button"
                 className="link"
                 disabled={busyKey === key}
-                onClick={() => document.getElementById(`media-upload-${key}`)?.click()}
+                onClick={() => fileInputs.current[key]?.click()}
               >
                 {busyKey === key ? 'Uploading…' : 'Upload…'}
               </button>

@@ -71,7 +71,22 @@ export type AppliesIfRule =
       minOp: '>=' | '>';
       maxOp: '<=' | '<';
     }
-  | { kind: 'raw'; text: string };
+  /**
+   * Unclassifiable expression, preserved verbatim. `fromGuard` records
+   * WHERE it came from — that decides its polarity on serialize:
+   *   - `fromGuard: true` — lifted from an `if (…) return false` guard
+   *     condition; re-emitted in guard position (`if (text) { return
+   *     false; }`), text unchanged.
+   *   - absent/false — positive content (a `return …` conjunct, the
+   *     whole-body fallback, or a UI-added "+ raw JS" row); re-emitted
+   *     positively (verbatim body for statement-shaped text, else a
+   *     `return …` conjunct).
+   * Inferring this from `guardGroups === undefined` was the P0 re-audit
+   * regression (geriatric re-audit 2026-08-05): solo guards carry an
+   * undefined group id, so their raw conditions re-emitted as positive
+   * `return …;` — silently inverted, valid JS, fail-open.
+   */
+  | { kind: 'raw'; text: string; fromGuard?: boolean };
 
 /** ms per unit for field_age. `months` is 30.4375 d — matches how CHT's
  *  Utils.now / addDate treat month rounding. */
@@ -250,7 +265,12 @@ function extractRules(body: string): {
     while (k < body.length && /\s/.test(body[k] ?? '')) k++;
     if (hasBrace && body[k] === '}') k++;
 
-    // Successfully matched a guard. Split the condition on top-level ||.
+    // Successfully matched a guard. Every raw produced from here on is
+    // GUARD-ORIGIN: mark it explicitly so the serializer re-emits it in
+    // guard position with unchanged polarity (P0-1, re-audit 2026-08-05).
+    const markGuardRaw = (r: AppliesIfRule): AppliesIfRule =>
+      r.kind === 'raw' ? { ...r, fromGuard: true } : r;
+    // Split the condition on top-level ||.
     const subs = splitOrOperands(cond);
     if (subs.length > 1) {
       // `if (A || B) return false` — AND of the inverted positives.
@@ -258,7 +278,7 @@ function extractRules(body: string): {
       const groupId = nextGroup++;
       for (const op of subs) {
         const rule = classifySimple(op);
-        rules.push(invertGuardRule(rule));
+        rules.push(markGuardRaw(invertGuardRule(rule)));
         guardGroups.push(groupId);
         orGroups.push(undefined);
       }
@@ -278,7 +298,7 @@ function extractRules(body: string): {
           orGroups.push(orId);
         }
       } else {
-        rules.push(invertGuardRule(classifySimple(cond)));
+        rules.push(markGuardRaw(invertGuardRule(classifySimple(cond))));
         guardGroups.push(undefined);
         orGroups.push(undefined);
       }
@@ -699,20 +719,30 @@ export function serializeAppliesIf(parsed: ParsedAppliesIf): string {
     }
   });
 
-  // UNGROUPED raw rules are POSITIVE content, not guards. Emitting them
-  // through the guard path both inverted their meaning (`if (raw) return
-  // false` fires when raw is TRUE) and produced invalid JS for
-  // statement-shaped raws (`if (return true;) …`). Raw rules inside a
-  // guardGroup are different — those were lifted FROM a guard condition
-  // and stay in guard position.
+  // Raw rules carry their polarity in `fromGuard` (P0-1, re-audit
+  // 2026-08-05 — inferring it from `guardGroups === undefined` inverted
+  // solo raw guards): guard-origin raws re-emit in guard position with
+  // unchanged text; POSITIVE raws (return conjuncts, whole-body fallback,
+  // UI "+ raw JS" rows) re-emit as body/return content — never as a
+  // guard, which would both invert their meaning and produce invalid JS
+  // for statement-shaped text (`if (return true;) …`).
   const bodyRaws: string[] = [];
   const exprRaws: string[] = [];
   const STATEMENT_RE = /(^|[^\w$])return\b|;/;
+  // P0-2 — operands joined into a compound guard must parenthesize any
+  // operand carrying the OTHER operator at top level, or precedence
+  // silently rewrites the logic (`X < 84 || X > 90 && …`). Operands
+  // without mixed precedence stay unwrapped so existing sources remain
+  // byte-stable on no-op open+save.
+  const parenFor = (g: string, join: '&&' | '||'): string => {
+    const other = join === '&&' ? splitOrOperands(g) : splitAnd(g);
+    return other.length > 1 ? `(${g})` : g;
+  };
 
   for (const group of groups) {
     if (group.orId === undefined && group.groupId === undefined) {
       for (const rule of group.rules) {
-        if (rule.kind === 'raw') {
+        if (rule.kind === 'raw' && !rule.fromGuard) {
           const t = rule.text.trim();
           if (t === '') continue;
           // Statement-shaped raw (whole-body fallback, hand-typed
@@ -730,9 +760,9 @@ export function serializeAppliesIf(parsed: ParsedAppliesIf): string {
     const guards = group.rules.map(ruleToGuardSource).filter((g): g is string => Boolean(g));
     if (guards.length === 0) continue;
     if (group.orId !== undefined && guards.length > 1) {
-      lines.push(`  if (${guards.join(' && ')}) { return false; }`);
+      lines.push(`  if (${guards.map((g) => parenFor(g, '&&')).join(' && ')}) { return false; }`);
     } else if (group.groupId !== undefined && guards.length > 1) {
-      lines.push(`  if (${guards.join(' || ')}) { return false; }`);
+      lines.push(`  if (${guards.map((g) => parenFor(g, '||')).join(' || ')}) { return false; }`);
     } else {
       for (const guard of guards) {
         lines.push(`  if (${guard}) { return false; }`);

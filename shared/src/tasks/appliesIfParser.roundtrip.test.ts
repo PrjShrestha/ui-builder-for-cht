@@ -478,6 +478,10 @@ test('&&-guard with an unclassifiable conjunct stays ONE raw guard (no partial l
     "someCustomCheck(report).status !== 'ok' && Utils.getField(report, 'x') !== 'yes'",
     'the whole condition is preserved in one raw rule — no partial lift',
   );
+  // P0-1: with guard origin recorded explicitly, this raw guard now
+  // SERIALIZES byte-stable too (the earlier version of this test could
+  // not assert that — the exact gap the re-audit called out).
+  assert.equal(serializeAppliesIf(p), src);
 });
 
 test('positive `return A || B` lifts into an OR group (serializes to the && guard)', () => {
@@ -592,4 +596,106 @@ test('REGRESSION — helper guard round-trips without inverting (silent corrupti
   const pNot = parseAppliesIf(srcNot);
   if (pNot.rules[0]?.kind === 'helper') assert.equal(pNot.rules[0].negated, true);
   assert.equal(serializeAppliesIf(pNot), srcNot);
+});
+
+/* ========= P0-1/P0-2 (re-audit 2026-08-05) — guard-origin polarity + parens ========= */
+/* Every test here CALLS THE SERIALIZER — the prior regression shipped     */
+/* because the one guard-origin-raw test never did.                        */
+
+test('P0-1 — solo raw guard round-trips in guard position, byte-stable (was: inverted fail-open)', () => {
+  // The re-audit's reproducer: a real CHT idiom that classifies as raw.
+  // The 3fa6d39 serializer re-emitted it as `return report.form !== …;`
+  // — valid JS, opposite meaning, reachable with zero edits.
+  const src = `function (contact, report) {
+  if (report.form !== 'pregnancy') { return false; }
+  return true;
+}`;
+  const p = parseAppliesIf(src);
+  assert.equal(p.rules[0]?.kind, 'raw');
+  if (p.rules[0]?.kind === 'raw') assert.equal(p.rules[0].fromGuard, true);
+  assert.equal(serializeAppliesIf(p), src);
+  // Fixpoint too.
+  assert.equal(serializeAppliesIf(parseAppliesIf(serializeAppliesIf(p))), src);
+});
+
+test('P0-1 — classified guard + raw guard mix is byte-stable (the re-audit regression case)', () => {
+  const src = `function (contact, report) {
+  if (!isAlive(contact.contact)) { return false; }
+  if (report.fields.flag === 'x') { return false; }
+  return true;
+}`;
+  assert.equal(serializeAppliesIf(parseAppliesIf(src)), src);
+});
+
+test('P0-1 — two adjacent raw guards (lumbini immunization shape) are byte-stable', () => {
+  const src = `function (contact, report) {
+  if (!childDob.isValid) { return false; }
+  if (childAgeInYears > 5) { return false; }
+  return true;
+}`;
+  const p = parseAppliesIf(src);
+  assert.equal(p.rules.length, 2);
+  assert.ok(p.rules.every((r) => r.kind === 'raw'));
+  assert.equal(serializeAppliesIf(p), src);
+});
+
+test('P0-1 — positive raw return conjunct stays positive (no over-correction)', () => {
+  const src = `function (contact, report) {
+  return report.fields.x === 'y';
+}`;
+  const p = parseAppliesIf(src);
+  assert.equal(p.rules[0]?.kind, 'raw');
+  if (p.rules[0]?.kind === 'raw') assert.notEqual(p.rules[0].fromGuard, true);
+  assert.equal(serializeAppliesIf(p), src);
+});
+
+test('P0-2 — OR-joining a field_age BETWEEN parenthesizes its || guard inside the && join', () => {
+  const authored = {
+    params: ['contact', 'report'],
+    rules: [
+      {
+        kind: 'field_age_between' as const,
+        source: 'report' as const,
+        field: 'lmp_date',
+        unit: 'days' as const,
+        min: 84,
+        max: 90,
+        minOp: '>=' as const,
+        maxOp: '<=' as const,
+      },
+      { kind: 'report_field' as const, field: 'x', op: '===' as const, value: 'yes' },
+    ],
+    guardGroups: [undefined, undefined],
+    orGroups: [0, 0],
+    hasRawFallback: false,
+    body: '',
+  };
+  const out = serializeAppliesIf(authored);
+  // Without parens this emitted `X < 84 || X > 90 && Y !== 'yes'`, which
+  // JS precedence reads as `X < 84 || (X > 90 && …)` — mangled logic.
+  assert.match(out, /if \(\(.+ < 84 \|\| .+ > 90\) && Utils\.getField\(report, 'x'\) !== 'yes'\) \{ return false; \}/);
+  // Re-parse falls back to a raw guard (mixed nesting is outside the
+  // model) — but it must be LOSSLESS and a serialize fixpoint.
+  const s2 = serializeAppliesIf(parseAppliesIf(out));
+  assert.equal(s2, out);
+});
+
+test('P0-2 — || guard join parenthesizes a raw operand carrying top-level &&', () => {
+  const src = `function (contact, report) {
+  if (a.x === 1 && a.y === 2 || !isAlive(contact.contact)) { return false; }
+  return true;
+}`;
+  const s1 = serializeAppliesIf(parseAppliesIf(src));
+  assert.match(s1, /if \(\(a\.x === 1 && a\.y === 2\) \|\| !isAlive\(contact\.contact\)\) \{ return false; \}/);
+  // Semantics preserved (parens pin what precedence already meant), and
+  // the parenthesized form is a fixpoint.
+  assert.equal(serializeAppliesIf(parseAppliesIf(s1)), s1);
+});
+
+test('P0-2 — plain multi-|| guards stay unwrapped (byte-stability of existing sources)', () => {
+  const src = `function (contact, report) {
+  if (!isTaskUser(user) || !isAlive(contact.contact) || hasError(report)) { return false; }
+  return true;
+}`;
+  assert.equal(serializeAppliesIf(parseAppliesIf(src)), src);
 });
