@@ -92,8 +92,28 @@ export interface ParsedAppliesIf {
    * re-grouped back into that shape on serialize — so opening + saving a
    * helper without edits produces a no-op diff. Rules added by the UI get
    * `undefined` and serialize as their own `if(...) return false` line.
+   *
+   * SEMANTICS NOTE: a `||`-joined GUARD is an AND of the displayed
+   * positive rules — the task applies iff every guard alternative is
+   * false. Formatting metadata only; all guardGroup rules combine with
+   * AND like everything else.
    */
   guardGroups: Array<number | undefined>;
+  /**
+   * Parallel to `rules` — the OR-authoring channel (geriatric handoff §3).
+   * Rules sharing the same non-undefined id are OR-COMBINED among
+   * themselves (and AND-combined with the rest): the task applies when
+   * ANY of them holds. Serialized as `if (!A && !B) { return false; }` —
+   * the inverted guards joined with `&&`, which is exactly ¬(A ∨ B).
+   *
+   * (The handoff sketched reusing the `if (A || B)` guard shape, but that
+   * shape is an AND of positives — see the guardGroups note above. A
+   * correct OR needs the `&&` guard; the parser lifts that shape back
+   * into the same OR group, so parse→serialize→parse is stable.)
+   *
+   * A rule is never in both a guardGroup and an orGroup.
+   */
+  orGroups: Array<number | undefined>;
   /** True if any rule fell back to raw — UI should offer a "Raw" tab. */
   hasRawFallback: boolean;
   /** Original source body (between the function's braces). */
@@ -129,14 +149,15 @@ export function parseAppliesIf(source: string): ParsedAppliesIf {
       params: [],
       rules: [{ kind: 'raw', text: trimmed }],
       guardGroups: [undefined],
+      orGroups: [undefined],
       hasRawFallback: true,
       body: trimmed,
     };
   }
 
-  const { rules, guardGroups } = extractRules(body);
+  const { rules, guardGroups, orGroups } = extractRules(body);
   const hasRawFallback = rules.some((r) => r.kind === 'raw');
-  return { params, rules, guardGroups, hasRawFallback, body };
+  return { params, rules, guardGroups, orGroups, hasRawFallback, body };
 }
 
 function splitParams(s: string): string[] {
@@ -151,10 +172,16 @@ function splitParams(s: string): string[] {
  * Anything we don't recognize lands as a single 'raw' rule with the rest
  * of the body so we never silently drop logic.
  */
-function extractRules(body: string): { rules: AppliesIfRule[]; guardGroups: Array<number | undefined> } {
+function extractRules(body: string): {
+  rules: AppliesIfRule[];
+  guardGroups: Array<number | undefined>;
+  orGroups: Array<number | undefined>;
+} {
   const rules: AppliesIfRule[] = [];
   const guardGroups: Array<number | undefined> = [];
+  const orGroups: Array<number | undefined> = [];
   let nextGroup = 0;
+  let nextOrGroup = 0;
   // Walk the body finding `if (cond) return false;` (with balanced parens),
   // accumulating leftover content into `unprocessed`.
   let i = 0;
@@ -225,13 +252,36 @@ function extractRules(body: string): { rules: AppliesIfRule[]; guardGroups: Arra
 
     // Successfully matched a guard. Split the condition on top-level ||.
     const subs = splitOrOperands(cond);
-    // Use a group id only when there are 2+ alternatives — solo guards keep
-    // `undefined` so re-adding a sibling rule serializes as its own `if(...)`.
-    const groupId = subs.length > 1 ? nextGroup++ : undefined;
-    for (const op of subs) {
-      const rule = classifySimple(op);
-      rules.push(invertGuardRule(rule));
-      guardGroups.push(groupId);
+    if (subs.length > 1) {
+      // `if (A || B) return false` — AND of the inverted positives.
+      // Group id records the source formatting for a no-op re-serialize.
+      const groupId = nextGroup++;
+      for (const op of subs) {
+        const rule = classifySimple(op);
+        rules.push(invertGuardRule(rule));
+        guardGroups.push(groupId);
+        orGroups.push(undefined);
+      }
+    } else {
+      // No top-level `||` — check for the OR-group shape (geriatric §3):
+      // `if (!A && !B) return false` ≡ "A OR B". Lift it only when EVERY
+      // conjunct classifies (a raw conjunct can't be inverted back on
+      // serialize); otherwise the whole condition stays one raw guard,
+      // exactly as before this feature.
+      const andSubs = splitAnd(cond);
+      const classified = andSubs.map(classifySimple);
+      if (andSubs.length > 1 && classified.every((r) => r.kind !== 'raw')) {
+        const orId = nextOrGroup++;
+        for (const r of classified) {
+          rules.push(invertGuardRule(r));
+          guardGroups.push(undefined);
+          orGroups.push(orId);
+        }
+      } else {
+        rules.push(invertGuardRule(classifySimple(cond)));
+        guardGroups.push(undefined);
+        orGroups.push(undefined);
+      }
     }
     i = k;
   }
@@ -248,8 +298,25 @@ function extractRules(body: string): { rules: AppliesIfRule[]; guardGroups: Arra
   if (returnExpr) {
     const subs = splitAnd(returnExpr);
     for (const s of subs) {
+      // A conjunct with top-level `||` (`return A || B && …`) is a
+      // positive OR — lift it into an OR group when every alternative
+      // classifies (geriatric §3); otherwise raw, as before.
+      const orSubs = splitOrOperands(s);
+      if (orSubs.length > 1) {
+        const classified = orSubs.map(classifySimple);
+        if (classified.every((r) => r.kind !== 'raw')) {
+          const orId = nextOrGroup++;
+          for (const r of classified) {
+            rules.push(r);
+            guardGroups.push(undefined);
+            orGroups.push(orId);
+          }
+          continue;
+        }
+      }
       rules.push(classifySimple(s));
       guardGroups.push(undefined);
+      orGroups.push(undefined);
     }
   }
 
@@ -257,10 +324,11 @@ function extractRules(body: string): { rules: AppliesIfRule[]; guardGroups: Arra
   if (rules.length === 0 && body.trim().length > 0) {
     rules.push({ kind: 'raw', text: body.trim() });
     guardGroups.push(undefined);
+    orGroups.push(undefined);
   }
   // 4) Fuse adjacent `field_age` min/max pairs into a single `field_age_between`
   //    row so open+save doesn't split a between-range into two lines.
-  return fuseFieldAgeBetween(rules, guardGroups);
+  return fuseFieldAgeBetween(rules, guardGroups, orGroups);
 }
 
 /**
@@ -278,9 +346,15 @@ function extractRules(body: string): { rules: AppliesIfRule[]; guardGroups: Arra
 function fuseFieldAgeBetween(
   rules: AppliesIfRule[],
   guardGroups: Array<number | undefined>,
-): { rules: AppliesIfRule[]; guardGroups: Array<number | undefined> } {
+  orGroups: Array<number | undefined>,
+): {
+  rules: AppliesIfRule[];
+  guardGroups: Array<number | undefined>;
+  orGroups: Array<number | undefined>;
+} {
   const outRules: AppliesIfRule[] = [];
   const outGroups: Array<number | undefined> = [];
+  const outOrGroups: Array<number | undefined> = [];
   const MIN_OPS = new Set(['>=', '>']);
   const MAX_OPS = new Set(['<=', '<']);
   let i = 0;
@@ -296,7 +370,12 @@ function fuseFieldAgeBetween(
       a.source === b.source &&
       a.field === b.field &&
       a.unit === b.unit &&
-      (ga === gb || (ga === undefined && gb === undefined))
+      (ga === gb || (ga === undefined && gb === undefined)) &&
+      // NEVER fuse OR-joined rules (geriatric §3): a between is an AND
+      // range; two OR'd field_age rules ("< 84 OR > 90") are its
+      // complement — fusing would silently invert the author's logic.
+      orGroups[i] === undefined &&
+      orGroups[i + 1] === undefined
     ) {
       const aIsMin = MIN_OPS.has(a.op);
       const bIsMax = MAX_OPS.has(b.op);
@@ -314,6 +393,7 @@ function fuseFieldAgeBetween(
           maxOp: b.op as '<=' | '<',
         });
         outGroups.push(ga);
+        outOrGroups.push(undefined);
         i += 2;
         continue;
       }
@@ -329,15 +409,17 @@ function fuseFieldAgeBetween(
           maxOp: a.op as '<=' | '<',
         });
         outGroups.push(ga);
+        outOrGroups.push(undefined);
         i += 2;
         continue;
       }
     }
     outRules.push(a);
     outGroups.push(ga);
+    outOrGroups.push(orGroups[i]);
     i++;
   }
-  return { rules: outRules, guardGroups: outGroups };
+  return { rules: outRules, guardGroups: outGroups, orGroups: outOrGroups };
 }
 
 /** Splits `a || b || c` at top level; honors parens. */
@@ -589,22 +671,67 @@ export function serializeAppliesIf(parsed: ParsedAppliesIf): string {
 
   // Group adjacent rules that share a non-undefined guardGroup id back into
   // a single `if (A || B || ...) return false` so original sources don't
-  // diff just from open+save.
-  const groups: Array<{ groupId: number | undefined; rules: AppliesIfRule[] }> = [];
+  // diff just from open+save. OR groups (geriatric §3) take precedence:
+  // adjacent rules sharing an orGroup id emit ONE `if (!A && !B) { return
+  // false; }` guard — ¬(A ∨ B) — which the parser lifts back into the
+  // same OR group, so authoring round-trips by construction.
+  const groups: Array<{
+    groupId: number | undefined;
+    orId: number | undefined;
+    rules: AppliesIfRule[];
+  }> = [];
   parsed.rules.forEach((rule, idx) => {
     const gid = parsed.guardGroups?.[idx];
+    const oid = parsed.orGroups?.[idx];
     const last = groups[groups.length - 1];
-    if (gid !== undefined && last && last.groupId === gid) {
+    if (oid !== undefined && last && last.orId === oid) {
+      last.rules.push(rule);
+    } else if (
+      oid === undefined &&
+      gid !== undefined &&
+      last &&
+      last.orId === undefined &&
+      last.groupId === gid
+    ) {
       last.rules.push(rule);
     } else {
-      groups.push({ groupId: gid, rules: [rule] });
+      groups.push({ groupId: gid, orId: oid, rules: [rule] });
     }
   });
 
+  // UNGROUPED raw rules are POSITIVE content, not guards. Emitting them
+  // through the guard path both inverted their meaning (`if (raw) return
+  // false` fires when raw is TRUE) and produced invalid JS for
+  // statement-shaped raws (`if (return true;) …`). Raw rules inside a
+  // guardGroup are different — those were lifted FROM a guard condition
+  // and stay in guard position.
+  const bodyRaws: string[] = [];
+  const exprRaws: string[] = [];
+  const STATEMENT_RE = /(^|[^\w$])return\b|;/;
+
   for (const group of groups) {
+    if (group.orId === undefined && group.groupId === undefined) {
+      for (const rule of group.rules) {
+        if (rule.kind === 'raw') {
+          const t = rule.text.trim();
+          if (t === '') continue;
+          // Statement-shaped raw (whole-body fallback, hand-typed
+          // `return …;`) is re-emitted verbatim as body; a bare
+          // expression joins the final positive return.
+          if (STATEMENT_RE.test(t)) bodyRaws.push(t);
+          else exprRaws.push(t);
+          continue;
+        }
+        const g = ruleToGuardSource(rule);
+        if (g) lines.push(`  if (${g}) { return false; }`);
+      }
+      continue;
+    }
     const guards = group.rules.map(ruleToGuardSource).filter((g): g is string => Boolean(g));
     if (guards.length === 0) continue;
-    if (group.groupId !== undefined && guards.length > 1) {
+    if (group.orId !== undefined && guards.length > 1) {
+      lines.push(`  if (${guards.join(' && ')}) { return false; }`);
+    } else if (group.groupId !== undefined && guards.length > 1) {
       lines.push(`  if (${guards.join(' || ')}) { return false; }`);
     } else {
       for (const guard of guards) {
@@ -613,12 +740,12 @@ export function serializeAppliesIf(parsed: ParsedAppliesIf): string {
     }
   }
 
-  const anyRecognized = parsed.rules.some((r) => r.kind !== 'raw');
-  if (!anyRecognized) {
-    for (const r of parsed.rules) {
-      if (r.kind === 'raw') lines.push(`  ${r.text}`);
-    }
-  } else {
+  for (const b of bodyRaws) {
+    for (const line of b.split('\n')) lines.push(`  ${line.trim() === '' ? '' : line.trim()}`);
+  }
+  if (exprRaws.length > 0) {
+    lines.push(`  return ${exprRaws.join(' && ')};`);
+  } else if (!bodyRaws.some((b) => /(^|[^\w$])return\b/.test(b))) {
     lines.push('  return true;');
   }
   lines.push('}');
@@ -639,7 +766,14 @@ function ruleToGuardSource(rule: AppliesIfRule): string | null {
       // Same shape as is_muted — guard exits when the error IS present.
       return rule.negated ? `hasError(report)` : `!hasError(report)`;
     case 'helper':
-      return rule.negated ? `!${rule.name}(${rule.args})` : `${rule.name}(${rule.args})`;
+      // Guard form is the INVERSE of the positive rule, same as is_alive:
+      // positive "helper must hold" (negated=false) → exit when it
+      // doesn't → `!helper(...)`. The previous mapping emitted the
+      // positive form here, so a `if (!isActivePregnancy(...)) return
+      // false` guard round-tripped to `if (isActivePregnancy(...))` —
+      // silently inverting the task on a no-op open+save (found by the
+      // geriatric §3 serializer work, 2026-08-05).
+      return rule.negated ? `${rule.name}(${rule.args})` : `!${rule.name}(${rule.args})`;
     case 'contact_field': {
       const cmp = invertOp(rule.op);
       return `contact.contact.${rule.field} ${cmp} ${fmtCmpValue(cmp, rule.value)}`;

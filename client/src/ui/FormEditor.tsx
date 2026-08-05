@@ -71,6 +71,7 @@ import {
   type Clause,
   type ClauseOp,
   type ConditionColumn,
+  type ReportFieldChoice,
   type Subgroup,
 } from '@cht-ui/shared';
 import { api } from '../api.js';
@@ -332,6 +333,7 @@ export function FormEditor({ formId }: { formId: string }) {
             onRevealConsumed={() => setRevealRowId(null)}
             onRequestReveal={setRevealRowId}
             formCategory={formId.startsWith('contact:') ? 'contact' : 'app'}
+            formId={formId}
           />
           {showPreview && (
             <div className="preview-pane">
@@ -508,6 +510,10 @@ function SurveyTab(props: {
    *  notably the `lineage_block` tile that is app-only at v1
    *  (docs/plans/hierarchy-block-generator.md §4.8 + §8.7). */
   formCategory: 'app' | 'contact';
+  /** Full form id (`app:iha_assessment`) — the media upload route needs
+   *  category + basename to target `forms/<cat>/<basename>-media/`
+   *  (geriatric §2). */
+  formId: string;
 }) {
   const { form, patch, violationsByRow, revealRowId, onRevealConsumed } = props;
   const undo = props.undo;
@@ -578,6 +584,15 @@ function SurveyTab(props: {
   const fieldChoices = useMemo(
     () => buildFieldChoices(form.survey, form.choices, contactFieldChoices),
     [form.survey, form.choices, contactFieldChoices],
+  );
+  // Geriatric §1 — the same map WITH labels ({name, label} per choice),
+  // for the RelevantRuleBuilder's value dropdowns ("label shown, name
+  // stored"). Form-local selects only — contact-injected fields come
+  // name-only from the server scan and keep the plain-name display via
+  // `fieldChoices` above.
+  const fieldChoiceOptions = useMemo(
+    () => buildFieldChoiceOptions(form.survey, form.choices, form.surveyHeaders.labelLocales),
+    [form.survey, form.choices, form.surveyHeaders.labelLocales],
   );
 
   // Map field name → FieldKind for the type-aware soft filter (plan v0.3).
@@ -1195,7 +1210,9 @@ function SurveyTab(props: {
           violations={violationsByRow.get(row.rowId) ?? []}
           fieldOptions={earlierFields}
           fieldChoices={fieldChoices}
+          fieldChoiceOptions={fieldChoiceOptions}
           fieldKinds={fieldKinds}
+          formId={props.formId}
           inputContactFields={props.inputContactFields}
           contextKeys={props.contextKeys}
           form={form}
@@ -1916,6 +1933,11 @@ function SurveyRowCard(props: {
   violations: OrderingViolation[];
   fieldOptions: string[];
   fieldChoices: Record<string, string[]>;
+  /** Geriatric §1 — same map with labels, for RelevantRuleBuilder's value
+   *  dropdowns (label shown, name stored). */
+  fieldChoiceOptions: Record<string, ReportFieldChoice[]>;
+  /** Geriatric §2 — full form id for the media-upload route. */
+  formId: string;
   /** Coarse FieldKind per field name, for type-aware op/field soft-filter
    *  (plan v0.3). Names absent from this map are treated as 'unknown' at
    *  the picker (always-pass) — never silently mis-bucketed. */
@@ -2145,6 +2167,7 @@ function SurveyRowCard(props: {
               value={row.extras['relevant'] ?? ''}
               onChange={(v) => setExtra('relevant', v)}
               fieldOptions={props.fieldOptions}
+              fieldChoiceOptions={props.fieldChoiceOptions}
               inputContactFields={props.inputContactFields}
               contextKeys={props.contextKeys}
             />
@@ -2167,6 +2190,7 @@ function SurveyRowCard(props: {
               value={row.extras['constraint'] ?? ''}
               onChange={(v) => setExtra('constraint', v)}
               fieldOptions={props.fieldOptions}
+              fieldChoiceOptions={props.fieldChoiceOptions}
               inputContactFields={props.inputContactFields}
               contextKeys={props.contextKeys}
             />
@@ -2179,6 +2203,7 @@ function SurveyRowCard(props: {
                 value={row.extras['choice_filter'] ?? ''}
                 onChange={(v) => setExtra('choice_filter', v)}
                 fieldOptions={props.fieldOptions}
+              fieldChoiceOptions={props.fieldChoiceOptions}
                 inputContactFields={props.inputContactFields}
                 contextKeys={props.contextKeys}
               />
@@ -2187,6 +2212,11 @@ function SurveyRowCard(props: {
               value={row.extras['appearance'] ?? ''}
               rowType={row.type}
               onChange={(v) => setExtra('appearance', v)}
+            />
+            <MediaImageField
+              formId={props.formId}
+              extras={row.extras}
+              setExtra={setExtra}
             />
             <ExpressionField
               label="default"
@@ -2385,6 +2415,103 @@ function NameInput(props: {
 }
 
 /**
+ * Geriatric §2 — display-image support (`media::image`). The IHA
+ * chair-rise instructional illustration (audit's only hard GAP) needs a
+ * static image shown WITH a question/note — the Photo tile is capture,
+ * not display. This control surfaces the `media::image` extras cell with
+ * an Upload…/Clear pair: the file lands in the CHT convention folder
+ * `forms/<category>/<basename>-media/` (a sibling of the .xlsx that
+ * `cht-conf upload-app-forms` attaches automatically) and the cell holds
+ * the bare filename. Round-trip is free: `media::image` is an ordinary
+ * extras column the parser already preserves verbatim, and the serializer
+ * appends new extras columns on save.
+ *
+ * Per-locale variants: an XLSForm may carry `media::image::<lang>`
+ * columns (they parse as separate extras keys, not label-family). Any
+ * such key already present on the row gets its own control; NEW images
+ * default to the single un-localized `media::image` column.
+ */
+function MediaImageField(props: {
+  formId: string;
+  extras: Record<string, string>;
+  setExtra: (key: string, value: string) => void;
+}) {
+  const setError = useApp((s) => s.setError);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const keys = useMemo(() => {
+    const localized = Object.keys(props.extras)
+      .filter((k) => /^media::image::/i.test(k))
+      .sort();
+    return ['media::image', ...localized];
+  }, [props.extras]);
+
+  async function upload(key: string, file: File) {
+    setBusyKey(key);
+    try {
+      const res = await api.uploadFormMedia(props.formId, file);
+      props.setExtra(key, res.filename);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  return (
+    <>
+      {keys.map((key) => {
+        const value = props.extras[key] ?? '';
+        return (
+          <label key={key} className="expr-field">
+            <span className="expr-label">
+              <strong>Image{key === 'media::image' ? '' : ` (${key.split('::')[2]})`}</strong>
+              <code className="raw-col-tag" title={`Raw XLSForm column: ${key}`}>
+                {key}
+              </code>
+              <em className="muted">
+                {' '}— picture shown with this question (e.g. an instructional illustration)
+              </em>
+            </span>
+            <span className="row gap" style={{ alignItems: 'center' }}>
+              <input
+                value={value}
+                onChange={(e) => props.setExtra(key, e.target.value)}
+                placeholder="filename.png (in the form's -media folder)"
+                style={{ flex: 1 }}
+              />
+              <input
+                type="file"
+                accept="image/*"
+                style={{ display: 'none' }}
+                id={`media-upload-${key}`}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void upload(key, f);
+                  e.target.value = '';
+                }}
+              />
+              <button
+                type="button"
+                className="link"
+                disabled={busyKey === key}
+                onClick={() => document.getElementById(`media-upload-${key}`)?.click()}
+              >
+                {busyKey === key ? 'Uploading…' : 'Upload…'}
+              </button>
+              {value && (
+                <button type="button" className="link danger" onClick={() => props.setExtra(key, '')}>
+                  Clear
+                </button>
+              )}
+            </span>
+          </label>
+        );
+      })}
+    </>
+  );
+}
+
+/**
  * Wrapper for the `appearance` column: text input + "Pick widgets" button
  * that opens AppearancePicker. The picker is a catalog of CHT and Enketo
  * appearance tokens; multiple tokens can be combined (space-separated).
@@ -2439,6 +2566,9 @@ function ExpressionField(props: {
   onChange: (v: string) => void;
   /** When set, shows a "Build" button that opens the visual rule builder. */
   fieldOptions?: string[];
+  /** Geriatric §1 — per-field {name, label} choices for the rule
+   *  builder's value dropdowns. */
+  fieldChoiceOptions?: Record<string, ReportFieldChoice[]>;
   /** Tier 1.5 — contact input field list for the calc builder's
    *  "Contact input field" reference kind. Forwarded to CalculationBuilder. */
   inputContactFields?: string[];
@@ -2493,6 +2623,7 @@ function ExpressionField(props: {
           column={props.label}
           value={props.value}
           fieldOptions={props.fieldOptions}
+          fieldChoiceOptions={props.fieldChoiceOptions}
           inputContactFields={props.inputContactFields}
           contextKeys={props.contextKeys}
           onCancel={() => setShowBuilder(false)}
@@ -2535,6 +2666,46 @@ function ExpressionField(props: {
  * Fields that resolve nowhere are absent from the result so the builder
  * falls back to the free-text input (the existing safety net).
  */
+/**
+ * Geriatric §1 — like `buildFieldChoices`, but keeps the display label:
+ * field name → ordered `{name, label}` list for this form's own
+ * select_one / select_multiple rows. Label = first non-empty label in the
+ * form's locale order, falling back to the choice name (mirrors
+ * `extractReportFieldInfos`'s label pick in shared).
+ */
+function buildFieldChoiceOptions(
+  survey: SurveyRow[],
+  choices: ChoiceRow[],
+  locales: string[],
+): Record<string, ReportFieldChoice[]> {
+  const listToOptions = new Map<string, ReportFieldChoice[]>();
+  for (const c of choices) {
+    if (!c.list_name || !c.name) continue;
+    let label = '';
+    for (const loc of locales) {
+      const v = c.labels[loc];
+      if (v && v.trim() !== '') {
+        label = v;
+        break;
+      }
+    }
+    if (!label) {
+      label = Object.values(c.labels).find((v) => v && v.trim() !== '') ?? c.name;
+    }
+    if (!listToOptions.has(c.list_name)) listToOptions.set(c.list_name, []);
+    listToOptions.get(c.list_name)!.push({ name: c.name, label });
+  }
+  const out: Record<string, ReportFieldChoice[]> = {};
+  for (const r of survey) {
+    if (!r.name) continue;
+    const m = r.type.trim().match(SELECT_TYPE_RE);
+    if (!m) continue;
+    const opts = listToOptions.get(m[2]!);
+    if (opts && opts.length > 0) out[r.name] = opts;
+  }
+  return out;
+}
+
 function buildFieldChoices(
   survey: SurveyRow[],
   choices: ChoiceRow[],

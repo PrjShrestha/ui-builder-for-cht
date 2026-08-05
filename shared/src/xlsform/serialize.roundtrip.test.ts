@@ -337,6 +337,37 @@ test('Wave 2 §3b — combined shape (2-deep, outer field-list, friendly labels)
   await assertSheetsCellIdentical(buf1, buf2);
 });
 
+/* ==== 5b. Geriatric §2 — `media::image` extras column round-trips ==== */
+
+test('geriatric §2 — media::image cell (incl. per-locale variant) round-trips byte-stable', async () => {
+  // Display images are just an extras column: the parser preserves the
+  // cell verbatim in `extras`, the serializer appends the column when
+  // it's new. Pinned explicitly because the Image control (FormEditor's
+  // MediaImageField) relies on this being free.
+  {
+    const authored: SurveyRow[] = [
+      row({
+        rowId: 'n1',
+        type: 'note',
+        name: 'chair_rise_note',
+        labels: { en: 'Chair rise — see illustration' },
+        extras: { 'media::image': 'chair-rise.png', 'media::image::ne': 'chair-rise-ne.png' },
+      }),
+      row({ rowId: 'q1', type: 'integer', name: 'chair_rises', labels: { en: 'How many?' } }),
+    ];
+    const form = buildForm(authored);
+    const buf1 = await serializeXlsForm(form);
+    const reloaded1 = await parseXlsForm(buf1);
+    const buf2 = await serializeXlsForm(reloaded1);
+
+    const note = reloaded1.survey.find((r) => r.name === 'chair_rise_note')!;
+    assert.equal(note.extras['media::image'], 'chair-rise.png');
+    assert.equal(note.extras['media::image::ne'], 'chair-rise-ne.png');
+    // Cell-matrix fixpoint (audit item 11 oracle).
+    await assertSheetsCellIdentical(buf1, buf2);
+  }
+});
+
 /* ============= 6. Add-language: appending `ne` to a single-locale form ============= */
 
 /**

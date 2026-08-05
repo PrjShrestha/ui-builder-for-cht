@@ -269,6 +269,32 @@ export const api = {
       }),
     }),
 
+  /**
+   * Geriatric §2 — upload a display image for a form. The server writes
+   * it to `forms/<category>/<basename>-media/<filename>` (the CHT
+   * convention folder `cht-conf upload-app-forms` attaches) and returns
+   * the sanitized filename to store in the row's `media::image` cell.
+   * Sent as base64 JSON — the files are small illustrations and the
+   * server stack has no multipart parser; the on-disk contract is
+   * identical.
+   */
+  uploadFormMedia: async (formId: string, file: File) => {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(new Error('Could not read the selected file.'));
+      r.readAsDataURL(file);
+    });
+    const dataBase64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+    return jsonFetch<{ ok: true; filename: string }>(
+      `/api/forms/${encodeURIComponent(formId)}/media`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ filename: file.name, dataBase64 }),
+      },
+    );
+  },
+
   /** Batch contact-form generator (offered from the Hierarchy editor).
    *  See docs/plans/contact-form-generator.md. Skip-not-overwrite is a
    *  hard contract on the server; the client submits the (type,variant)

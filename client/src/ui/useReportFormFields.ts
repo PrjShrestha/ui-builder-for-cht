@@ -1,111 +1,64 @@
 /**
- * Lazy field-name loader for a single report (app-category) form, keyed by
- * form basename (e.g. "cervical_cancer_screening"). Each form is fetched
- * once per session and cached at module scope; concurrent callers for the
- * same id share the same in-flight promise.
+ * Lazy field-metadata loader for a single report (app-category) form,
+ * keyed by form basename (e.g. "cervical_cancer_screening"). Each form is
+ * fetched once per session and cached at module scope; concurrent callers
+ * for the same id share the same in-flight promise.
  *
  * Used by ReportFieldPicker and InsertFieldButton, where we don't want
  * 30+ XLSX parses to kick off just because the user opened the rule
- * builder.
+ * builder. The extraction itself lives in shared
+ * (`extractReportFieldInfos`) so it's unit-tested and emits
+ * GROUP-QUALIFIED dotted paths (`vitals.bmi`) — audit P1-5 — plus each
+ * field's type and, for selects, its real choices (geriatric §1: the
+ * rule builders' choice-value dropdowns).
  */
 import { useEffect, useState } from 'react';
+import {
+  extractReportFieldInfos,
+  isDateFieldType,
+  type ReportFieldInfo,
+} from '@cht-ui/shared';
 import { api } from '../api.js';
 
-const cache = new Map<string, string[]>();
-const dateCache = new Map<string, string[]>();
-const inflight = new Map<string, Promise<{ fields: string[]; dateFields: string[] }>>();
-
-const META_FIELDS = new Set([
-  'source',
-  'source_id',
-  'parent',
-  'meta',
-  'start',
-  'end',
-  'today',
-  'deviceid',
-  'instanceid',
-  'phone',
-  'simserial',
-  'subscriberid',
-]);
-
-/**
- * Walk the survey emitting GROUP-QUALIFIED dotted paths (`vitals.bmi`),
- * not bare leaf names. Report readers are path-based on both consumer
- * sides — `Utils.getField(report, 'vitals.bmi')` in tasks and
- * `report.fields.vitals.bmi` in contact-summary — so a bare `bmi` for a
- * grouped field reads `undefined` at runtime, silently masked by the
- * fallback wrappers (audit P1-5).
- *
- * `keep` decides whether a leaf row is included (given its row + the
- * current group stack). Structural rows manage the stack and are never
- * emitted. Subtrees rooted at a META group (`meta`, etc.) are skipped
- * entirely; top-level meta leaf names are skipped as before.
- */
-function walkFieldPaths(
-  survey: Array<{ name?: string; type: string }>,
-  keep: (row: { name?: string; type: string }) => boolean,
-): string[] {
-  const out: string[] = [];
-  const stack: string[] = [];
-  for (const r of survey) {
-    const t = r.type.trim().toLowerCase();
-    if (t === 'begin group' || t === 'begin repeat') {
-      stack.push(r.name ?? '');
-      continue;
-    }
-    if (t === 'end group' || t === 'end repeat') {
-      stack.pop();
-      continue;
-    }
-    if (!r.name) continue;
-    const lc = r.name.toLowerCase();
-    if (lc.startsWith('_')) continue;
-    // Skip meta leaves at top level, and anything inside a meta-rooted group.
-    if (stack.length === 0 && META_FIELDS.has(lc)) continue;
-    if (stack.some((g) => META_FIELDS.has(g.toLowerCase()))) continue;
-    if (!keep(r)) continue;
-    const path = [...stack.filter(Boolean), r.name].join('.');
-    out.push(path);
-  }
-  return out.filter((n, i, arr) => arr.indexOf(n) === i);
+interface FormFieldData {
+  infos: ReportFieldInfo[];
+  fields: string[];
+  dateFields: string[];
 }
 
-function extractFields(survey: Array<{ name?: string; type: string }>): string[] {
-  return walkFieldPaths(survey, () => true);
-}
+const cache = new Map<string, FormFieldData>();
+const inflight = new Map<string, Promise<FormFieldData>>();
 
-function extractDateFields(survey: Array<{ name?: string; type: string }>): string[] {
-  return walkFieldPaths(survey, (r) => {
-    const t = r.type.trim().toLowerCase();
-    // XLSForm date-shaped question types. `today` is meta-ish; excluded by META_FIELDS above.
-    return t === 'date' || t === 'datetime' || t === 'date_time';
-  });
-}
+const EMPTY: FormFieldData = { infos: [], fields: [], dateFields: [] };
 
-async function fetchFields(basename: string): Promise<{ fields: string[]; dateFields: string[] }> {
+async function fetchFields(basename: string): Promise<FormFieldData> {
   const id = `app:${basename}`;
   try {
     const res = await api.getForm(id);
-    const fields = extractFields(res.form.survey);
-    const dateFields = extractDateFields(res.form.survey);
-    cache.set(basename, fields);
-    dateCache.set(basename, dateFields);
-    return { fields, dateFields };
+    const infos = extractReportFieldInfos(
+      res.form.survey,
+      res.form.choices,
+      res.form.surveyHeaders.labelLocales,
+    );
+    const data: FormFieldData = {
+      infos,
+      fields: infos.map((i) => i.path),
+      dateFields: infos.filter((i) => isDateFieldType(i.type)).map((i) => i.path),
+    };
+    cache.set(basename, data);
+    return data;
   } catch {
-    cache.set(basename, []);
-    dateCache.set(basename, []);
-    return { fields: [], dateFields: [] };
+    cache.set(basename, EMPTY);
+    return EMPTY;
   }
 }
 
-export function useReportFormFields(formBasename: string | null): {
-  fields: string[];
+function useFormFieldData(formBasename: string | null): {
+  data: FormFieldData;
   loading: boolean;
 } {
-  const [fields, setFields] = useState<string[]>(() =>
-    formBasename ? (cache.get(formBasename) ?? []) : [],
+  const [data, setData] = useState<FormFieldData>(() =>
+    formBasename ? (cache.get(formBasename) ?? EMPTY) : EMPTY,
   );
   const [loading, setLoading] = useState<boolean>(
     () => formBasename != null && !cache.has(formBasename),
@@ -113,13 +66,13 @@ export function useReportFormFields(formBasename: string | null): {
 
   useEffect(() => {
     if (!formBasename) {
-      setFields([]);
+      setData(EMPTY);
       setLoading(false);
       return;
     }
     const cached = cache.get(formBasename);
     if (cached) {
-      setFields(cached);
+      setData(cached);
       setLoading(false);
       return;
     }
@@ -132,7 +85,7 @@ export function useReportFormFields(formBasename: string | null): {
     }
     p.then((out) => {
       if (!alive) return;
-      setFields(out.fields);
+      setData(out);
       setLoading(false);
     });
     return () => {
@@ -140,7 +93,28 @@ export function useReportFormFields(formBasename: string | null): {
     };
   }, [formBasename]);
 
-  return { fields, loading };
+  return { data, loading };
+}
+
+export function useReportFormFields(formBasename: string | null): {
+  fields: string[];
+  loading: boolean;
+} {
+  const { data, loading } = useFormFieldData(formBasename);
+  return { fields: data.fields, loading };
+}
+
+/**
+ * Geriatric §1 — full per-field metadata (`{path, type, choices?}`) for
+ * the rule builders' choice-value dropdowns. Same fetch + cache path as
+ * `useReportFormFields`.
+ */
+export function useReportFormFieldInfos(formBasename: string | null): {
+  infos: ReportFieldInfo[];
+  loading: boolean;
+} {
+  const { data, loading } = useFormFieldData(formBasename);
+  return { infos: data.infos, loading };
 }
 
 /**
@@ -153,43 +127,8 @@ export function useReportFormDateFields(formBasename: string | null): {
   dateFields: string[];
   loading: boolean;
 } {
-  const [dateFields, setDateFields] = useState<string[]>(() =>
-    formBasename ? (dateCache.get(formBasename) ?? []) : [],
-  );
-  const [loading, setLoading] = useState<boolean>(
-    () => formBasename != null && !dateCache.has(formBasename),
-  );
-
-  useEffect(() => {
-    if (!formBasename) {
-      setDateFields([]);
-      setLoading(false);
-      return;
-    }
-    const cached = dateCache.get(formBasename);
-    if (cached) {
-      setDateFields(cached);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    let alive = true;
-    let p = inflight.get(formBasename);
-    if (!p) {
-      p = fetchFields(formBasename).finally(() => inflight.delete(formBasename));
-      inflight.set(formBasename, p);
-    }
-    p.then((out) => {
-      if (!alive) return;
-      setDateFields(out.dateFields);
-      setLoading(false);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [formBasename]);
-
-  return { dateFields, loading };
+  const { data, loading } = useFormFieldData(formBasename);
+  return { dateFields: data.dateFields, loading };
 }
 
 /**

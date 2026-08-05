@@ -379,3 +379,217 @@ test('field_age_between: UI-created (undefined guardGroup) also fuses on adjacen
   assert.equal(parsed.rules.length, 1);
   assert.equal(parsed.rules[0]?.kind, 'field_age_between');
 });
+
+/* ============ Geriatric §3 — OR authoring (orGroups channel) ============ */
+
+test('OR group: author-side emit → parse returns the same OR-joined structure', () => {
+  // The nutrition case: "फेल selected for option A OR option B". The
+  // builder marks two report_field rules with a shared orGroup id; the
+  // serializer must emit the ¬(A ∨ B) guard — inverted comparisons joined
+  // with && — and the parser must lift that back into ONE or-group of the
+  // ORIGINAL positive rules.
+  const authored = {
+    params: ['contact', 'report'],
+    rules: [
+      { kind: 'report_field' as const, field: 'iha.option_a', op: '===' as const, value: 'फेल' },
+      { kind: 'report_field' as const, field: 'iha.option_b', op: '===' as const, value: 'फेल' },
+    ],
+    guardGroups: [undefined, undefined],
+    orGroups: [0, 0],
+    hasRawFallback: false,
+    body: '',
+  };
+  const out = serializeAppliesIf(authored);
+  assert.match(
+    out,
+    /if \(Utils\.getField\(report, 'iha\.option_a'\) !== 'फेल' && Utils\.getField\(report, 'iha\.option_b'\) !== 'फेल'\) \{ return false; \}/,
+    'OR of positives serializes as the &&-joined inverted guard',
+  );
+
+  const back = parseAppliesIf(out);
+  assert.equal(back.rules.length, 2);
+  assert.deepEqual(back.rules[0], authored.rules[0]);
+  assert.deepEqual(back.rules[1], authored.rules[1]);
+  assert.ok(back.orGroups[0] !== undefined, 'first rule is in an or-group');
+  assert.equal(back.orGroups[0], back.orGroups[1], 'both rules share the or-group');
+  assert.equal(back.guardGroups[0], undefined);
+  assert.equal(back.hasRawFallback, false, 'round-trips structured, not raw');
+});
+
+test('OR group round-trip is a fixpoint: serialize → parse → serialize is byte-stable', () => {
+  const src = `function (contact, report) {
+  if (Utils.getField(report, 'a') !== 'फेल' && Utils.getField(report, 'b') !== 'फेल') { return false; }
+  return true;
+}`;
+  const p1 = parseAppliesIf(src);
+  const s1 = serializeAppliesIf(p1);
+  const p2 = parseAppliesIf(s1);
+  const s2 = serializeAppliesIf(p2);
+  assert.equal(s1, src, 'no-op open+save of an OR guard is byte-stable');
+  assert.equal(s2, s1);
+});
+
+test('(A || B) && C — OR group then AND rule serialize as two guards', () => {
+  const authored = {
+    params: ['contact', 'report'],
+    rules: [
+      { kind: 'report_field' as const, field: 'a', op: '===' as const, value: 'x' },
+      { kind: 'report_field' as const, field: 'b', op: '===' as const, value: 'x' },
+      { kind: 'contact_field' as const, field: 'role', op: '===' as const, value: 'patient' },
+    ],
+    guardGroups: [undefined, undefined, undefined],
+    orGroups: [0, 0, undefined],
+    hasRawFallback: false,
+    body: '',
+  };
+  const out = serializeAppliesIf(authored);
+  const lines = out.split('\n');
+  assert.equal(lines.filter((l) => l.trim().startsWith('if (')).length, 2, 'two guard lines');
+  const back = parseAppliesIf(out);
+  assert.equal(back.rules.length, 3);
+  assert.equal(back.orGroups[0], back.orGroups[1]);
+  assert.equal(back.orGroups[2], undefined, 'C stays AND-combined');
+});
+
+test('pure-AND fixture is byte-unchanged on no-op open/save (orGroups untouched)', () => {
+  const src = `function (contact, report) {
+  if (!isAlive(contact.contact)) { return false; }
+  if (Utils.getField(report, 'x') !== 'yes') { return false; }
+  return true;
+}`;
+  assert.equal(serializeAppliesIf(parseAppliesIf(src)), src);
+  assert.deepEqual(parseAppliesIf(src).orGroups, [undefined, undefined]);
+});
+
+test('&&-guard with an unclassifiable conjunct stays ONE raw guard (no partial lift)', () => {
+  // A raw conjunct cannot be re-inverted on serialize; lifting the other
+  // half would corrupt the expression. Whole condition falls back to a
+  // single raw guard row — the pre-feature behavior.
+  const src = `function (contact, report) {
+  if (someCustomCheck(report).status !== 'ok' && Utils.getField(report, 'x') !== 'yes') { return false; }
+  return true;
+}`;
+  const p = parseAppliesIf(src);
+  assert.equal(p.rules.length, 1);
+  assert.equal(p.rules[0]?.kind, 'raw');
+  assert.equal(p.hasRawFallback, true, 'UI offers the Raw tab (raw text saved verbatim there)');
+  assert.equal(
+    (p.rules[0] as { text: string }).text,
+    "someCustomCheck(report).status !== 'ok' && Utils.getField(report, 'x') !== 'yes'",
+    'the whole condition is preserved in one raw rule — no partial lift',
+  );
+});
+
+test('positive `return A || B` lifts into an OR group (serializes to the && guard)', () => {
+  const src = `function (contact, report) {
+  return Utils.getField(report, 'a') === 'x' || Utils.getField(report, 'b') === 'x';
+}`;
+  const p = parseAppliesIf(src);
+  assert.equal(p.rules.length, 2);
+  assert.equal(p.rules[0]?.kind, 'report_field');
+  assert.ok(p.orGroups[0] !== undefined && p.orGroups[0] === p.orGroups[1]);
+  const out = serializeAppliesIf(p);
+  assert.match(out, /!== 'x' && Utils\.getField\(report, 'b'\) !== 'x'\) \{ return false; \}/);
+});
+
+test('OR-joined field_age pair does NOT fuse into a between (complement, not a range)', () => {
+  // `if (age >= 84 && age <= 90) return false` means "OUTSIDE 84-90".
+  // Positives are age < 84 OR age > 90 — fusing them into a between
+  // would silently invert the author's logic.
+  const src = `function (contact, report) {
+  if ((Date.now() - new Date(Utils.getField(report, 'lmp_date')).getTime()) / 86400000 >= 84 && (Date.now() - new Date(Utils.getField(report, 'lmp_date')).getTime()) / 86400000 <= 90) { return false; }
+  return true;
+}`;
+  const p = parseAppliesIf(src);
+  assert.equal(p.rules.length, 2, 'stays two field_age rules');
+  assert.equal(p.rules[0]?.kind, 'field_age');
+  assert.ok(p.orGroups[0] !== undefined && p.orGroups[0] === p.orGroups[1]);
+  assert.equal(serializeAppliesIf(p), src, 'byte-stable round-trip');
+});
+
+/* ==== Positive-raw serialization (bug found by the geriatric §3 e2e) ==== */
+
+test('ungrouped raw rules are POSITIVE content, never emitted as guards', () => {
+  // Before this fix, a leftover raw row (`return true;` from the parse
+  // fallback, or a hand-typed positive expression) was pushed through the
+  // guard path: `if (return true;) { return false; }` is invalid JS, and
+  // `if (<positive expr>) { return false; }` INVERTS the author's logic.
+  const withStatementRaw = serializeAppliesIf({
+    params: ['contact', 'report'],
+    rules: [
+      { kind: 'raw', text: 'return true;' },
+      { kind: 'report_field', field: 'x', op: '===', value: 'yes' },
+    ],
+    guardGroups: [undefined, undefined],
+    orGroups: [undefined, undefined],
+    hasRawFallback: true,
+    body: '',
+  });
+  assert.equal(/if \(return/.test(withStatementRaw), false, 'no `if (return …)` invalid JS');
+  assert.match(withStatementRaw, /if \(Utils\.getField\(report, 'x'\) !== 'yes'\) \{ return false; \}/);
+  assert.match(withStatementRaw, /\n {2}return true;\n\}$/, 'statement raw re-emitted as body');
+
+  const withExprRaw = serializeAppliesIf({
+    params: ['contact', 'report'],
+    rules: [
+      { kind: 'report_field', field: 'x', op: '===', value: 'yes' },
+      { kind: 'raw', text: 'customCheck(report)' },
+    ],
+    guardGroups: [undefined, undefined],
+    orGroups: [undefined, undefined],
+    hasRawFallback: true,
+    body: '',
+  });
+  assert.match(
+    withExprRaw,
+    /return customCheck\(report\);/,
+    'expression raw joins the positive return (not inverted into a guard)',
+  );
+  assert.equal(/if \(customCheck/.test(withExprRaw), false);
+});
+
+test('all-raw parse serializes to the body verbatim (no guard wrapping, no duplication)', () => {
+  const src = `function (contact, report) {
+  return isCovidVaccinated(contact) ? false : lastVisitDays(contact) > 30;
+}`;
+  const p = parseAppliesIf(src);
+  assert.equal(p.rules.length, 1);
+  assert.equal(p.rules[0]?.kind, 'raw');
+  assert.equal(serializeAppliesIf(p), src, 'whole-body raw round-trips byte-stable');
+});
+
+test('guard-origin raw INSIDE a guardGroup stays in guard position', () => {
+  // `report.fields.flag === 'x'` doesn't classify (only getField-shape
+  // report reads do) → raw, but it came from a guard so it must stay in
+  // its `||` guard slot, verbatim.
+  const src = `function (contact, report) {
+  if (report.fields.flag === 'x' || Utils.getField(report, 'x') !== 'yes') { return false; }
+  return true;
+}`;
+  const p = parseAppliesIf(src);
+  assert.equal(serializeAppliesIf(p), src, 'raw guard alternative keeps its || guard slot');
+});
+
+test('REGRESSION — helper guard round-trips without inverting (silent corruption fix)', () => {
+  // `if (!isActivePregnancy(...)) return false` = the task fires ONLY for
+  // active pregnancies. The old helper mapping in ruleToGuardSource
+  // emitted the positive form, so one no-op open+save flipped it to
+  // `if (isActivePregnancy(...)) return false` — the exact opposite.
+  const src = `function (contact, report) {
+  if (!isActivePregnancy(contact.contact, contact.reports, report)) { return false; }
+  return true;
+}`;
+  const p = parseAppliesIf(src);
+  assert.equal(p.rules[0]?.kind, 'helper');
+  if (p.rules[0]?.kind === 'helper') assert.equal(p.rules[0].negated, false);
+  assert.equal(serializeAppliesIf(p), src, 'no-op open+save is byte-stable');
+
+  // NOT-form: positive rule "helper must NOT hold" → guard exits when it does.
+  const srcNot = `function (contact, report) {
+  if (isActivePregnancy(contact.contact, contact.reports, report)) { return false; }
+  return true;
+}`;
+  const pNot = parseAppliesIf(srcNot);
+  if (pNot.rules[0]?.kind === 'helper') assert.equal(pNot.rules[0].negated, true);
+  assert.equal(serializeAppliesIf(pNot), srcNot);
+});

@@ -38,6 +38,23 @@ function formId(category: FormCategory, basename: string): string {
   return `${category}:${basename}`;
 }
 
+/**
+ * Sanitize an uploaded media filename (geriatric §2). Returns `null` for
+ * anything that could escape the `<form>-media/` folder or hide as a
+ * dotfile; otherwise a conservative `[A-Za-z0-9._-]` name (spaces and
+ * exotic characters fold to `_`). Pure — unit-tested in
+ * forms.media.test.ts; `resolveInsideProject` remains the write-time
+ * backstop.
+ */
+export function sanitizeMediaFilename(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  if (/[/\\]/.test(trimmed) || trimmed.includes('..')) return null;
+  const cleaned = trimmed.replace(/[^A-Za-z0-9._-]/g, '_');
+  if (cleaned === '' || cleaned.startsWith('.')) return null;
+  return cleaned;
+}
+
 function parseFormId(id: string): { category: FormCategory; basename: string } {
   const [cat, ...rest] = id.split(':');
   if ((cat !== 'app' && cat !== 'contact') || rest.length === 0) {
@@ -365,6 +382,63 @@ export async function registerFormRoutes(app: FastifyInstance): Promise<void> {
     if (!projectPath) return reply.code(400).send({ error: 'No project open' });
     return detectChangedForms(projectPath);
   });
+
+  /**
+   * Geriatric §2 — display-image upload. Writes the file into the CHT
+   * convention folder `forms/<category>/<basename>-media/` (sibling of
+   * the .xlsx; `cht-conf upload-app-forms` picks it up as a form
+   * attachment) and returns the sanitized filename for the row's
+   * `media::image` cell. Body is base64 JSON (small illustration files;
+   * no multipart parser in this stack — the on-disk contract is the
+   * same). `bodyLimit` is raised for the route; base64 inflates ~4/3.
+   */
+  app.post<{ Params: { id: string }; Body: { filename?: string; dataBase64?: string } }>(
+    '/api/forms/:id/media',
+    { bodyLimit: 15 * 1024 * 1024 },
+    async (req, reply) => {
+      let parts;
+      try {
+        parts = parseFormId(decodeURIComponent(req.params.id));
+      } catch (e) {
+        return reply.code(400).send({ error: (e as Error).message });
+      }
+      const { filename, dataBase64 } = req.body ?? {};
+      if (!filename || !dataBase64) {
+        return reply.code(400).send({ error: 'filename and dataBase64 are required' });
+      }
+      const safe = sanitizeMediaFilename(filename);
+      if (!safe) {
+        return reply.code(400).send({
+          error: `Invalid media filename "${filename}" — no path separators or leading dots.`,
+        });
+      }
+      // The target form must exist — media belongs to a form, and this
+      // also pins `basename` to a real on-disk name.
+      const paths = await pathsForForm(parts.category, parts.basename);
+      if (!(await fileExists(paths.xlsx))) {
+        return reply.code(404).send({ error: `Form ${req.params.id} not found` });
+      }
+      let buf: Buffer;
+      try {
+        buf = Buffer.from(dataBase64, 'base64');
+      } catch {
+        return reply.code(400).send({ error: 'dataBase64 is not valid base64' });
+      }
+      if (buf.length === 0) {
+        return reply.code(400).send({ error: 'Empty file' });
+      }
+      const mediaDir = await resolveInsideProject(
+        path.join('forms', parts.category, `${parts.basename}-media`),
+      );
+      await fs.mkdir(mediaDir, { recursive: true });
+      // Path-traversal backstop on the final joined path too.
+      await resolveInsideProject(
+        path.join('forms', parts.category, `${parts.basename}-media`, safe),
+      );
+      await fs.writeFile(path.join(mediaDir, safe), buf);
+      return { ok: true, filename: safe };
+    },
+  );
 
   app.get<{ Params: { id: string } }>('/api/forms/:id', async (req, reply) => {
     let parts;

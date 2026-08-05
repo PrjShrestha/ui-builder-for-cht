@@ -16,12 +16,21 @@ import {
   type DateUnit,
   type Operator,
   type ParsedExpression,
+  type ReportFieldChoice,
   type Rule,
 } from '@cht-ui/shared';
+import { ChoiceValueInput } from './ChoiceValueInput.js';
+import { useContactSummaryBridgeKeys } from './useContactSummaryContextKeys.js';
+import { useReportFormFieldInfos } from './useReportFormFields.js';
 
 interface Props {
   /** Names of the fields above this question (available for reference). */
   fieldOptions: string[];
+  /** Geriatric §1 — per-field choice options ({name, label}) for this
+   *  form's select_one/select_multiple fields, so comparison / selected()
+   *  values are picked from a dropdown instead of hand-typed slugs.
+   *  Absent/empty → the free-text inputs the builder always had. */
+  fieldChoiceOptions?: Record<string, ReportFieldChoice[]>;
   /** The current expression text. */
   value: string;
   /** Phase 1a — contact-form field names. Empty/absent → the contact-input
@@ -202,6 +211,7 @@ export function RelevantRuleBuilder(props: Props) {
                 key={idx}
                 rule={rule}
                 fieldOptions={props.fieldOptions}
+                fieldChoiceOptions={props.fieldChoiceOptions ?? {}}
                 inputContactFields={props.inputContactFields ?? []}
                 contextKeys={props.contextKeys ?? []}
                 onChange={(r) => updateRule(idx, r)}
@@ -281,6 +291,9 @@ export function RelevantRuleBuilder(props: Props) {
 function RuleRow(props: {
   rule: Rule;
   fieldOptions: string[];
+  /** Geriatric §1 — this form's select fields' choices for the value
+   *  dropdowns (label shown, name stored). */
+  fieldChoiceOptions: Record<string, ReportFieldChoice[]>;
   /** Phase 1a — passed through from parent. Empty array is fine; the
    *  datalist degrades to a free-text input. */
   inputContactFields: string[];
@@ -289,7 +302,23 @@ function RuleRow(props: {
   onRemove: () => void;
 }) {
   const { rule } = props;
+  // Geriatric §1 — hooks run unconditionally (React rule); the args are
+  // no-ops for rule kinds that don't use them. For a contact-summary
+  // comparison whose context key is a cross-form BRIDGE, the bridge
+  // metadata (source form + field) resolves the value dropdown's choices
+  // via the same extended fields fetch the appliesIf side uses.
+  const bridges = useContactSummaryBridgeKeys();
+  const bridge =
+    rule.kind === 'contact-summary-comparison'
+      ? bridges.find((b) => b.key === rule.contextKey)
+      : undefined;
+  const { infos: bridgeInfos } = useReportFormFieldInfos(bridge?.sourceForm || null);
+  const bridgeChoices = bridge
+    ? bridgeInfos.find((i) => i.path === bridge.sourceField)?.choices
+    : undefined;
+
   if (rule.kind === 'comparison') {
+    const choices = rule.valueIsString ? props.fieldChoiceOptions[rule.field] : undefined;
     return (
       <div className="row gap rule-row">
         <FieldPicker
@@ -305,9 +334,10 @@ function RuleRow(props: {
             <option key={o}>{o}</option>
           ))}
         </select>
-        <input
+        <ChoiceValueInput
           value={rule.value}
-          onChange={(e) => props.onChange({ ...rule, value: e.target.value })}
+          onChange={(v) => props.onChange({ ...rule, value: v })}
+          choices={choices}
           placeholder={rule.valueIsString ? 'text value' : 'number / expression'}
         />
         <label className="row gap">
@@ -340,9 +370,10 @@ function RuleRow(props: {
           onChange={(v) => props.onChange({ ...rule, field: v })}
         />
         <span>,</span>
-        <input
+        <ChoiceValueInput
           value={rule.value}
-          onChange={(e) => props.onChange({ ...rule, value: e.target.value })}
+          onChange={(v) => props.onChange({ ...rule, value: v })}
+          choices={props.fieldChoiceOptions[rule.field]}
           placeholder="choice name"
         />
         <span>)</span>
@@ -531,9 +562,10 @@ function RuleRow(props: {
             <option key={o}>{o}</option>
           ))}
         </select>
-        <input
+        <ChoiceValueInput
           value={rule.value}
-          onChange={(e) => props.onChange({ ...rule, value: e.target.value })}
+          onChange={(v) => props.onChange({ ...rule, value: v })}
+          choices={rule.valueIsString ? bridgeChoices : undefined}
           placeholder={rule.valueIsString ? 'text value' : 'number / expression'}
         />
         <label className="row gap">

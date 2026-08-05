@@ -5,7 +5,7 @@
  * the user toggle dropdowns and checkboxes, serializes back. Falls back to
  * a raw code editor for expressions the parser couldn't lift.
  */
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import {
   parseAppliesIf,
@@ -13,6 +13,8 @@ import {
   type AppliesIfRule,
   type ParsedAppliesIf,
 } from '@cht-ui/shared';
+import { useApp } from '../state/store.js';
+import { ChoiceValueInput } from './ChoiceValueInput.js';
 import {
   FieldPicker,
   isNumericOp,
@@ -20,6 +22,7 @@ import {
   type ContactFormFields,
 } from './FieldPicker.js';
 import { ReportFieldPicker } from './ReportFieldPicker.js';
+import { useReportFormFieldInfos } from './useReportFormFields.js';
 import { useProjectHelpers, type ProjectHelper } from './useProjectHelpers.js';
 
 export type { ContactFormFields };
@@ -33,6 +36,14 @@ interface Props {
   contactForms?: ContactFormFields[];
   /** Optional: report-form basenames (from task.appliesToType) for the report_field picker. */
   appliesToType?: string[];
+}
+
+/** Singleton or-group ids are meaningless (a group of one is just AND);
+ *  normalize them to undefined so serialization/pill display stay clean. */
+function normalizeOrGroups(or: Array<number | undefined>): Array<number | undefined> {
+  const counts = new Map<number, number>();
+  for (const g of or) if (g !== undefined) counts.set(g, (counts.get(g) ?? 0) + 1);
+  return or.map((g) => (g !== undefined && (counts.get(g) ?? 0) > 1 ? g : undefined));
 }
 
 export function AppliesIfBuilder(props: Props) {
@@ -53,7 +64,49 @@ export function AppliesIfBuilder(props: Props) {
       ...parsed,
       rules: parsed.rules.filter((_, i) => i !== idx),
       guardGroups: parsed.guardGroups.filter((_, i) => i !== idx),
+      orGroups: normalizeOrGroups(parsed.orGroups.filter((_, i) => i !== idx)),
     });
+  }
+
+  /**
+   * Geriatric §3 — set the connector BETWEEN rules `idx-1` and `idx`.
+   * Consecutive rules sharing an orGroup id are OR-combined; everything
+   * else is AND (the default). Chains extend naturally: setting B–C to
+   * "or" when A–B already is merges all three into one group.
+   */
+  function setConnector(idx: number, val: 'and' | 'or') {
+    const or = [...parsed.orGroups];
+    const gg = [...parsed.guardGroups];
+    if (val === 'or') {
+      const gid =
+        or[idx - 1] ?? or[idx] ?? Math.max(-1, ...or.filter((g): g is number => g !== undefined)) + 1;
+      // Joining an OR chain absorbs both rows (and transitively their
+      // existing chains — ids are unified).
+      const oldA = or[idx - 1];
+      const oldB = or[idx];
+      for (let i = 0; i < or.length; i++) {
+        if (
+          i === idx - 1 ||
+          i === idx ||
+          (oldA !== undefined && or[i] === oldA) ||
+          (oldB !== undefined && or[i] === oldB)
+        ) {
+          or[i] = gid;
+          // A rule can't be in a legacy ||-guard formatting group AND an
+          // OR group; the OR group wins.
+          gg[i] = undefined;
+        }
+      }
+    } else {
+      // Break the chain between idx-1 and idx: rows from idx onward that
+      // shared the id get a fresh id; singleton leftovers normalize away.
+      const gid = or[idx];
+      if (gid !== undefined && or[idx - 1] === gid) {
+        const newId = Math.max(-1, ...or.filter((g): g is number => g !== undefined)) + 1;
+        for (let i = idx; i < or.length && or[i] === gid; i++) or[i] = newId;
+      }
+    }
+    setParsed({ ...parsed, orGroups: normalizeOrGroups(or), guardGroups: gg });
   }
   function addRule(kind: AppliesIfRule['kind']) {
     let next: AppliesIfRule;
@@ -105,6 +158,7 @@ export function AppliesIfBuilder(props: Props) {
       ...parsed,
       rules: [...parsed.rules, next],
       guardGroups: [...parsed.guardGroups, undefined],
+      orGroups: [...parsed.orGroups, undefined],
     });
   }
 
@@ -181,19 +235,52 @@ export function AppliesIfBuilder(props: Props) {
         {!showRaw && (
           <>
             <p className="muted">
-              All conditions are AND-combined. The function returns true when every condition is met.
-              Parameters detected: <code>{parsed.params.join(', ') || '(none)'}</code>
+              Conditions combine with <strong>and</strong> by default — switch a connector to{' '}
+              <strong>or</strong> to accept either side (consecutive &quot;or&quot; rows form one
+              group; groups combine with the rest via <strong>and</strong>). Parameters detected:{' '}
+              <code>{parsed.params.join(', ') || '(none)'}</code>
             </p>
             <div className="rule-list">
               {parsed.rules.map((rule, idx) => (
-                <AppliesIfRuleRow
-                  key={idx}
-                  rule={rule}
-                  contactForms={props.contactForms}
-                  appliesToType={props.appliesToType}
-                  onChange={(r) => updateRule(idx, r)}
-                  onRemove={() => removeRule(idx)}
-                />
+                <Fragment key={idx}>
+                  {idx > 0 && (
+                    <div className="row gap connector-row">
+                      <select
+                        className="connector-pill"
+                        value={
+                          parsed.orGroups[idx - 1] !== undefined &&
+                          parsed.orGroups[idx - 1] === parsed.orGroups[idx]
+                            ? 'or'
+                            : 'and'
+                        }
+                        onChange={(e) => setConnector(idx, e.target.value as 'and' | 'or')}
+                        // A raw row can't join an OR group: the emitted
+                        // ¬(A ∨ B) guard needs each side's INVERTED form,
+                        // and raw JS has no invertible structure. Raw
+                        // stays AND-combined; true mixed logic falls back
+                        // to the Raw JS tab as before.
+                        disabled={
+                          parsed.rules[idx - 1]?.kind === 'raw' || parsed.rules[idx]?.kind === 'raw'
+                        }
+                        title={
+                          parsed.rules[idx - 1]?.kind === 'raw' || parsed.rules[idx]?.kind === 'raw'
+                            ? 'Raw JS rows can only combine with AND — use the Raw JS tab for mixed logic'
+                            : 'How this condition combines with the one above'
+                        }
+                      >
+                        <option value="and">and also</option>
+                        <option value="or">or instead</option>
+                      </select>
+                    </div>
+                  )}
+                  <AppliesIfRuleRow
+                    rule={rule}
+                    contactForms={props.contactForms}
+                    appliesToType={props.appliesToType}
+                    onChange={(r) => updateRule(idx, r)}
+                    onRemove={() => removeRule(idx)}
+                  />
+                </Fragment>
               ))}
               <div className="row gap toolbar">
                 <button className="link" onClick={() => addRule('is_alive')}>+ alive check</button>
@@ -333,37 +420,12 @@ function AppliesIfRuleRow(props: {
 
     case 'report_field':
       return (
-        <div className="row gap rule-row">
-          <code>getField(report,</code>
-          <ReportFieldPicker
-            value={r.field}
-            onChange={(v) => props.onChange({ ...r, field: v })}
-            availableForms={props.appliesToType ?? []}
-          />
-          <code>)</code>
-          <select
-            value={r.op}
-            onChange={(e) =>
-              props.onChange({
-                ...r,
-                op: e.target.value as '===' | '!==' | '>' | '<' | '>=' | '<=',
-              })
-            }
-          >
-            <option value="===">=</option>
-            <option value="!==">!=</option>
-            <option value=">">&gt;</option>
-            <option value="<">&lt;</option>
-            <option value=">=">&gt;=</option>
-            <option value="<=">&lt;=</option>
-          </select>
-          <input
-            value={r.value}
-            onChange={(e) => props.onChange({ ...r, value: e.target.value })}
-            placeholder={r.op === '===' || r.op === '!==' ? 'value' : 'number'}
-          />
-          {remove}
-        </div>
+        <ReportFieldRow
+          rule={r}
+          appliesToType={props.appliesToType ?? []}
+          onChange={props.onChange}
+          remove={remove}
+        />
       );
 
     case 'field_presence':
@@ -412,6 +474,87 @@ function AppliesIfRuleRow(props: {
         </div>
       );
   }
+}
+
+/**
+ * `report_field` rule row (geriatric handoff §1). The value input is a
+ * CHOICE DROPDOWN when the picked field is a select_one/select_multiple
+ * — "if फेल selected for X" is buildable with zero typing (labels shown,
+ * choice `name` stored; the emitted expression is byte-identical to the
+ * typed path since the value is the same string). The picked FORM is
+ * tracked here (controlled ReportFieldPicker) so the field's metadata can
+ * be looked up; it's UI scaffolding only — the rule persists just the
+ * field path + value.
+ */
+function ReportFieldRow(props: {
+  rule: Extract<AppliesIfRule, { kind: 'report_field' }>;
+  appliesToType: string[];
+  onChange: (r: AppliesIfRule) => void;
+  remove: React.ReactNode;
+}) {
+  const { rule: r, appliesToType, onChange, remove } = props;
+  // Mirror ReportFieldPicker's default: appliesToType first, else every
+  // app form in the project — so the first form is pre-picked exactly as
+  // the uncontrolled picker always did.
+  const forms = useApp((s) => s.forms);
+  const allAppForms = useMemo(
+    () =>
+      forms.filter((f) => f.category === 'app').map((f) => f.filename.replace(/\.xlsx$/i, '')),
+    [forms],
+  );
+  const formOptions = appliesToType.length > 0 ? appliesToType : allAppForms;
+  const [pickedForm, setPickedForm] = useState<string>('');
+  const effectiveForm = pickedForm || formOptions[0] || '';
+
+  const { infos } = useReportFormFieldInfos(effectiveForm || null);
+  const fieldInfo = infos.find((i) => i.path === r.field);
+  const isEquality = r.op === '===' || r.op === '!==';
+
+  return (
+    <div className="row gap rule-row">
+      <code>getField(report,</code>
+      <ReportFieldPicker
+        value={r.field}
+        onChange={(v) => {
+          // Switching to a select field whose choices don't include the
+          // current value (e.g. the row's seed default) would strand the
+          // dropdown in custom mode — clear the stale value so the choice
+          // dropdown appears immediately (zero-typing acceptance, §1).
+          const nextChoices = infos.find((i) => i.path === v)?.choices;
+          const keep =
+            r.value === '' || !nextChoices || nextChoices.some((c) => c.name === r.value);
+          onChange(keep ? { ...r, field: v } : { ...r, field: v, value: '' });
+        }}
+        availableForms={appliesToType}
+        pickedForm={effectiveForm}
+        onFormChange={setPickedForm}
+      />
+      <code>)</code>
+      <select
+        value={r.op}
+        onChange={(e) =>
+          onChange({
+            ...r,
+            op: e.target.value as '===' | '!==' | '>' | '<' | '>=' | '<=',
+          })
+        }
+      >
+        <option value="===">=</option>
+        <option value="!==">!=</option>
+        <option value=">">&gt;</option>
+        <option value="<">&lt;</option>
+        <option value=">=">&gt;=</option>
+        <option value="<=">&lt;=</option>
+      </select>
+      <ChoiceValueInput
+        value={r.value}
+        onChange={(v) => onChange({ ...r, value: v })}
+        choices={isEquality ? fieldInfo?.choices : undefined}
+        placeholder={isEquality ? 'value' : 'number'}
+      />
+      {remove}
+    </div>
+  );
 }
 
 /**
