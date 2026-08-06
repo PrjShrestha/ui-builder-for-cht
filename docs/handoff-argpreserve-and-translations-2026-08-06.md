@@ -9,7 +9,7 @@ promotes P2-8 out of the tail. CHT conventions grounded via the cht-specialist s
 
 ## 1 · Never rewrite a call's argument — preserve it verbatim  🔴 P0 (data-safety)
 
-**PO directive:** *"I don't want to do `isAlive(contact.contact)` — wouldn't make sense."*
+**PO directive:** *"I don't want to do `isAlive(contact.contact)` — wouldn't make sense."* Clarified 2026-08-06: **the objection is that it is not intuitive.** That adds a second, usability requirement on top of the data-safety one below — see §1b.
 
 **The rule this establishes, stated generally: the tool must never substitute, normalise, or "correct" an argument the author wrote.** Whether `isAlive(contact)` or `isAlive(contact.contact)` is semantically right in a given config is the config author's call, not ours — and rewriting it violates the round-trip invariant regardless of which one we think is better. This is broader than the one function: it is the same principle as "structured where we own it, raw/verbatim where we don't."
 
@@ -25,6 +25,17 @@ promotes P2-8 out of the tail. CHT conventions grounded via the cht-specialist s
 3. Do **not** attempt to "upgrade" or normalise existing configs as a side effect. No silent migrations.
 
 **Tests (must exercise the serializer — see the memory note):** for each of the four kinds, parse→serialize a call with (a) the conventional arg, (b) a *different* arg, (c) an extra arg, (d) a member expression, (e) no args — assert **byte-stable** in every case, and assert (c)/(e) fall back to `raw` rather than being classified. Add `server/templates/malaria/tasks.js` and a cht-default helper body as **fixtures** — our own templates must be byte-stable through a no-op open+Save. That fixture alone would have caught this.
+
+### §1b · …and never make a no-code user look at that plumbing (the intuitiveness half)
+
+**Why `contact.contact` reads like a typo but isn't:** CHT hands `appliesIf` a **wrapper**, not the person record — `appliesIf: function(contact, report)` where the actual doc is `contact.contact` (which is why `contactLabel` defaults to `contact.contact.name`). So the expression can be *technically* right and still be unreadable to a health-program owner. The data-safety fix above stops us **changing** the author's code; this half stops us **showing** that plumbing to someone who shouldn't have to reason about it.
+
+**Requirements:**
+1. **The rule row must read as plain language.** The four well-known kinds already add via friendly buttons (`+ alive check` etc., `AppliesIfBuilder.tsx:286-289`) — the *row* must likewise render as e.g. **"Patient is alive"** / "Patient is not muted", with no argument expression visible in the default (Visual) view.
+2. **The generated-JS preview is advanced-only.** `AppliesIfBuilder.tsx:299-300` renders `<pre>{serializeAppliesIf(parsed)}</pre>` unconditionally — that is where `isAlive(contact.contact)` actually reaches the user's eyes. Collapse it behind a disclosure ("Show generated code"), default closed. Note that after §1's fix the preview will show **what the author wrote** rather than our substitution, which resolves most of the surprise on its own.
+3. **For a NEW rule the tool must not invent a shape.** Since correctness depends on how the project's *own* helper is defined (malaria's `isAlive(c)` expects a doc, so its own `isAlive(contact)` never fires), do **not** hardcode a favourite. Prefer, in order: (a) match the form already used elsewhere in that project's `tasks.js`; (b) failing that, emit the CHT-documented shape and say so in one line of helper text next to the row. Never silently pick and never rewrite an existing one.
+
+**Acceptance:** a non-technical user building the geriatric tasks never sees the token `contact.contact` anywhere in the default view; an existing config's `isAlive(contact)` still reads back as "Patient is alive" **and** saves byte-identically.
 
 > **Related, same batch, same principle (from `p0-verification-30c3d92-2026-08-05.md`): statement/declaration loss.** Change the whole-body-raw fallback gate at `:344` from `rules.length === 0` to **"any unclassified statement present"**. Both defects are the same root error — *partial recognition that discards what it didn't understand instead of declining to structure.* Fix them together.
 

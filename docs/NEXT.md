@@ -47,6 +47,15 @@ malaria template (a check that never fired now fires for dead contacts).
 expect, don't try to interpret the line at all. Spec:
 `docs/handoff-argpreserve-and-translations-2026-08-06.md` §1.
 
+**A3b. …and stop showing that plumbing to non-technical users.** *(small — the PO's actual
+reason: `contact.contact` "is not intuitive")*
+It looks like a typo but isn't — CHT hands this function a *wrapper*, so the person record
+genuinely lives at `contact.contact`. Still, a health-program owner should never have to
+reason about it. → Render these rows as plain language ("Patient is alive"), and put the
+generated-code preview (`AppliesIfBuilder.tsx:299-300`, currently always visible) behind a
+closed "Show generated code" disclosure. For a *new* rule, match whatever form the project's
+own `tasks.js` already uses rather than hardcoding one. Spec §1b.
+
 **A4. Add our own templates as safety-net tests.** *(small)*
 `server/templates/malaria/tasks.js` and a cht-default helper body become fixtures that must
 survive an open-and-save unchanged. Either one would have caught A3 immediately.
