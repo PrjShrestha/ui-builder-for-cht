@@ -6,6 +6,8 @@ This consolidates four audits run against the live repo at HEAD. The audits are 
 
 ## ▶ Do next (in order)
 
+> ## 📋 **START HERE: [`docs/NEXT.md`](NEXT.md)** — the single plain-language work queue (Group A stop-the-damage → Group B finish-geriatric → Group C housekeeping → backlog). Written 2026-08-06 because the real detail had spread across five review docs. **`NEXT.md` is the working list; everything below and in `docs/reviews/*` is the evidence behind it.**
+
 ### 🔥 CURRENT TOP PRIORITY — 2026-07-29 — field notes from the live Geriatric + ANC build
 
 A health-post officer is building the **real** Geriatric-care + ANC use case in the tool and filed 6 improvement notes. These are field blockers hit **today**, so they jump **ahead of the roadmap tiers below**. Key result: notes 3/5/6 have their hard half **already shipped** — fix the small gap, don't rebuild.
