@@ -157,7 +157,10 @@ test("Phase 1b — a contact-summary condition (instance('contact-summary')/cont
     const csButton = builder.getByRole('button', { name: '+ contact-summary' });
     await expect(csButton).toBeVisible({ timeout: 15_000 });
     await csButton.click();
-    await builder.locator('input[placeholder="context key"]').fill('show_visit_form');
+    // docs/NEXT.md item 5 — the context key is a PICKER now, not free text.
+    // `show_visit_form` is a real key in the fixture's contact-summary, so
+    // it is a normal option; selecting it is the zero-typing path.
+    await builder.locator('select.context-key-select').selectOption('show_visit_form');
     await builder.locator('input[placeholder="text value"]').fill('true');
 
     await expect(builder.locator('.preview code')).toHaveText(
@@ -186,9 +189,9 @@ test("Phase 1b — a contact-summary condition (instance('contact-summary')/cont
     // Re-hydrates structurally: the context-key cell is repopulated.
     await reRel.locator('button', { hasText: 'build' }).click();
     const reBuilder = page.locator('.rule-builder-card').filter({ hasText: 'Rule builder' });
-    await expect(
-      reBuilder.locator('input[list="rule-builder-context-keys"]'),
-    ).toHaveValue('show_visit_form');
+    await expect(reBuilder.locator('select.context-key-select')).toHaveValue('show_visit_form');
+    // A defined key must NOT be flagged as orphaned.
+    await expect(reBuilder.getByText('not defined')).toBeHidden();
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

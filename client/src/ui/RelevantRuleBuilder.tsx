@@ -20,7 +20,10 @@ import {
   type Rule,
 } from '@cht-ui/shared';
 import { ChoiceValueInput } from './ChoiceValueInput.js';
-import { useContactSummaryBridgeKeys } from './useContactSummaryContextKeys.js';
+import {
+  useContactSummaryBridgeKeys,
+  type ContextBridgeKey,
+} from './useContactSummaryContextKeys.js';
 import { useReportFormFieldInfos } from './useReportFormFields.js';
 
 interface Props {
@@ -542,18 +545,12 @@ function RuleRow(props: {
           ))}
         </select>
         <span className="muted small">contact-summary /context/</span>
-        <input
-          list="rule-builder-context-keys"
+        <ContextKeyPicker
           value={rule.contextKey}
-          onChange={(e) => props.onChange({ ...rule, contextKey: e.target.value })}
-          placeholder="context key"
-          style={{ minWidth: 140 }}
+          options={props.contextKeys}
+          bridges={bridges}
+          onChange={(v) => props.onChange({ ...rule, contextKey: v })}
         />
-        <datalist id="rule-builder-context-keys">
-          {props.contextKeys.map((k) => (
-            <option key={k} value={k} />
-          ))}
-        </datalist>
         <select
           value={rule.op}
           onChange={(e) => props.onChange({ ...rule, op: e.target.value as Operator })}
@@ -591,6 +588,86 @@ function RuleRow(props: {
       />
       <button className="link danger" onClick={props.onRemove}>×</button>
     </div>
+  );
+}
+
+/**
+ * Picker for a contact-summary context key (docs/NEXT.md item 5). Replaces
+ * a free-text datalist, which left the last hand-typed identifier in the
+ * 8 referral-follow-up rows.
+ *
+ * Every piece here defends the raw-fallback invariant, because a `<select>`
+ * whose value has no matching `<option>` renders blank AND can fire a
+ * change event writing `''` back — which would silently rewrite a valid
+ * hand-authored expression into `instance('contact-summary')/context/ = …`:
+ *   - an ORPHAN option always exists for an off-list value, so a match is
+ *     guaranteed and nothing is ever cleared implicitly;
+ *   - the `__custom__` sentinel is a no-op on select (re-emits the current
+ *     value) rather than an empty write;
+ *   - the free-text input stays mounted whenever the value is off-list, so
+ *     the author can still edit it;
+ *   - there is deliberately NO empty `— pick —` option: `serializeRule`
+ *     does not validate, and an empty key emits the invalid path the
+ *     §Trap1 comment above exists to prevent.
+ *
+ * Stateless by design: `contextKeys` is `[]` on first paint and can change
+ * mid-session via `invalidateContactSummaryContextKeys()`. Deriving
+ * `inList` on every render means a key that arrives late self-corrects;
+ * seeding a `useState` from the first render would stick in the wrong mode
+ * (the bug ReportFieldPicker needed `customExplicit` to escape).
+ */
+function ContextKeyPicker(props: {
+  value: string;
+  options: string[];
+  bridges: ContextBridgeKey[];
+  onChange: (v: string) => void;
+}) {
+  const inList = props.options.includes(props.value);
+  const bridgeFor = (k: string) => props.bridges.find((b) => b.key === k);
+  return (
+    <>
+      <select
+        className="context-key-select"
+        value={inList ? props.value : '__custom__'}
+        onChange={(e) => {
+          // The sentinel means "keep editing by hand" — re-emitting the
+          // current value keeps this a no-op instead of a destructive ''.
+          if (e.target.value === '__custom__') props.onChange(props.value);
+          else props.onChange(e.target.value);
+        }}
+        title="Pick a value defined in Contact Summary → Context values"
+        aria-label="Contact-summary context key"
+      >
+        {!inList && props.value !== '' && (
+          <option value={props.value}>{props.value} — not defined</option>
+        )}
+        {props.options.map((k) => {
+          const b = bridgeFor(k);
+          return (
+            <option key={k} value={k}>
+              {b ? `${k} — from ${b.sourceForm}.${b.sourceField}` : k}
+            </option>
+          );
+        })}
+        <option value="__custom__">— type a key —</option>
+      </select>
+      {!inList && (
+        <input
+          value={props.value}
+          onChange={(e) => props.onChange(e.target.value)}
+          placeholder="context key"
+          style={{ minWidth: 140 }}
+        />
+      )}
+      {!inList && props.value !== '' && (
+        <span
+          className="badge warn"
+          title={`No context value named "${props.value}" is defined in contact-summary.templated.js. Define it under Contact Summary → Context values, or fix the name.`}
+        >
+          not defined
+        </span>
+      )}
+    </>
   );
 }
 
