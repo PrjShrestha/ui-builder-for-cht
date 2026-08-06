@@ -10,9 +10,9 @@ the caveat) and the general backlog is parked below. 2026-08-06.
 **PO directive (2026-08-06): finish the geriatric use case before anything else. Ordered
 easiest → hardest.** Everything else in this file is parked below the line.
 
-Status: HEAD `30c3d92`, pushed. All 6 field notes and all 3 blocker features shipped.
-Geriatric spec today = **55 of 86 rows clean · 30 clumsy-but-doable · 1 impossible.**
-Items 1–8 below take that to **73 clean · 13 clumsy · 0 impossible**, plus the cosmetics.
+Status: HEAD `7a0aa2e`. All 6 field notes, all 3 blocker features, and geriatric items **1–5**
+shipped. Geriatric spec was **55 of 86 rows clean · 30 clumsy · 1 impossible**; item 4 closed the
+impossible row, and item **8** (translation keys) is what still gates 17 task rows.
 
 > ### ⚠️ One safety rule while the safety batch is deferred
 > The known corruption bugs only bite when the tool **opens pre-existing hand-written
@@ -25,22 +25,96 @@ Items 1–8 below take that to **73 clean · 13 clumsy · 0 impossible**, plus t
 
 ---
 
+## ✅ Items 1–5 SHIPPED (`c66cfcb`, `7a0aa2e`) — and QA drove the forms end-to-end
+
+**`client/tests/geriatric-build.spec.ts` builds the Integrated Health Assessment through the
+real UI: 10 of 10 capabilities green on two consecutive runs**, every assertion re-parsed from
+disk after save (not UI state). Form create, `age >= 60` eligibility, section with
+"one screen", add Nepali, bilingual `select_one` + choices, relevance via the choice dropdown
+(free-text input asserted **absent**), patient-name insert with auto-created harvest calc,
+display image landing in `<form>-media/`, multi-field OR relevance, and the cross-form BMI
+bridge. **The static audit's "highly buildable" verdict holds up under a real driver — no step
+hit a missing affordance.**
+
+```sh
+pnpm --filter @cht-ui/shared build   # required: Vite serves shared/dist
+pnpm --filter @cht-ui/client exec playwright test geriatric-build.spec.ts --reporter=line
+```
+Run the **whole file** — steps chain through disk state, so `--grep` on one mid-chain step is
+order-dependent by design.
+
+**Seven new findings the static audit missed** are folded into the list below as items
+**A–G**. None is an impossibility; all are discoverability or ordering costs — but two
+(**B**, **C**) are places a non-technical author still has to type an identifier or loses
+their work.
+
 ## The geriatric list — easiest to hardest
 
-**1. Unhide the Calculate tile.** *(one line)*
+> **Items 1–5 are DONE.** Start at **A**. Original numbering kept so older notes still line up.
+
+**A. Stop seeding `true &&` into every new form's eligibility.** *(one line)*
+The app-form scaffold writes `context.expression = 'true'` (`server/src/routes/forms.ts:565`),
+so an authored condition emits as `"true && ageInYears(contact) >= 60"`. Harmless but it's
+what the MOH reviewer reads. Also stop writing `"icon": ""`.
+
+**B. Fix the cross-form source picker + let the user leave a dirty page.** *(~10 lines — highest
+value of the new findings)*
+Two bugs that compound: **(i)** Contact Summary → Context values sources its form dropdown from
+the Zustand `forms` slice, which **only `FormsIndex` populates on mount**
+(`ReportFieldPicker.tsx:44-55`) — so reaching Context values directly after a page load shows
+**no dropdown at all** and degrades to a hand-typed field path (verified: cold nav → 0 pickers;
+visit Forms first → 2 pickers with real options). **(ii)** While Contact Summary has unsaved
+changes the sidebar is **inert** — clicking a nav item does nothing, with no confirm and no
+toast — so you can't even go to Forms to work around (i) without reloading and losing the edit.
+→ Load the forms list wherever it's needed (or on app start), and make blocked navigation say
+so. **This is the last place a non-technical author must type an identifier to finish the IHA.**
+
+**C. Make a new section visible in Simple mode.** *(small)*
+Empirically confirmed: after clicking **+ Section** — a Simple-mode toolbar button — the
+section accordion is **not rendered in Simple mode**, so the thing you just created vanishes,
+and "+ add inside" exists only in Full. QA's driver has to switch to Full to author inside a
+section. This undoes half the value of the groups work (your original Note 3). See
+`computeAuthoringHiddenRowIds` (`shared/src/xlsform/simpleMode.ts` + its tests).
+
+**D. Auto-derive choice names in the add-question picker.** *(small)*
+The picker's configure-list step is two raw inputs (`QuestionTypePicker.tsx:627-658`) with no
+label-first slugify, and the question `name` field likewise ("e.g. has_fever") — while the
+**inline** choices editor already auto-derives via `ChoiceNameInput`. QA had to type
+`yes_fail` / `no_pass` by hand. Contradicts the standing "names are auto-derived, never typed"
+decision; reuse `ChoiceNameInput`'s `fromLabel`.
+
+**E. Order a new `calculate` so it can be referenced.** *(small-medium — blocks IHA R3)*
+`+ Question` inserts at `defaultInsertIndex`, which is the start of the trailing depth-0
+calculate run — so a note added *after* a calculate actually lands **above** it, and the
+calculate never appears in the insert-field menu's "earlier fields" list. QA needed a manual
+**move up** to make `${bmi}` offerable. This is exactly the BMI/BP/sugar → note-text flow
+(IHA R3, RF R2).
+
+**F. Per-locale choice labels at add time.** *(small-medium)*
+The add picker has one label column (acknowledged at `FormEditor.tsx:966`), so Nepali choice
+labels need a detour to Translate → Choices — ~6 extra interactions per list, and **every**
+geriatric select needs it.
+
+**G. Make the UI testable.** *(small, pays for itself)*
+There is **no `data-testid` anywhere**; four of QA's failures were selector drift. Highest
+value: `.create-form` inputs, the add-question modal inputs, the media file input, the CS
+context-value card. Also `"Survey (N)"` is ambiguous (editor tab bar *and* the Translate scope
+switcher both render it → strict-mode violations) and `.page-header` exists on every screen, so
+waiting on it is a false readiness signal. Needed before this spec can be a trustworthy CI gate.
+
+**1. Unhide the Calculate tile.** *(one line — ✅ SHIPPED `c66cfcb`)*
 `QuestionTypeCatalog.ts:314` — `hiddenInSimple: true`. Every cross-form pull (BMI, BP,
 blood sugar) needs a calculate row, so today a non-technical user must discover the
 Advanced toggle first. Same one-line unhide we did for Groups.
 → Affects: IHA R3, RF R1/R2, and every hidden-flag workaround.
 
-**2. Fix the test that locks in the wrong answer.** *(small — prerequisite for #4)*
+**2. Fix the test that locks in the wrong answer.** *(small — ✅ SHIPPED `c66cfcb`)*
 `client/tests/geriatric-blockers.spec.ts:104-119` asserts an **equals** comparison against
 a `select_multiple` field as if it were correct. Add a `select_one` pass/fail field to
 `client/tests/fixtures/build-mini-config.mjs` and repoint the test at it, so #4 can fix the
 real behaviour without fighting a green test.
 
-**3. Wire the choice dropdowns into the calculation builder's condition editor.** *(one edit,
-unblocks two things)*
+**3. Wire the choice dropdowns into the calculation builder's condition editor.** *(✅ SHIPPED `c66cfcb`)*
 `CalculationBuilder.tsx:387-396` mounts the same condition builder as everywhere else but
 **without** `fieldChoiceOptions`, so its values are still type-it-yourself. Also give the
 `calculation` field the same prop at `FormEditor.tsx:2174-2184` (relevant/constraint/
@@ -48,7 +122,7 @@ choice_filter already have it).
 → Unblocks the IHA R3 "which is high / normal" if-then texts **and** the hidden-flag route
 the referral-follow-up rows need. One edit, two problems.
 
-**4. Add the "any of these options" operator.** *(small-medium — closes the ONLY impossible row)*
+**4. Add the "any of these options" operator.** *(✅ SHIPPED `c66cfcb` — closes the only impossible row; UNTESTED by QA's form probe, needs a task-side check)*
 The eye-examination task must fire when **any** of 5 external-eye findings is ticked, but the
 task condition builder offers only equals / not-equals / greater / less — silently wrong for
 a checkbox question, and currently one click away. Add an `includes` / "any of" rule kind to
@@ -59,7 +133,7 @@ type**, not just on the operator (`AppliesIfBuilder.tsx:552`).
 ⚠️ This touches the module with a history of silent-corruption bugs. Additive rule kind only;
 **round-trip test must call the serializer** on non-canonical input.
 
-**5. Replace the context-key text box with a picker.** *(small)*
+**5. Replace the context-key text box with a picker.** *(✅ SHIPPED `7a0aa2e`)*
 `RelevantRuleBuilder.tsx:545-551` (and `:490-501`) still take the cross-form context key as
 free text via a datalist. Make it a real dropdown of defined context values with an
 "orphaned / no longer exists" badge — the pattern already exists in `ReportFieldPicker.tsx:124-153`.
