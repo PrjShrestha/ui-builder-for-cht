@@ -64,8 +64,18 @@ await writeXlsx(join(root, 'forms', 'contact', 'person.xlsx'), {
 //     moving a row with no such reference is the benign control.
 //   - `danger_signs` (select_multiple) — a real multi-select with a 3-option
 //     choice list, so the inline-choices editing flow has something to edit.
+//   - `chair_rise` (select_one) — a SINGLE-select whose choice LABELS differ
+//     from their NAMES ("Fail"/`fail`), modelled on the geriatric IHA
+//     pass/fail questions. The task-condition builder's equals comparison is
+//     only correct against a single-select, so the geriatric e2e anchors
+//     here; `danger_signs` (multi) needs the "any of" operator instead
+//     (docs/NEXT.md items 2 + 4). Both locales are filled deliberately —
+//     `form-editing.spec.ts` asserts an exact "ne: 2 missing" count.
 //   - `gravidity` (integer) — an untranslated row, so the `ne` "missing"
 //     counter on the Translate tab is non-zero and observable.
+//
+// KEEP `gravidity` THE ONLY `integer` ROW and `lmp_date` THE ONLY `date` ROW —
+// condition-builder.spec.ts resolves both by their unique raw type chip.
 //
 // Two locales (`label::en` + `label::ne`) so label + translation editing is
 // testable; `sex` still flows in via `inputs/contact/sex` so the
@@ -82,6 +92,7 @@ await writeXlsx(join(root, 'forms', 'app', 'pregnancy.xlsx'), {
     ['date', 'lmp_date', 'Last menstrual period', 'अन्तिम महिनावारी', '', '', 'yes'],
     ['note', 'lmp_note', 'LMP recorded', '', '', "${lmp_date} != ''", ''],
     ['select_multiple danger_signs', 'danger_signs', 'Danger signs', 'खतराका लक्षण', '', '', ''],
+    ['select_one pass_fail', 'chair_rise', 'Chair rise test', 'कुर्सी उठ्ने परीक्षण', '', '', ''],
     ['integer', 'gravidity', 'Number of pregnancies', '', '', '', ''],
   ],
   choices: [
@@ -89,6 +100,10 @@ await writeXlsx(join(root, 'forms', 'app', 'pregnancy.xlsx'), {
     ['danger_signs', 'vaginal_bleeding', 'Vaginal bleeding', 'योनिबाट रक्तस्राव'],
     ['danger_signs', 'severe_headache', 'Severe headache', ''],
     ['danger_signs', 'blurred_vision', 'Blurred vision', ''],
+    // Label != name on purpose: the choice pickers show the LABEL and store
+    // the NAME, and only a fixture where the two differ can prove it.
+    ['pass_fail', 'fail', 'Fail', 'फेल'],
+    ['pass_fail', 'pass', 'Pass', 'पास'],
   ],
   settings: [
     // Canonical order matches serialize.ts:155 so the round-trip smoke passes.

@@ -43,11 +43,15 @@ async function openPregnancy(page: Page): Promise<void> {
 }
 
 // All tests run in the editor's DEFAULT Simple mode. After the
-// isHiddenInSimpleMode base-token fix, Simple mode shows exactly the four
-// user-facing rows [lmp_date, lmp_note, danger_signs, gravidity] (the inputs/
-// calculates + structural rows stay hidden). The danger-signs select being
-// visible here is itself the end-to-end regression guard for that fix —
-// before it, every select question was hidden in the default view.
+// isHiddenInSimpleMode base-token fix, Simple mode shows exactly the five
+// user-facing rows [lmp_date, lmp_note, danger_signs, chair_rise, gravidity]
+// (the inputs/ calculates + structural rows stay hidden). The danger-signs
+// select being visible here is itself the end-to-end regression guard for
+// that fix — before it, every select question was hidden in the default view.
+//
+// `chair_rise` (select_one) joined the fixture for docs/NEXT.md item 2; the
+// inputs/ calculates stay hidden under the authoring hide set too (item 1),
+// which is what keeps these arrays five-long rather than seven.
 
 /** A survey row discriminated by the raw type chip it renders (stable text). */
 function rowByType(page: Page, rawType: RegExp) {
@@ -201,6 +205,7 @@ test('reorder — a move with no broken references goes through without a prompt
     'lmp_date',
     'lmp_note',
     'danger_signs',
+    'chair_rise',
     'gravidity',
   ]);
 
@@ -214,6 +219,7 @@ test('reorder — a move with no broken references goes through without a prompt
     'lmp_date',
     'danger_signs',
     'lmp_note',
+    'chair_rise',
     'gravidity',
   ]);
 });
@@ -238,6 +244,7 @@ test('reorder — the guard fires and blocks a move that would break a ${field} 
     'lmp_date',
     'lmp_note',
     'danger_signs',
+    'chair_rise',
     'gravidity',
   ]);
 });
@@ -255,6 +262,7 @@ test('reorder — the guard is overridable: accepting the warning performs the m
     'lmp_note',
     'lmp_date',
     'danger_signs',
+    'chair_rise',
     'gravidity',
   ]);
 });

@@ -88,21 +88,35 @@ test('§1 + §3 appliesIf builder — choice dropdowns + OR connector → && gua
   await expect(modal).toBeVisible();
 
   // Two report-field rules, each picked entirely from dropdowns.
-  for (const choice of ['vaginal_bleeding', 'severe_headache']) {
-    await modal.getByRole('button', { name: '+ report field' }).click();
+  //
+  // Anchored on `chair_rise`, a SINGLE-select: `=` against a
+  // select_multiple is semantically wrong (the stored value is a
+  // space-separated list, so equality is false the moment a second option
+  // is ticked), and the earlier version of this test pinned exactly that
+  // wrong shape against `danger_signs`. Multi-selects need the "any of"
+  // operator instead — docs/NEXT.md items 2 + 4.
+  for (const choice of ['fail', 'pass']) {
+    // `exact` matters: item 4 added a sibling "+ report field includes
+    // option" button, which makes a substring match ambiguous.
+    await modal.getByRole('button', { name: '+ report field', exact: true }).click();
     const row = modal.locator('.rule-row').last();
-    await row.locator('select.field-picker').selectOption('danger_signs');
+    await row.locator('select.field-picker').selectOption('chair_rise');
     const valueSelect = row.locator('select.choice-value-select');
     await expect(valueSelect).toBeVisible();
     await valueSelect.selectOption(choice);
   }
+
+  // Label shown, NAME stored — the fixture's labels differ from its names.
+  await expect(modal.locator('.rule-row').last().locator('select.choice-value-select')).toContainText(
+    'Pass (pass)',
+  );
 
   // §3 — flip the connector between the two new rows to OR.
   await modal.locator('select.connector-pill').last().selectOption('or');
 
   // The emitted guard is ¬(A ∨ B): inverted comparisons joined with `&&`.
   await expect(modal.locator('.preview pre')).toContainText(
-    "if (Utils.getField(report, 'danger_signs') !== 'vaginal_bleeding' && Utils.getField(report, 'danger_signs') !== 'severe_headache') { return false; }",
+    "if (Utils.getField(report, 'chair_rise') !== 'fail' && Utils.getField(report, 'chair_rise') !== 'pass') { return false; }",
   );
 
   await modal.getByRole('button', { name: 'Save' }).click();
@@ -115,7 +129,7 @@ test('§1 + §3 appliesIf builder — choice dropdowns + OR connector → && gua
   expect(files.ok()).toBeTruthy();
   const tasksJs = (await files.json())['tasks.js'] as string;
   expect(tasksJs).toContain(
-    "if (Utils.getField(report, 'danger_signs') !== 'vaginal_bleeding' && Utils.getField(report, 'danger_signs') !== 'severe_headache') { return false; }",
+    "if (Utils.getField(report, 'chair_rise') !== 'fail' && Utils.getField(report, 'chair_rise') !== 'pass') { return false; }",
   );
 
   // Reopen: the same two OR-joined rows come back structured (not raw).
@@ -131,5 +145,80 @@ test('§1 + §3 appliesIf builder — choice dropdowns + OR connector → && gua
   const modal2 = page.locator('.rule-builder-modal');
   await expect(modal2.locator('.rule-row')).toHaveCount(2);
   await expect(modal2.locator('select.connector-pill')).toHaveValue('or');
+  await expect(modal2.getByText("couldn't be lifted")).toBeHidden();
+});
+
+test('§4 appliesIf builder — a multi-select field switches to "includes" and emits the split guard', async ({
+  page,
+  request,
+}) => {
+  // docs/NEXT.md item 4 / Task R8, the geriatric spec's only hard GAP:
+  // "fires when ANY of these options is ticked". Equality against a
+  // select_multiple is silently wrong (the answer is a space-separated
+  // list), so picking one must switch the row to the includes kind and the
+  // comparison operators must not be offered at all.
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cht-ui-geri-includes-'));
+  await fs.cp(PROJECT_PATH, tmp, { recursive: true });
+  expect(
+    (await request.post('http://127.0.0.1:5174/api/project/open', { data: { path: tmp } })).ok(),
+  ).toBeTruthy();
+
+  await page.goto('/');
+  await page.locator('.nav-item', { hasText: 'Tasks' }).click();
+  const card = page.locator('.task-card').filter({ hasText: 'pregnancy-follow-up' }).first();
+  const expand = card.getByRole('button', { name: '▸' });
+  if (await expand.isVisible().catch(() => false)) await expand.click();
+  await card
+    .locator('.expr-field', { hasText: 'appliesIf' })
+    .locator('button', { hasText: '✎ build' })
+    .click();
+  const modal = page.locator('.rule-builder-modal');
+  await expect(modal).toBeVisible();
+
+  // Add an ordinary comparison row, then point it at the MULTI-select.
+  await modal.getByRole('button', { name: '+ report field', exact: true }).click();
+  const row = modal.locator('.rule-row').last();
+  await row.locator('select.field-picker').selectOption('danger_signs');
+
+  // The row auto-switched to "includes option" …
+  const opSelect = row.locator('select').filter({ hasText: 'includes option' });
+  await expect(opSelect).toHaveValue('includes');
+  // … and the wrong-for-multi comparison operators are gone entirely.
+  await expect(opSelect).not.toContainText('=');
+
+  // Value still comes from the real choice list — zero typing.
+  const valueSelect = row.locator('select.choice-value-select');
+  await expect(valueSelect).toBeVisible();
+  await valueSelect.selectOption('vaginal_bleeding');
+
+  // The emitted guard is the space-split membership test, negated.
+  await expect(modal.locator('.preview pre')).toContainText(
+    "if (!(Utils.getField(report, 'danger_signs') || '').split(' ').includes('vaginal_bleeding')) { return false; }",
+  );
+
+  await modal.getByRole('button', { name: 'Save' }).click();
+  await expect(modal).toBeHidden();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible();
+
+  const tasksJs = (await (await request.get('http://127.0.0.1:5174/api/tasks/files')).json())[
+    'tasks.js'
+  ] as string;
+  expect(tasksJs).toContain(
+    "(Utils.getField(report, 'danger_signs') || '').split(' ').includes('vaginal_bleeding')",
+  );
+
+  // Reopen: comes back as a structured row, not raw.
+  await page.reload();
+  await page.locator('.nav-item', { hasText: 'Tasks' }).click();
+  const card2 = page.locator('.task-card').filter({ hasText: 'pregnancy-follow-up' }).first();
+  const expand2 = card2.getByRole('button', { name: '▸' });
+  if (await expand2.isVisible().catch(() => false)) await expand2.click();
+  await card2
+    .locator('.expr-field', { hasText: 'appliesIf' })
+    .locator('button', { hasText: '✎ build' })
+    .click();
+  const modal2 = page.locator('.rule-builder-modal');
+  await expect(modal2.locator('select.choice-value-select')).toHaveValue('vaginal_bleeding');
   await expect(modal2.getByText("couldn't be lifted")).toBeHidden();
 });

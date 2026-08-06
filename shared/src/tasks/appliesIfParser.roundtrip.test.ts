@@ -699,3 +699,141 @@ test('P0-2 — plain multi-|| guards stay unwrapped (byte-stability of existing 
 }`;
   assert.equal(serializeAppliesIf(parseAppliesIf(src)), src);
 });
+
+/* ===== docs/NEXT.md item 4 — report_field_includes ("any of these options") ===== */
+/* Closes Task R8. Every test CALLS THE SERIALIZER (memory:                        */
+/* feedback_roundtrip_tests_must_call_serializer).                                 */
+
+test('includes: positive rule ("must include") emits the NEGATED guard and round-trips', () => {
+  const authored = {
+    params: ['contact', 'report'],
+    rules: [
+      { kind: 'report_field_includes' as const, field: 'eye_findings', value: 'cataract', negated: false },
+    ],
+    guardGroups: [undefined],
+    orGroups: [undefined],
+    hasRawFallback: false,
+    body: '',
+  };
+  const out = serializeAppliesIf(authored);
+  assert.match(
+    out,
+    /if \(!\(Utils\.getField\(report, 'eye_findings'\) \|\| ''\)\.split\(' '\)\.includes\('cataract'\)\) \{ return false; \}/,
+    'positive "must include" guards on NOT-includes',
+  );
+  const back = parseAppliesIf(out);
+  assert.deepEqual(back.rules, authored.rules, 'polarity survives the round-trip');
+  assert.equal(back.hasRawFallback, false);
+  assert.equal(serializeAppliesIf(back), out, 'fixpoint');
+});
+
+test('includes: NEGATED rule ("must NOT include") emits the bare guard and round-trips', () => {
+  const authored = {
+    params: ['contact', 'report'],
+    rules: [
+      { kind: 'report_field_includes' as const, field: 'eye_findings', value: 'cataract', negated: true },
+    ],
+    guardGroups: [undefined],
+    orGroups: [undefined],
+    hasRawFallback: false,
+    body: '',
+  };
+  const out = serializeAppliesIf(authored);
+  assert.match(
+    out,
+    /if \(\(Utils\.getField\(report, 'eye_findings'\) \|\| ''\)\.split\(' '\)\.includes\('cataract'\)\) \{ return false; \}/,
+  );
+  assert.equal(/if \(!\(/.test(out), false, 'negated rule must NOT emit a leading !');
+  assert.deepEqual(parseAppliesIf(out).rules, authored.rules);
+});
+
+test('includes: the geriatric R8 shape — 5 OR-joined options round-trips structured', () => {
+  // "fires when ANY of 5 external-eye findings is ticked": five includes
+  // rules in one OR group, which serializes to ¬(A ∨ … ∨ E) as the
+  // &&-joined inverted guards.
+  const opts = ['cataract', 'redness', 'discharge', 'lid_swelling', 'corneal_opacity'];
+  const authored = {
+    params: ['contact', 'report'],
+    rules: opts.map((v) => ({
+      kind: 'report_field_includes' as const, field: 'eye_findings', value: v, negated: false,
+    })),
+    guardGroups: opts.map(() => undefined),
+    orGroups: opts.map(() => 0),
+    hasRawFallback: false,
+    body: '',
+  };
+  const out = serializeAppliesIf(authored);
+  assert.equal(out.split('\n').filter((l) => l.trim().startsWith('if (')).length, 1, 'one guard line');
+  const back = parseAppliesIf(out);
+  assert.equal(back.rules.length, 5);
+  assert.deepEqual(back.rules, authored.rules);
+  assert.ok(back.orGroups.every((g) => g !== undefined && g === back.orGroups[0]), 'one OR group');
+  assert.equal(back.hasRawFallback, false, 'structured, not raw');
+  assert.equal(serializeAppliesIf(back), out, 'fixpoint');
+});
+
+test('includes: the `||` inside the (x || \'\') guard does NOT split the OR group', () => {
+  // splitAtTopLevel tracks parens, so the `||` at depth 1 must not be seen
+  // as a top-level alternation — and parenFor must not wrap the operand.
+  const src = `function (contact, report) {
+  if (!(Utils.getField(report, 'f') || '').split(' ').includes('a') && !(Utils.getField(report, 'f') || '').split(' ').includes('b')) { return false; }
+  return true;
+}`;
+  const p = parseAppliesIf(src);
+  assert.equal(p.rules.length, 2, 'two rules, not four');
+  assert.ok(p.rules.every((r) => r.kind === 'report_field_includes'));
+  assert.equal(serializeAppliesIf(p), src, 'byte-stable — no spurious parens');
+});
+
+test('includes: bare getField parses, but emit always canonicalizes to Utils.getField', () => {
+  const src = `function (contact, report) {
+  if (!(getField(report, 'f') || '').split(' ').includes('a')) { return false; }
+  return true;
+}`;
+  const p = parseAppliesIf(src);
+  assert.equal(p.rules[0]?.kind, 'report_field_includes');
+  const out = serializeAppliesIf(p);
+  assert.match(out, /Utils\.getField/);
+  assert.equal(/\bgetField\(report/.test(out.replace(/Utils\.getField/g, '')), false);
+  assert.equal(/"[^"]*"/.test(out), false, 'single quotes only (cht eslint)');
+});
+
+test('includes: NON-canonical spellings fall to raw and are preserved VERBATIM', () => {
+  // Rewriting any of these would be a silent semantic change — `.indexOf`
+  // substring-matches, and a missing `|| ''` throws on an absent field.
+  // They must survive byte-for-byte instead.
+  const variants = [
+    "(Utils.getField(report, 'f')).split(' ').includes('a')", // no || ''
+    "(Utils.getField(report, 'f') || '').split(' ').indexOf('a') >= 0", // indexOf
+    `(Utils.getField(report, "f") || "").split(" ").includes("a")`, // double quotes
+    "(Utils.getField(report, 'f') || '').includes('a')", // no .split
+  ];
+  for (const v of variants) {
+    const src = `function (contact, report) {\n  if (${v}) { return false; }\n  return true;\n}`;
+    const p = parseAppliesIf(src);
+    assert.equal(p.rules[0]?.kind, 'raw', `${v} must fall to raw`);
+    assert.equal(serializeAppliesIf(p), src, `${v} must round-trip verbatim`);
+  }
+});
+
+test('includes: mixes with other kinds under AND without disturbing them', () => {
+  const src = `function (contact, report) {
+  if (!isAlive(contact.contact)) { return false; }
+  if (!(Utils.getField(report, 'eye') || '').split(' ').includes('cataract')) { return false; }
+  if (Utils.getField(report, 'age_band') !== 'senior') { return false; }
+  return true;
+}`;
+  const p = parseAppliesIf(src);
+  assert.deepEqual(p.rules.map((r) => r.kind), ['is_alive', 'report_field_includes', 'report_field']);
+  assert.equal(serializeAppliesIf(p), src, 'no-op open+save is byte-stable');
+});
+
+test('includes: an empty option value still round-trips (no crash, no drop)', () => {
+  const src = `function (contact, report) {
+  if (!(Utils.getField(report, 'f') || '').split(' ').includes('')) { return false; }
+  return true;
+}`;
+  const p = parseAppliesIf(src);
+  assert.equal(p.rules[0]?.kind, 'report_field_includes');
+  assert.equal(serializeAppliesIf(p), src);
+});

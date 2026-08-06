@@ -311,7 +311,16 @@ export const QUESTION_TYPE_TILES: QuestionTypeTile[] = [
     icon: 'ƒ',
     category: 'advanced',
     xlsformType: 'calculate',
-    hiddenInSimple: true,
+    // Was hiddenInSimple: true — the third instance of the invisible-tile
+    // wall (after Group and Repeat). Every cross-form pull (BMI, BP, blood
+    // sugar via the contact-summary bridge) needs a calculate row, so a
+    // no-code author had to discover the Advanced toggle before the
+    // geriatric flow was buildable at all. docs/NEXT.md item 1.
+    //
+    // Unhiding the tile is only half the fix: Simple mode ALSO has to keep
+    // the resulting row visible, or the author adds a Calculate and watches
+    // it vanish. That's `computeAuthoringHiddenRowIds` in shared — scaffold
+    // `../inputs/…` plumbing stays hidden, author-written calculates show.
   },
   {
     id: 'hidden',

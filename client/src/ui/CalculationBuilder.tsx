@@ -34,6 +34,7 @@ import {
   emitFieldRef,
   type CalculationRule,
   type ContextWrapper,
+  type ReportFieldChoice,
   type ParsedCalculation,
   type ParsedExpression,
 } from '@cht-ui/shared';
@@ -44,6 +45,13 @@ import { useContactSummaryBridgeKeys, type ContextBridgeKey } from './useContact
 interface Props {
   value: string;
   fieldOptions: string[];
+  /** Per-field choice options ({name, label}) for this form's selects, so
+   *  the NESTED condition editor's value cell is a dropdown instead of a
+   *  type-it-yourself box. Same map the relevant/constraint/choice_filter
+   *  builders already get; forwarding it here is docs/NEXT.md item 3, which
+   *  unblocks the IHA "which is high / normal" if-then texts and the
+   *  hidden-flag route the referral-follow-up rows need. */
+  fieldChoiceOptions?: Record<string, ReportFieldChoice[]>;
   /** Contact-form field names available for the "Contact input field" kind
    *  (Tier 1.5). UNION of the project's parsed contact forms with a
    *  known-minimal fallback set (_id, name, patient_id, …). May be empty;
@@ -388,6 +396,14 @@ export function CalculationBuilder(props: Props) {
               column={`rule #${editingCondIdx + 1} condition`}
               value={serializeRelevant(parsed.rules[editingCondIdx]!.condition)}
               fieldOptions={props.fieldOptions}
+              // docs/NEXT.md item 3 — this mount was the last condition
+              // editor still typing values by hand. `inputContactFields` /
+              // `contextKeys` were already props here but never forwarded,
+              // so a contact-summary row parsed out of an existing
+              // calculation rendered with an empty key list too.
+              fieldChoiceOptions={props.fieldChoiceOptions}
+              inputContactFields={props.inputContactFields}
+              contextKeys={props.contextKeys}
               onCancel={() => setEditingCondIdx(null)}
               onSave={(v) => {
                 patchRule(editingCondIdx, (r) => ({ ...r, condition: parseRelevant(v) }));

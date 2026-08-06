@@ -65,8 +65,10 @@ interface Props {
   /** When set, that tile id is pre-selected on open (used by edit-type flow). */
   initialTileId?: string;
   /**
-   * Simple/Full filter — when "simple", tiles marked `hiddenInSimple`
-   * are filtered out of the grid (calculate, hidden, structural).
+   * Simple/Full filter — when "simple", tiles marked `hiddenInSimple` are
+   * filtered out of the grid. That is now just `hidden` and the
+   * `lineage_block` sentinel: Group and Repeat were unhidden in Wave 1 /
+   * audit item 15, and Calculate in docs/NEXT.md item 1.
    */
   mode?: 'simple' | 'full';
   /** Form category — used to filter tiles that don't apply to the

@@ -37,6 +37,30 @@ export type AppliesIfRule =
    */
   | { kind: 'field_presence'; source: 'contact' | 'report'; field: string; negated: boolean }
   /**
+   * "The report's multi-select field includes this option" — the CHT
+   * equivalent of the form side's `selected(${f}, 'v')`.
+   *
+   * A `select_multiple` answer arrives from `Utils.getField` as a SPACE-
+   * SEPARATED string (`'vaginal_bleeding severe_headache'`), which is why
+   * an `===` comparison against one option is silently wrong the moment a
+   * second option is ticked. Emitted form:
+   *
+   *   positive: (Utils.getField(report, 'f') || '').split(' ').includes('v')
+   *   guard   : !(Utils.getField(report, 'f') || '').split(' ').includes('v')
+   *
+   * `negated: false` means "must include". The `|| ''` is MANDATORY — an
+   * unanswered field is `undefined`, and `undefined.split` throws inside
+   * the rules engine, killing task generation for that contact.
+   * `.includes()` on the split ARRAY (not `indexOf` on the string) is also
+   * mandatory: substring matching would make option `issue` match
+   * `no_issue`.
+   *
+   * Report-only by design — the contact side has no multi-select answers
+   * and adding it would double the regex surface for no caller.
+   * docs/NEXT.md item 4; closes Task R8, the geriatric spec's only GAP.
+   */
+  | { kind: 'report_field_includes'; field: string; value: string; negated: boolean }
+  /**
    * Age check: compares (today − field's date) to a value in days /
    * weeks / months. Common CHT pattern for time-since scheduling
    * (e.g. "lmp_date was >= 42 weeks ago"). Emits inline JS Date
@@ -501,6 +525,30 @@ function classifySimple(expr: string): AppliesIfRule {
     return { kind: 'field_presence', source: 'contact', field: bangContact[1], negated: true };
   }
 
+  // report_field_includes — `(Utils.getField(report,'f') || '').split(' ')
+  // .includes('v')`, optionally `!`-prefixed. Checked HERE, before the
+  // leading-`!` strip, for the same reason field_presence is: after the
+  // strip the text starts with `(` and would match nothing, falling to raw.
+  //
+  // Deliberately strict and fully anchored. Other spellings a human might
+  // hand-write — no `|| ''`, `.indexOf(v) >= 0`, double-quoted literals —
+  // are NOT accepted here and fall through to raw, where they are
+  // preserved verbatim. Canonicalizing them would be a silent rewrite, and
+  // `.indexOf` → `.includes` would additionally change the semantics
+  // (substring vs whole token).
+  const includesMatch =
+    /^(!?)\(\s*(?:Utils\.)?getField\(\s*report\s*,\s*'([^']+)'\s*\)\s*\|\|\s*''\s*\)\.split\(' '\)\.includes\('([^']*)'\)$/.exec(
+      e,
+    );
+  if (includesMatch && includesMatch[2] !== undefined && includesMatch[3] !== undefined) {
+    return {
+      kind: 'report_field_includes',
+      field: includesMatch[2],
+      value: includesMatch[3],
+      negated: includesMatch[1] === '!',
+    };
+  }
+
   // Strip leading ! for negation tracking.
   let negated = false;
   let stripped = e;
@@ -659,6 +707,7 @@ function invertGuardRule(r: AppliesIfRule): AppliesIfRule {
     case 'has_error':
     case 'helper':
     case 'field_presence':
+    case 'report_field_includes':
       return { ...r, negated: !r.negated };
     case 'contact_field':
     case 'report_field':
@@ -811,6 +860,19 @@ function ruleToGuardSource(rule: AppliesIfRule): string | null {
     case 'report_field': {
       const cmp = invertOp(rule.op);
       return `Utils.getField(report, '${rule.field}') ${cmp} ${fmtCmpValue(cmp, rule.value)}`;
+    }
+    case 'report_field_includes': {
+      // Same polarity convention as field_presence below: the guard is the
+      // INVERSE of the positive rule. negated=false ("must include") →
+      // exit when it does NOT include → leading `!`. Getting this backwards
+      // is the silent-inversion failure mode that bit the helper case, so
+      // both directions are pinned by serializer-exercising tests.
+      //
+      // No extra parens needed around the `!`: member access and calls bind
+      // tighter than unary `!`, so `!(A || '').split(' ').includes('v')`
+      // parses as `!((( A || '').split(' ')).includes('v'))`.
+      const expr = `(Utils.getField(report, '${rule.field}') || '').split(' ').includes('${rule.value}')`;
+      return rule.negated ? expr : `!${expr}`;
     }
     case 'field_presence': {
       // Positive rule = "field IS set" (negated=false) or "NOT set"

@@ -456,6 +456,8 @@ function appliesIfRuleHumanReadable(r: AppliesIfRule): string {
       return `contact.contact.${r.field} ${opSym(r.op)} ${isEqOp(r.op) ? `"${r.value}"` : r.value}`;
     case 'report_field':
       return `Report field "${r.field}" ${opSym(r.op)} ${isEqOp(r.op) ? `"${r.value}"` : r.value}`;
+    case 'report_field_includes':
+      return `Report field "${r.field}" ${r.negated ? 'does not include' : 'includes'} "${r.value}"`;
     case 'field_presence': {
       const ref = r.source === 'report' ? `Report field "${r.field}"` : `Contact field "${r.field}"`;
       return `${ref} ${r.negated ? 'is NOT set' : 'is set'}`;

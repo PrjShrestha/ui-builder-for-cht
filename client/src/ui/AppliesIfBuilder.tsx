@@ -132,6 +132,9 @@ export function AppliesIfBuilder(props: Props) {
       case 'report_field':
         next = { kind: 'report_field', field: 'surveillance.has_chronic_symptoms', op: '===', value: 'yes' };
         break;
+      case 'report_field_includes':
+        next = { kind: 'report_field_includes', field: '', value: '', negated: false };
+        break;
       case 'field_presence':
         next = { kind: 'field_presence', source: 'report', field: '', negated: false };
         break;
@@ -168,6 +171,27 @@ export function AppliesIfBuilder(props: Props) {
       if (isNumericOp(rule.op) && !isValidNumberLiteral(rule.value)) {
         const where = rule.kind === 'contact_field' ? 'contact field' : 'report field';
         return [`Row ${idx + 1}: ${where} needs a numeric value for "${rule.op}".`];
+      }
+    }
+    if (rule.kind === 'report_field_includes') {
+      // Validate rather than escape (the module escapes nothing anywhere,
+      // and adding escaping here would break byte-stability against every
+      // existing unescaped emission). docs/NEXT.md item 4.
+      if (rule.field.trim() === '') {
+        return [`Row ${idx + 1}: pick the multi-select field this option belongs to.`];
+      }
+      if (rule.value.trim() === '') {
+        return [`Row ${idx + 1}: pick the option to check for.`];
+      }
+      if (rule.value.includes(' ')) {
+        return [
+          `Row ${idx + 1}: option "${rule.value}" contains a space — a multi-select answer is a space-separated list, so it could never match.`,
+        ];
+      }
+      if (rule.value.includes("'")) {
+        return [
+          `Row ${idx + 1}: option "${rule.value}" contains an apostrophe, which would emit invalid JavaScript.`,
+        ];
       }
     }
     if (rule.kind === 'raw' && rule.text.trim() === '') {
@@ -289,6 +313,13 @@ export function AppliesIfBuilder(props: Props) {
                 <button className="link" onClick={() => addRule('is_task_user')}>+ task user</button>
                 <button className="link" onClick={() => addRule('contact_field')}>+ contact field</button>
                 <button className="link" onClick={() => addRule('report_field')}>+ report field</button>
+                <button
+                  className="link"
+                  onClick={() => addRule('report_field_includes')}
+                  title="For a multi-select answer: fires when the chosen option is among the ticked ones"
+                >
+                  + report field includes option
+                </button>
                 <button className="link" onClick={() => addRule('field_presence')}>+ field is set / not set</button>
                 <button className="link" onClick={() => addRule('field_age')}>+ field age (days/weeks)</button>
                 <button className="link" onClick={() => addRule('field_age_between')}>+ field age BETWEEN</button>
@@ -419,6 +450,7 @@ function AppliesIfRuleRow(props: {
       );
 
     case 'report_field':
+    case 'report_field_includes':
       return (
         <ReportFieldRow
           rule={r}
@@ -487,7 +519,7 @@ function AppliesIfRuleRow(props: {
  * field path + value.
  */
 function ReportFieldRow(props: {
-  rule: Extract<AppliesIfRule, { kind: 'report_field' }>;
+  rule: Extract<AppliesIfRule, { kind: 'report_field' | 'report_field_includes' }>;
   appliesToType: string[];
   onChange: (r: AppliesIfRule) => void;
   remove: React.ReactNode;
@@ -508,51 +540,104 @@ function ReportFieldRow(props: {
 
   const { infos } = useReportFormFieldInfos(effectiveForm || null);
   const fieldInfo = infos.find((i) => i.path === r.field);
-  const isEquality = r.op === '===' || r.op === '!==';
+  const includesRow = r.kind === 'report_field_includes';
+  const isEquality = !includesRow && (r.op === '===' || r.op === '!==');
+  // docs/NEXT.md item 4 — gate on the FIELD'S TYPE, not just the operator.
+  // A select_multiple answer is a space-separated string, so `=` against
+  // one option is false the moment a second is ticked. That wrong shape
+  // used to be one click away with no signal.
+  const isMulti = /^select_multiple\b/i.test(fieldInfo?.type ?? '');
+  const hasChoices = (fieldInfo?.choices?.length ?? 0) > 0;
+  // The op dropdown's current selection: the includes kind carries no `op`,
+  // so it is represented by two synthetic entries.
+  const opValue = includesRow ? (r.negated ? 'not-includes' : 'includes') : r.op;
+
+  /** Switching between the comparison kind and the includes kind rebuilds
+   *  the rule, carrying field + value across so the user does not retype. */
+  function changeOp(next: string) {
+    if (next === 'includes' || next === 'not-includes') {
+      onChange({
+        kind: 'report_field_includes',
+        field: r.field,
+        value: r.value,
+        negated: next === 'not-includes',
+      });
+      return;
+    }
+    onChange({
+      kind: 'report_field',
+      field: r.field,
+      value: r.value,
+      op: next as '===' | '!==' | '>' | '<' | '>=' | '<=',
+    });
+  }
 
   return (
-    <div className="row gap rule-row">
-      <code>getField(report,</code>
-      <ReportFieldPicker
-        value={r.field}
-        onChange={(v) => {
-          // Switching to a select field whose choices don't include the
-          // current value (e.g. the row's seed default) would strand the
-          // dropdown in custom mode — clear the stale value so the choice
-          // dropdown appears immediately (zero-typing acceptance, §1).
-          const nextChoices = infos.find((i) => i.path === v)?.choices;
-          const keep =
-            r.value === '' || !nextChoices || nextChoices.some((c) => c.name === r.value);
-          onChange(keep ? { ...r, field: v } : { ...r, field: v, value: '' });
-        }}
-        availableForms={appliesToType}
-        pickedForm={effectiveForm}
-        onFormChange={setPickedForm}
-      />
-      <code>)</code>
-      <select
-        value={r.op}
-        onChange={(e) =>
-          onChange({
-            ...r,
-            op: e.target.value as '===' | '!==' | '>' | '<' | '>=' | '<=',
-          })
-        }
-      >
-        <option value="===">=</option>
-        <option value="!==">!=</option>
-        <option value=">">&gt;</option>
-        <option value="<">&lt;</option>
-        <option value=">=">&gt;=</option>
-        <option value="<=">&lt;=</option>
-      </select>
-      <ChoiceValueInput
-        value={r.value}
-        onChange={(v) => onChange({ ...r, value: v })}
-        choices={isEquality ? fieldInfo?.choices : undefined}
-        placeholder={isEquality ? 'value' : 'number'}
-      />
-      {remove}
+    <div className="rule-row-block">
+      <div className="row gap rule-row">
+        <code>getField(report,</code>
+        <ReportFieldPicker
+          value={r.field}
+          onChange={(v) => {
+            const next = infos.find((i) => i.path === v);
+            // Switching to a select field whose choices don't include the
+            // current value (e.g. the row's seed default) would strand the
+            // dropdown in custom mode — clear the stale value so the choice
+            // dropdown appears immediately (zero-typing acceptance, §1).
+            const keep =
+              r.value === '' || !next?.choices || next.choices.some((c) => c.name === r.value);
+            const value = keep ? r.value : '';
+            // Picking a MULTI-select flips the row to the includes kind:
+            // equality is the wrong question for it, and defaulting to the
+            // right one is the whole point of item 4.
+            if (/^select_multiple\b/i.test(next?.type ?? '') && r.kind === 'report_field') {
+              onChange({ kind: 'report_field_includes', field: v, value, negated: false });
+              return;
+            }
+            onChange({ ...r, field: v, value });
+          }}
+          availableForms={appliesToType}
+          pickedForm={effectiveForm}
+          onFormChange={setPickedForm}
+        />
+        <code>)</code>
+        <select value={opValue} onChange={(e) => changeOp(e.target.value)}>
+          {/* Comparison ops are meaningless against a multi-select answer,
+              so they are withheld for one — leaving only the two that are
+              actually correct. */}
+          {!isMulti && (
+            <>
+              <option value="===">=</option>
+              <option value="!==">!=</option>
+              <option value=">">&gt;</option>
+              <option value="<">&lt;</option>
+              <option value=">=">&gt;=</option>
+              <option value="<=">&lt;=</option>
+            </>
+          )}
+          <option value="includes">includes option</option>
+          <option value="not-includes">does not include option</option>
+        </select>
+        <ChoiceValueInput
+          value={r.value}
+          onChange={(v) => onChange({ ...r, value: v })}
+          choices={hasChoices && (isEquality || includesRow) ? fieldInfo?.choices : undefined}
+          placeholder={includesRow ? 'option' : isEquality ? 'value' : 'number'}
+        />
+        {remove}
+      </div>
+      {includesRow && r.value.includes(' ') && (
+        <div className="rule-row-warning">
+          <strong>Option can&apos;t contain a space.</strong> A multi-select answer is stored as a
+          space-separated list, so an option with a space in it can never match.
+        </div>
+      )}
+      {includesRow && r.value.includes("'") && (
+        <div className="rule-row-warning">
+          <strong>Option can&apos;t contain an apostrophe.</strong> It would produce invalid
+          JavaScript in <code>tasks.js</code> and the rule would be lost on reopen.
+        </div>
+      )}
     </div>
   );
 }

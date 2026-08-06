@@ -170,8 +170,15 @@ const SIMPLE_MODE_VISIBLE_TYPES = new Set<string>([
  *
  * Type-only check — does not know which group the row lives in. Prefer
  * {@link computeSimpleHiddenRowIds} when the survey is available, because
- * it treats `calculate` rows group-aware (only ones inside CHT's `inputs/`
- * block are hidden).
+ * it can also classify by position (everything inside CHT's `inputs/`
+ * block is plumbing regardless of type).
+ *
+ * NOTE: every `calculate` is hidden here, by design — this predicate
+ * answers "is this a question a clinician ANSWERS?", which is what the
+ * FHIR workbench's mappable-row denominator needs (`fhir/coverage.ts`).
+ * The form editor asks a different question — "does the AUTHOR need to
+ * see this row?" — and a calculate the author wrote is emphatically yes.
+ * That's {@link computeAuthoringHiddenRowIds}.
  */
 export function isHiddenInSimpleMode(row: SurveyRow): boolean {
   const t = row.type.trim().toLowerCase();
@@ -238,6 +245,80 @@ export function computeSimpleHiddenRowIds(survey: SurveyRow[]): Set<string> {
     }
   }
   return hidden;
+}
+
+/**
+ * True when a `calculate` row exists only to re-export a value out of the
+ * CHT `inputs/` block — i.e. its calculation is a bare path reference such
+ * as `../inputs/contact/_id`. The Default app scaffold seeds four of these
+ * (`patient_uuid`, `patient_id`, `created_by`, `created_by_person_uuid`)
+ * at depth 0, OUTSIDE `inputs/`, and the lineage block generates more.
+ * They are plumbing wherever they sit.
+ *
+ * Deliberately narrow: only a single unbroken path token counts. Anything
+ * with an operator, function call, quote or `${…}` — `instance('contact-
+ * summary')/context/bmi`, `${weight} div (${height} * ${height})` — is
+ * author-written content, not plumbing. An EMPTY calculation (a row the
+ * author just added and hasn't filled in) is also not plumbing, which is
+ * what makes the Calculate tile usable in Simple mode.
+ */
+export function isInputsPlumbingCalculate(row: SurveyRow): boolean {
+  if (row.type.trim().toLowerCase() !== 'calculate') return false;
+  const calc = (row.extras['calculation'] ?? '').trim();
+  if (calc === '') return false;
+  // A single path token — no whitespace, operators, calls or literals.
+  if (!/^[A-Za-z0-9_./-]+$/.test(calc)) return false;
+  return /(^|\/)inputs\//.test(calc);
+}
+
+/**
+ * The form editor's Simple-mode hide set: {@link computeSimpleHiddenRowIds}
+ * minus the calculates the AUTHOR wrote.
+ *
+ * Why this exists separately: the two callers ask different questions of
+ * the same survey. `fhir/coverage.ts` asks "which rows can a clinician
+ * answer?" — every calculate is excluded, and `coverage.test.ts` pins
+ * that deliberately. The form editor asks "which rows does the author
+ * need to see and edit?" — and hiding a calculate the author just added
+ * makes the Calculate tile a trap: the row vanishes the moment it's
+ * created, with only the "N plumbing rows hidden" counter ticking up.
+ *
+ * Cross-form pulls (BMI / BP / blood sugar via the contact-summary
+ * bridge) are calculates, so Simple mode — the DEFAULT view — has to
+ * show them for the geriatric flow to be buildable at all
+ * (docs/NEXT.md item 1).
+ *
+ * Scaffold plumbing stays hidden via {@link isInputsPlumbingCalculate},
+ * so a freshly-created Default app form still opens genuinely empty
+ * (the §B1 cold-start invariant).
+ */
+export function computeAuthoringHiddenRowIds(survey: SurveyRow[]): Set<string> {
+  const hidden = computeSimpleHiddenRowIds(survey);
+  const insideInputs = inputsDescendantRowIds(survey);
+  for (const row of survey) {
+    if (row.type.trim().toLowerCase() !== 'calculate') continue;
+    // Inside `inputs/` it is plumbing by position; outside, only when it
+    // merely re-exports an inputs value.
+    if (insideInputs.has(row.rowId)) continue;
+    if (isInputsPlumbingCalculate(row)) continue;
+    hidden.delete(row.rowId);
+  }
+  return hidden;
+}
+
+/** Row ids descended from the CHT `inputs/` group (exclusive of the
+ *  `begin group inputs` row itself). Shared by the two hide-set builders
+ *  so their notion of "inside inputs/" cannot drift apart. */
+function inputsDescendantRowIds(survey: SurveyRow[]): Set<string> {
+  const out = new Set<string>();
+  const groupStack: string[] = [];
+  for (const row of survey) {
+    const t = row.type.trim().toLowerCase();
+    if (t === 'end group' || t === 'end repeat') groupStack.pop();
+    if (groupStack.some((g) => g.toLowerCase() === CHT_INPUTS_GROUP)) out.add(row.rowId);
+    if (t === 'begin group' || t === 'begin repeat') groupStack.push(row.name);
+  }
+  return out;
 }
 
 /**

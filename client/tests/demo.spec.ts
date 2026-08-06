@@ -149,6 +149,7 @@ test('demo 1 — author a survey: edit, choices, add, move, group + nest, transl
       'lmp_date',
       'lmp_note',
       'danger_signs',
+      'chair_rise',
       'gravida',
       'temperature',
     ]);
@@ -160,6 +161,7 @@ test('demo 1 — author a survey: edit, choices, add, move, group + nest, transl
       'lmp_date',
       'danger_signs',
       'lmp_note',
+      'chair_rise',
       'gravida',
       'temperature',
     ]);
@@ -168,6 +170,7 @@ test('demo 1 — author a survey: edit, choices, add, move, group + nest, transl
       'lmp_date',
       'lmp_note',
       'danger_signs',
+      'chair_rise',
       'gravida',
       'temperature',
     ]);

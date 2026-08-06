@@ -34,7 +34,7 @@ import {
   QUESTION_TYPES,
   STRUCTURAL_TYPES,
   SELECT_TYPE_RE,
-  computeSimpleHiddenRowIds,
+  computeAuthoringHiddenRowIds,
   isStructural,
   inferFieldKind,
   validateOrdering,
@@ -619,11 +619,15 @@ function SurveyTab(props: {
   }, [form.survey, fieldChoices]);
 
   // Group consecutive rows that fall inside a "collapsed" begin/end group block.
-  // In Simple mode we don't collapse — we just hide non-user-facing rows
-  // (group-aware: calculates inside CHT's `inputs/` block are plumbing and
-  // hidden, calculates elsewhere are treated as report outputs and kept).
+  // In Simple mode we don't collapse — we just hide non-user-facing rows.
+  // `computeAuthoringHiddenRowIds` is the AUTHOR-side hide set: calculates
+  // that merely re-export `../inputs/…` stay hidden (so a fresh Default form
+  // still opens empty), but a calculate the author wrote — every cross-form
+  // pull — stays visible, which is what makes the Calculate tile usable in
+  // Simple mode at all (docs/NEXT.md item 1). The stricter
+  // `computeSimpleHiddenRowIds` remains the FHIR workbench's oracle.
   const simpleHiddenIds = useMemo(
-    () => (mode === 'simple' ? computeSimpleHiddenRowIds(form.survey) : new Set<string>()),
+    () => (mode === 'simple' ? computeAuthoringHiddenRowIds(form.survey) : new Set<string>()),
     [form.survey, mode],
   );
   const displayItems = buildDisplayItems(form.survey, mode, collapsedGroupIds, simpleHiddenIds);
@@ -2179,6 +2183,7 @@ function SurveyRowCard(props: {
               value={row.extras['calculation'] ?? ''}
               onChange={(v) => setExtra('calculation', v)}
               fieldOptions={props.fieldOptions}
+              fieldChoiceOptions={props.fieldChoiceOptions}
               inputContactFields={props.inputContactFields}
               contextKeys={props.contextKeys}
             />
@@ -2645,6 +2650,7 @@ function ExpressionField(props: {
           title="Calculation builder"
           value={props.value}
           fieldOptions={props.fieldOptions}
+          fieldChoiceOptions={props.fieldChoiceOptions}
           inputContactFields={props.inputContactFields}
           contextKeys={props.contextKeys}
           onCancel={() => setShowCalcBuilder(false)}
