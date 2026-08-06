@@ -965,14 +965,14 @@ function SurveyTab(props: {
         ? form.choicesHeaders.labelLocales
         : activeLocales;
       const additions: ChoiceRow[] = commit.list.choices.map((c, i) => {
+        // docs/NEXT.md item F — the picker now collects a label PER LOCALE,
+        // so they seat directly. (This used to funnel one label into the
+        // default locale, which is why every bilingual list needed a
+        // Translate → Choices detour afterwards.) Keys the CHOICES sheet
+        // declares but the picker didn't collect are still materialized
+        // empty, so nothing drops out of the translator's grid.
         const labels: Record<string, string> = {};
-        for (const loc of choiceLocales) labels[loc] = '';
-        // The picker collects a single `label` per draft choice today
-        // (no per-locale choice inputs yet — a follow-up). Seat it in
-        // the default locale (`en` if present, otherwise the first
-        // active locale).
-        const primary = choiceLocales.includes('en') ? 'en' : choiceLocales[0] ?? 'en';
-        if (c.label) labels[primary] = c.label;
+        for (const loc of choiceLocales) labels[loc] = c.labels[loc] ?? '';
         return {
           rowId: `c_new_${stamp}_${i}`,
           list_name: commit.list!.list_name,

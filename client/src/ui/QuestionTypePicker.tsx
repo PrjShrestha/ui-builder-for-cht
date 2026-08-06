@@ -53,7 +53,14 @@ export interface PickerCommit {
    */
   list?: {
     list_name: string;
-    choices: Array<{ name: string; label: string }>;
+    /**
+     * Per-locale labels, keyed exactly like a survey row's (docs/NEXT.md
+     * item F). Every ACTIVE locale gets an entry — empty string where the
+     * author left it blank — so a new list's choices never render as a
+     * missing row in the translator's grid, and a bilingual list needs no
+     * detour through Translate → Choices.
+     */
+    choices: Array<{ name: string; labels: Record<string, string> }>;
   };
 }
 
@@ -122,9 +129,16 @@ export function QuestionTypePicker(props: Props) {
   const [newListName, setNewListName] = useState(() =>
     suggestListName(props.defaultListNameSeed ?? props.initialName ?? 'options'),
   );
-  const [draftChoices, setDraftChoices] = useState<Array<{ name: string; label: string }>>([
-    { name: '', label: '' },
-    { name: '', label: '' },
+  // docs/NEXT.md item F — each draft choice carries a label PER LOCALE,
+  // keyed by locale code (same convention as the question-label state
+  // below, so re-ordering `labelLocales` can't rebind typed values to the
+  // wrong locale). Previously one label column meant every bilingual list
+  // needed a detour to Translate → Choices.
+  const [draftChoices, setDraftChoices] = useState<
+    Array<{ name: string; labels: Record<string, string> }>
+  >([
+    { name: '', labels: {} },
+    { name: '', labels: {} },
   ]);
   // Wave 2 §4 — add-time inline label per active locale. Keyed by locale
   // code so re-orderings of the parent's `labelLocales` prop don't rebind
@@ -233,8 +247,15 @@ export function QuestionTypePicker(props: Props) {
         list = {
           list_name: chosenList,
           choices: draftChoices
-            .map((c) => ({ name: c.name.trim(), label: c.label.trim() }))
-            .filter((c) => c.name || c.label),
+            .map((c) => {
+              // Pack an entry for every ACTIVE locale, never a missing key
+              // — a missing key drops the choice from that locale's column
+              // in the translator's grid instead of showing it as blank.
+              const labels: Record<string, string> = {};
+              for (const loc of activeLocales) labels[loc] = (c.labels[loc] ?? '').trim();
+              return { name: c.name.trim(), labels };
+            })
+            .filter((c) => c.name || Object.values(c.labels).some(Boolean)),
         };
       }
     }
@@ -264,10 +285,15 @@ export function QuestionTypePicker(props: Props) {
   }
 
   function addChoiceRow() {
-    setDraftChoices((rows) => [...rows, { name: '', label: '' }]);
+    setDraftChoices((rows) => [...rows, { name: '', labels: {} }]);
   }
-  function updateChoiceRow(idx: number, patch: Partial<{ name: string; label: string }>) {
-    setDraftChoices((rows) => rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  function updateChoiceName(idx: number, name: string) {
+    setDraftChoices((rows) => rows.map((r, i) => (i === idx ? { ...r, name } : r)));
+  }
+  function updateChoiceLabel(idx: number, locale: string, label: string) {
+    setDraftChoices((rows) =>
+      rows.map((r, i) => (i === idx ? { ...r, labels: { ...r.labels, [locale]: label } } : r)),
+    );
   }
   function removeChoiceRow(idx: number) {
     setDraftChoices((rows) => rows.filter((_, i) => i !== idx));
@@ -620,34 +646,62 @@ export function QuestionTypePicker(props: Props) {
                   </span>
                 </label>
 
-                <div className="qtype-choices-edit">
+                {/* docs/NEXT.md item F — one label column PER ACTIVE
+                     LOCALE. A bilingual list used to need ~6 extra
+                     interactions via Translate → Choices, on every select
+                     in the form. The grid widens with the locale count;
+                     the single-locale case is unchanged visually. */}
+                <div
+                  className="qtype-choices-edit"
+                  style={
+                    {
+                      '--qtype-choice-locales': activeLocales.length,
+                    } as React.CSSProperties
+                  }
+                >
                   <div className="qtype-choices-head">
                     <span>name</span>
-                    <span>label (shown to user) — press Enter to add another</span>
+                    {activeLocales.map((loc) => (
+                      <span key={loc}>
+                        label{activeLocales.length > 1 ? `::${loc}` : ''} (shown to user)
+                        {loc === activeLocales[activeLocales.length - 1]
+                          ? ' — press Enter to add another'
+                          : ''}
+                      </span>
+                    ))}
                     <span />
                   </div>
                   {draftChoices.map((row, i) => (
                     <div key={i} className="qtype-choice-row">
                       <input
                         value={row.name}
-                        onChange={(e) => updateChoiceRow(i, { name: e.target.value })}
+                        onChange={(e) => updateChoiceName(i, e.target.value)}
                         placeholder="yes"
+                        aria-label={`Choice ${i + 1} name`}
                       />
-                      <input
-                        value={row.label}
-                        onChange={(e) => updateChoiceRow(i, { label: e.target.value })}
-                        placeholder="Yes"
-                        onKeyDown={(e) => {
-                          if (
-                            e.key === 'Enter' &&
-                            i === draftChoices.length - 1 &&
-                            (row.name || row.label)
-                          ) {
-                            e.preventDefault();
-                            addChoiceRow();
-                          }
-                        }}
-                      />
+                      {activeLocales.map((loc, li) => (
+                        <input
+                          key={loc}
+                          value={row.labels[loc] ?? ''}
+                          onChange={(e) => updateChoiceLabel(i, loc, e.target.value)}
+                          placeholder={li === 0 ? 'Yes' : `Yes (${loc})`}
+                          aria-label={`Choice ${i + 1} label in ${loc}`}
+                          onKeyDown={(e) => {
+                            // Enter on the LAST locale of the LAST row adds
+                            // another choice, so a keyboard author can run
+                            // straight down the list.
+                            if (
+                              e.key === 'Enter' &&
+                              li === activeLocales.length - 1 &&
+                              i === draftChoices.length - 1 &&
+                              (row.name || Object.values(row.labels).some(Boolean))
+                            ) {
+                              e.preventDefault();
+                              addChoiceRow();
+                            }
+                          }}
+                        />
+                      ))}
                       <button
                         className="link danger"
                         onClick={() => removeChoiceRow(i)}

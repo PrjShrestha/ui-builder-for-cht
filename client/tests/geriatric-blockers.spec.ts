@@ -222,3 +222,71 @@ test('§4 appliesIf builder — a multi-select field switches to "includes" and 
   await expect(modal2.locator('select.choice-value-select')).toHaveValue('vaginal_bleeding');
   await expect(modal2.getByText("couldn't be lifted")).toBeHidden();
 });
+
+test('§F add picker — a bilingual choice list is authored in ONE pass, no Translate detour', async ({
+  page,
+  request,
+}) => {
+  // docs/NEXT.md item F. The configure-list step used to have a single
+  // label column, so every non-English choice label needed a follow-up
+  // visit to Translate → Choices — ~6 extra interactions per list, on
+  // every select in the form. The picker now renders one label input per
+  // ACTIVE locale, so both land in the same gesture.
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'cht-ui-geri-f-'));
+  await fs.cp(PROJECT_PATH, tmp, { recursive: true });
+  expect(
+    (await request.post('http://127.0.0.1:5174/api/project/open', { data: { path: tmp } })).ok(),
+  ).toBeTruthy();
+
+  await page.goto('/');
+  await page.locator('.nav-item', { hasText: 'Forms' }).click();
+  await page.getByRole('button', { name: 'pregnancy.xlsx' }).click();
+  await expect(page.locator('.survey-row').first()).toBeVisible();
+
+  await page.getByRole('button', { name: '+ Question' }).first().click();
+  const picker = page.locator('.qtype-modal');
+  await picker.getByPlaceholder(/has_fever, patient_age/i).fill('grip_strength');
+  await picker
+    .locator('.qtype-tile')
+    .filter({ has: page.locator('.qtype-tile-label', { hasText: /^Select one$|^Single choice$/ }) })
+    .first()
+    .click();
+
+  // The fixture form declares en + ne, so there are TWO label columns.
+  const rows = picker.locator('.qtype-choice-row');
+  await expect(rows.first().locator('input')).toHaveCount(3); // name + en + ne
+  // Names deliberately unlike the fixture's existing pass_fail list, so the
+  // disk assertion below can't match pre-existing rows.
+  const OPTS: Array<[string, string, string]> = [
+    ['weak', 'Weak', 'कमजोर'],
+    ['strong', 'Strong', 'बलियो'],
+  ];
+  for (let i = 0; i < OPTS.length; i += 1) {
+    await rows.nth(i).locator('input').nth(0).fill(OPTS[i]![0]);
+    await rows.nth(i).locator('input').nth(1).fill(OPTS[i]![1]);
+    await rows.nth(i).locator('input').nth(2).fill(OPTS[i]![2]);
+  }
+  await picker.getByRole('button', { name: 'Add question', exact: true }).click();
+  await expect(picker).not.toBeVisible();
+
+  // Save stages a diff first, so the modal has to be confirmed.
+  await page.locator('.page-header').getByRole('button', { name: 'Save', exact: true }).click();
+  await page.locator('.rule-builder-card').getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(
+    page.locator('.page-header').getByRole('button', { name: 'Saved', exact: true }),
+  ).toBeVisible();
+
+  // Re-read from DISK: both locales are present on both choices, with no
+  // visit to the Translate tab anywhere in this test.
+  const res = await request.get('http://127.0.0.1:5174/api/forms/app%3Apregnancy');
+  expect(res.ok()).toBeTruthy();
+  const form = (await res.json()).form as {
+    choices: Array<{ list_name: string; name: string; labels: Record<string, string> }>;
+  };
+  const mine = form.choices.filter((c) => c.name === 'weak' || c.name === 'strong');
+  expect(mine.length).toBe(2);
+  expect(mine.find((c) => c.name === 'weak')!.labels.en).toBe('Weak');
+  expect(mine.find((c) => c.name === 'weak')!.labels.ne).toBe('कमजोर');
+  expect(mine.find((c) => c.name === 'strong')!.labels.en).toBe('Strong');
+  expect(mine.find((c) => c.name === 'strong')!.labels.ne).toBe('बलियो');
+});
